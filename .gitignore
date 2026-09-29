@@ -1,0 +1,21 @@
+/temp
+.DS_STORE
+
+# AI cache folder
+/.claude
+/.zcode
+/.codegraph
+
+# Rust build output
+/target
+**/*.rs.bk
+
+# Story Studio 项目缓存（运行时生成）
+.novelstudio/
+
+#Node modules
+/node_modules
+# Tauri 桌面端
+/app/node_modules
+/app/dist
+/app/src-tauri/gen

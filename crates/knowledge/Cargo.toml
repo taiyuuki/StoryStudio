@@ -1,0 +1,12 @@
+[package]
+name = "story-knowledge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Knowledge Layer — Assertion + Evidence (RFC-0015)"
+
+[dependencies]
+story-ir.workspace = true
+serde.workspace = true
+thiserror.workspace = true

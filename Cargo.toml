@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ir",
+    "crates/project-format",
+    "crates/parser",
+    "crates/compiler",
+    "crates/knowledge",
+    "crates/exporter",
+    "crates/ai-runtime",
+    "crates/studio-lib",
+    "crates/cli",
+    "app/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Taiyuuki"]
+
+[workspace.dependencies]
+# 序列化
+serde = { version = "1.0.229", features = ["derive"] }
+serde_yaml = "0.9"
+toml = "0.8"
+
+# 中文 → 拼音（项目目录名 slug 化，RFC-0003）
+pinyin = "0.11"
+
+# 错误处理
+thiserror = "2.0.19"
+
+# CLI
+clap = { version = "4.6.4", features = ["derive"] }
+
+# 多模式匹配（RFC-0006 §8.3）
+aho-corasick = "1"
+
+# HTTP 客户端（AI Provider）
+reqwest = { version = "0.13.4", features = ["json", "blocking", "stream"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["sync", "rt", "rt-multi-thread"] }
+futures = "0.3.33"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# 测试
+pretty_assertions = "1"
+tempfile = "3"
+
+# 内部 crate 路径（workspace 内引用）
+story-ir = { path = "crates/ir" }
+story-project-format = { path = "crates/project-format" }
+story-parser = { path = "crates/parser" }
+story-compiler = { path = "crates/compiler" }
+story-knowledge = { path = "crates/knowledge" }
+story-exporter = { path = "crates/exporter" }
+story-ai-runtime = { path = "crates/ai-runtime" }
+story-studio-lib = { path = "crates/studio-lib" }

@@ -1,0 +1,14 @@
+[package]
+name = "story-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Parser — file to Story IR (RFC-0006)"
+
+[dependencies]
+story-ir.workspace = true
+story-project-format.workspace = true
+thiserror.workspace = true
+aho-corasick.workspace = true
+serde.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "story-studio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Story Studio CLI — command line interface"
+
+[dependencies]
+story-studio-lib.workspace = true
+story-compiler.workspace = true
+story-ai-runtime.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

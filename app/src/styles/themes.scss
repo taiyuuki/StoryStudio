@@ -1,0 +1,164 @@
+// ─────────────────────────────────────────────────────────────
+// StoryStudio 主题系统 — 水墨 / 宣纸
+// 主题类挂在 <html> 上（theme-ink 素宣墨白 / theme-dark 暗夜水墨），
+// 语义变量 + Element Plus 运行时映射两层结构。
+// ─────────────────────────────────────────────────────────────
+
+:root,
+html.theme-ink {
+  // 墨色阶
+  --ink-main: #241f1b;
+  --ink-sec: #655e56;
+  --ink-muted: #6b645b;
+  --ink-disabled: #8a837a;
+  --ink-accent: #7a3028; // 暗红主强调
+  --ink-accent-soft: rgba(122, 48, 40, 0.12);
+  --ink-positive: #4c6a52;
+  --ink-warning: #9a6b2f;
+
+  // 底色
+  --bg-main: #f2f0ea;
+  --bg-deep: #e9e6de;
+  --popover-bg: #fcfbf7;
+  --divider: #ddd9d1;
+
+  // 面层（玻璃）
+  --surface-1: rgba(251, 250, 246, 0.88);
+  --surface-2: rgba(232, 229, 222, 0.72);
+  --surface-solid: #fbfaf6;
+  --input-bg: #ffffff;
+
+  // UI 构件
+  --ui-glass-bg: rgba(251, 250, 246, 0.88);
+  --ui-border: #ddd9d1;
+  --ui-border-hover: #b8b1a7;
+  --ui-shadow: 0 4px 10px rgba(36, 31, 27, 0.08);
+  --ui-shadow-hover: 0 10px 25px rgba(36, 31, 27, 0.12);
+  --ui-shadow-modal: 0 16px 40px rgba(36, 31, 27, 0.18);
+
+  // 按钮
+  --btn-primary-bg: #7a3028;
+  --btn-primary-hover-bg: #682720;
+  --btn-primary-color: #fffdf8;
+  --btn-plain-bg: rgba(251, 250, 246, 0.7);
+  --btn-plain-hover-bg: rgba(232, 229, 222, 0.9);
+  --btn-plain-border: #d3cec4;
+
+  // 状态
+  --state-danger: #a63f32;
+  --state-success: #4c6a52;
+  --state-warning: #9a6b2f;
+  --state-info: #5f6260;
+
+  // 交互
+  --caret-color: #7a3028;
+  --selection-bg-color: rgba(216, 194, 174, 0.55);
+  --nav-active-bg: linear-gradient(90deg, #f1e3df 0%, transparent 100%);
+  --nav-active-bar-color: #7a3028;
+  --scrollbar-thumb: #b9b2a8;
+
+  // 纸面（编辑器）
+  --editor-paper-bg: rgba(255, 253, 248, 0.94);
+  --editor-rule-color: rgba(122, 48, 40, 0.25);
+  --statusbar-bg: rgba(232, 229, 222, 0.6);
+
+  // 纸纹强度
+  --paper-noise-opacity: 0.045;
+  color-scheme: light;
+}
+
+html.theme-dark {
+  --ink-main: #ece7dc;
+  --ink-sec: #b0a99c;
+  --ink-muted: #a1988a;
+  --ink-disabled: #787165;
+  --ink-accent: #c25b41;
+  --ink-accent-soft: rgba(194, 91, 65, 0.16);
+  --ink-positive: #7fa087;
+  --ink-warning: #c99b5c;
+
+  --bg-main: #171714;
+  --bg-deep: #111110;
+  --popover-bg: #201f1b;
+  --divider: #33312b;
+
+  --surface-1: rgba(34, 33, 29, 0.9);
+  --surface-2: rgba(44, 42, 37, 0.75);
+  --surface-solid: #22211d;
+  --input-bg: #1d1c18;
+
+  --ui-glass-bg: rgba(34, 33, 29, 0.9);
+  --ui-border: #3a3831;
+  --ui-border-hover: #55503f;
+  --ui-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+  --ui-shadow-hover: 0 10px 25px rgba(0, 0, 0, 0.45);
+  --ui-shadow-modal: 0 16px 40px rgba(0, 0, 0, 0.55);
+
+  --btn-primary-bg: #9f472f;
+  --btn-primary-hover-bg: #b3553a;
+  --btn-primary-color: #fff8ef;
+  --btn-plain-bg: rgba(44, 42, 37, 0.7);
+  --btn-plain-hover-bg: rgba(58, 56, 49, 0.95);
+  --btn-plain-border: #4a473d;
+
+  --state-danger: #c25b41;
+  --state-success: #7fa087;
+  --state-warning: #c99b5c;
+  --state-info: #a1988a;
+
+  --caret-color: #c25b41;
+  --selection-bg-color: rgba(122, 48, 40, 0.4);
+  --nav-active-bg: linear-gradient(90deg, rgba(159, 71, 47, 0.22) 0%, transparent 100%);
+  --nav-active-bar-color: #c25b41;
+  --scrollbar-thumb: #4a473d;
+
+  --editor-paper-bg: rgba(29, 28, 24, 0.96);
+  --editor-rule-color: rgba(194, 91, 65, 0.28);
+  --statusbar-bg: rgba(29, 28, 24, 0.7);
+
+  --paper-noise-opacity: 0.03;
+  color-scheme: dark;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Element Plus 运行时映射 — 组件随主题联动
+// ─────────────────────────────────────────────────────────────
+:root:is(.theme-ink, .theme-dark) {
+  --el-color-primary: var(--ink-accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--ink-accent) 70%, var(--surface-solid));
+  --el-color-primary-light-5: color-mix(in srgb, var(--ink-accent) 50%, var(--surface-solid));
+  --el-color-primary-light-7: color-mix(in srgb, var(--ink-accent) 30%, var(--surface-solid));
+  --el-color-primary-light-8: color-mix(in srgb, var(--ink-accent) 20%, var(--surface-solid));
+  --el-color-primary-light-9: color-mix(in srgb, var(--ink-accent) 10%, var(--surface-solid));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--ink-accent) 80%, black);
+
+  --el-color-success: var(--state-success);
+  --el-color-warning: var(--state-warning);
+  --el-color-danger: var(--state-danger);
+  --el-color-error: var(--state-danger);
+  --el-color-info: var(--ink-muted);
+
+  --el-bg-color: var(--popover-bg);
+  --el-bg-color-overlay: var(--popover-bg);
+  --el-bg-color-page: var(--bg-main);
+  --el-text-color-primary: var(--ink-main);
+  --el-text-color-regular: var(--ink-sec);
+  --el-text-color-secondary: var(--ink-muted);
+  --el-text-color-placeholder: var(--ink-disabled);
+  --el-border-color: var(--ui-border);
+  --el-border-color-light: var(--ui-border);
+  --el-border-color-lighter: var(--divider);
+  --el-border-color-hover: var(--ui-border-hover);
+  --el-fill-color: var(--surface-2);
+  --el-fill-color-light: var(--surface-2);
+  --el-fill-color-blank: transparent;
+  --el-mask-color: rgba(23, 23, 20, 0.45);
+  --el-font-family: inherit;
+
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 20px;
+
+  --el-box-shadow-light: var(--ui-shadow);
+  --el-box-shadow: var(--ui-shadow-hover);
+}

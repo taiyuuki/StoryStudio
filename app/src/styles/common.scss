@@ -1,0 +1,348 @@
+// ─────────────────────────────────────────────────────────────
+// 全局样式 — 字体 / reset / 纸纹 / 滚动条 / 通用工具类
+// ─────────────────────────────────────────────────────────────
+
+@use './themes.scss';
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family:
+    'Noto Serif SC',
+    'Source Han Serif SC',
+    'Songti SC',
+    'STSong',
+    'SimSun',
+    serif;
+  font-size: 14px;
+  color: var(--ink-main);
+  background: var(--bg-main);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+// 输入类元素允许选择
+input,
+textarea,
+.cm-content,
+.ProseMirror {
+  user-select: text;
+}
+
+// ── 纸纹背景 ──────────────────────────────────────────────
+// 每个"页面"铺一层 SVG 噪声，营造宣纸质感
+.paper-texture {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--paper-noise-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.ink-bg-container {
+  position: relative;
+  height: 100%;
+  background:
+    radial-gradient(1200px 600px at 20% -10%, color-mix(in srgb, var(--bg-deep) 60%, transparent), transparent 60%),
+    radial-gradient(900px 500px at 100% 100%, color-mix(in srgb, var(--ink-accent) 5%, transparent), transparent 55%),
+    var(--bg-main);
+}
+
+// ── 玻璃卡片 ──────────────────────────────────────────────
+.fusion-card {
+  background: var(--ui-glass-bg);
+  border: 1px solid var(--ui-border);
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+  box-shadow: var(--ui-shadow);
+  transition: box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &:hover {
+    border-color: var(--ui-border-hover);
+  }
+}
+
+// ── 通用按钮 ──────────────────────────────────────────────
+.ink-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--btn-plain-border);
+  background: var(--btn-plain-bg);
+  color: var(--ink-main);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &:hover {
+    background: var(--btn-plain-hover-bg);
+    border-color: var(--ui-border-hover);
+  }
+
+  &:active {
+    transform: translateY(1px);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  &--primary {
+    background: var(--btn-primary-bg);
+    border-color: transparent;
+    color: var(--btn-primary-color);
+
+    &:hover {
+      background: var(--btn-primary-hover-bg);
+    }
+  }
+
+  &--ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--ink-sec);
+
+    &:hover {
+      background: var(--surface-2);
+      color: var(--ink-main);
+    }
+  }
+
+  &--danger:hover {
+    color: var(--state-danger);
+    border-color: var(--state-danger);
+  }
+
+  &--lg {
+    height: 40px;
+    padding: 0 22px;
+    font-size: 14px;
+  }
+
+  &--sm {
+    height: 26px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+}
+
+// 图标按钮（方形）
+.ink-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--ink-sec);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &:hover {
+    background: var(--surface-2);
+    color: var(--ink-main);
+  }
+
+  &.is-active {
+    background: var(--ink-accent-soft);
+    color: var(--ink-accent);
+  }
+}
+
+// ── 文字工具类 ────────────────────────────────────────────
+.text-ink-main { color: var(--ink-main); }
+.text-ink-sec { color: var(--ink-sec); }
+.text-ink-muted { color: var(--ink-muted); }
+.text-accent { color: var(--ink-accent); }
+.text-danger { color: var(--state-danger); }
+.text-success { color: var(--state-success); }
+.text-warning { color: var(--state-warning); }
+
+// ── 建书向导表单（结构化编辑的通用字段样式）───────────────
+.wz-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+
+  > label {
+    font-size: 12px;
+    color: var(--ink-sec);
+    letter-spacing: 0.05em;
+  }
+
+  // 统一控件高度：macOS 原生 select 比文本框矮，显式定高才能对齐
+  input,
+  select {
+    height: 36px;
+    padding: 0 10px;
+  }
+
+  input,
+  select,
+  textarea {
+    width: 100%;
+    border-radius: 7px;
+    border: 1px solid var(--ui-border);
+    background: var(--input-bg);
+    color: var(--ink-main);
+    font-family: inherit;
+    font-size: 13.5px;
+    line-height: 1.6;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+
+    &:focus {
+      border-color: var(--ink-accent);
+      box-shadow: 0 0 0 3px var(--ink-accent-soft);
+    }
+
+    &::placeholder {
+      color: var(--ink-disabled);
+    }
+  }
+
+  textarea {
+    padding: 8px 11px;
+    line-height: 1.8;
+    resize: vertical;
+    min-height: 66px;
+  }
+}
+
+.wz-row {
+  display: flex;
+  gap: 10px;
+
+  > .wz-field {
+    flex: 1;
+  }
+}
+
+// 可增删的条目卡片
+.wz-card {
+  padding: 10px 12px;
+  border: 1px solid var(--divider);
+  border-radius: 9px;
+  background: var(--surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+
+  &:hover .wz-card-del {
+    opacity: 1;
+  }
+}
+
+.wz-card-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-disabled);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s;
+
+  &:hover {
+    background: color-mix(in srgb, var(--state-danger) 12%, transparent);
+    color: var(--state-danger);
+  }
+}
+
+.wz-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px dashed var(--ui-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  align-self: flex-start;
+
+  &:hover {
+    color: var(--ink-accent);
+    border-color: var(--ink-accent);
+    background: var(--ink-accent-soft);
+  }
+}
+
+// ── 滚动条 ────────────────────────────────────────────────
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+}
+
+*:hover::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+// ── Element Plus 微调 ─────────────────────────────────────
+.el-message-box,
+.el-dialog {
+  border-radius: 12px;
+}
+
+.el-popper {
+  max-width: 420px;
+}
+
+// 标题印章字
+.seal-font {
+  font-family: 'Songti SC', 'STSong', 'SimSun', serif;
+  letter-spacing: 0.35em;
+}
+
+// 数字用无衬线，避免中文字体数字过细
+.num {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+}

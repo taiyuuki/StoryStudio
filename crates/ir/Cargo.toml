@@ -1,0 +1,12 @@
+[package]
+name = "story-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+description = "Story IR — Typed Graph Model for Story Studio (RFC-0002)"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
