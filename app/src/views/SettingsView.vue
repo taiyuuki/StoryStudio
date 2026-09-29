@@ -56,7 +56,7 @@ const PRESET_ICONS: Record<string, string> = {
   moonshot: '/provider-icons/kimi.png',
   qwen: '/provider-icons/tongyi.svg',
   openrouter: '/provider-icons/openrouter.ico',
-  siliconflow: '/provider-icons/siliconflow.ico',
+  siliconflow: '/provider-icons/siliconflow.png',
   gemini: '/provider-icons/gemini.svg',
   ollama: '/provider-icons/local.svg',
 }
