@@ -182,6 +182,8 @@ export interface AiProfileDto {
   thinking: string | null
   /** 单次生成请求超时（秒）；null = 默认 300 */
   timeoutSecs: number | null
+  /** OpenAI 接口模式：chat = Chat Completions（兼容最广）| responses = OpenAI 原生（GPT-5/o 系列）；仅 openai 档案有效 */
+  apiMode: 'chat' | 'responses' | null
   /** 私有参数（深合并进请求体，支持 provider 私有字段） */
   extraBody: Record<string, unknown> | null
   /** 自定义请求头（追加，不覆盖认证头） */

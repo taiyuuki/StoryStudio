@@ -32,6 +32,7 @@ function emptyProfile(): AiProfileDto {
     apiUrlFull: false,
     thinking: 'low',
     timeoutSecs: null,
+    apiMode: 'chat',
     extraBody: null,
     extraHeaders: null,
     lastTest: null,
@@ -45,12 +46,39 @@ const CUSTOM_OPTIONS = [
   { value: 'custom:anthropic', label: '自定义 · Anthropic 兼容' },
 ]
 
+/** 预设 → 图标：`/` 开头取 public 静态图，否则按 FontAwesome 类名渲染 */
+const PRESET_ICONS: Record<string, string> = {
+  openai: '/provider-icons/openai.svg',
+  anthropic: '/provider-icons/claude.svg',
+  deepseek: '/provider-icons/deepseek.ico',
+  zhipu: '/provider-icons/bigmodel.png',
+  'zhipu-coding': '/provider-icons/bigmodel.png',
+  moonshot: '/provider-icons/kimi.png',
+  qwen: '/provider-icons/tongyi.svg',
+  openrouter: '/provider-icons/openrouter.ico',
+  siliconflow: '/provider-icons/siliconflow.ico',
+  gemini: '/provider-icons/gemini.svg',
+  ollama: '/provider-icons/local.svg',
+}
+const CUSTOM_ICON = 'fa-sliders'
+
+/** 卡片上只显示主名，去掉括号补充说明（「Kimi（月之暗面）」→「Kimi」） */
+function shortLabel(label: string): string {
+  return label.replace(/（[^）]*）/g, '').trim()
+}
+
 const providerValue = computed(() => {
   if (draft.preset && presets.value.some((p) => p.id === draft.preset)) return draft.preset
   return draft.provider === 'anthropic' ? 'custom:anthropic' : 'custom:openai'
 })
 
 const currentPreset = computed(() => presets.value.find((p) => p.id === draft.preset) ?? null)
+
+/** 卡片网格用的完整选项（预设 + 自定义），带图标 */
+const providerOptions = computed(() => [
+  ...presets.value.map((p) => ({ value: p.id, label: p.name, icon: PRESET_ICONS[p.id] ?? CUSTOM_ICON })),
+  ...CUSTOM_OPTIONS.map((c) => ({ value: c.value, label: c.label, icon: CUSTOM_ICON })),
+])
 
 function applyProvider(value: string) {
   const preset = presets.value.find((p) => p.id === value)
@@ -76,6 +104,8 @@ function applyProvider(value: string) {
     draft.apiUrl = ''
     draft.apiUrlFull = false
   }
+  // Anthropic 档案不使用接口模式；切到 Anthropic 时归位
+  if (draft.provider === 'anthropic') draft.apiMode = 'chat'
 }
 
 // ── 档案选择 / 增删 ────────────────────────────────────
@@ -86,6 +116,8 @@ const extraHeadersText = ref('')
 function edit(p: AiProfileDto) {
   editingId.value = p.id
   Object.assign(draft, JSON.parse(JSON.stringify(p)))
+  // 旧档案没有接口模式字段，统一回退 Chat
+  if (!draft.apiMode) draft.apiMode = 'chat'
   // 切换档案：模型列表、私有参数文本都重置
   fetchedModels.value = []
   extraBodyText.value = p.extraBody ? JSON.stringify(p.extraBody, null, 2) : ''
@@ -410,7 +442,7 @@ function goBack() {
                 <div class="sv-item-main">
                   <span class="sv-item-name">{{ p.name }}</span>
                   <span class="sv-item-sub num">
-                    {{ p.provider === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容' }}
+                    {{ p.provider === 'anthropic' ? 'Anthropic' : p.apiMode === 'responses' ? 'OpenAI · Responses' : 'OpenAI · Chat' }}
                     <template v-if="p.model"> · {{ p.model }}</template>
                   </span>
                   <span v-if="purposesOf(p.id)" class="sv-item-purposes">{{ purposesOf(p.id) }}</span>
@@ -460,19 +492,33 @@ function goBack() {
             </div>
 
             <div class="sv-form">
-              <div class="wz-row">
-                <div class="wz-field">
-                  <label>档案名称</label>
-                  <input v-model="draft.name" placeholder="例：我的 DeepSeek" />
-                </div>
-                <div class="wz-field">
-                  <label>服务商（选预设自动填地址）</label>
-                  <select :value="providerValue" @change="applyProvider(($event.target as HTMLSelectElement).value)">
-                    <option v-for="p in presets" :key="p.id" :value="p.id">{{ p.name }}</option>
-                    <option v-for="c in CUSTOM_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
-                  </select>
+              <div class="wz-field">
+                <label>档案名称</label>
+                <input v-model="draft.name" placeholder="例：我的 DeepSeek" />
+              </div>
+
+              <!-- 服务商：图标 + 名称卡片（选中态高亮，点选即应用预设） -->
+              <div class="wz-field">
+                <label>服务商（选预设自动填地址与模型）</label>
+                <div class="pv-grid">
+                  <button
+                    v-for="opt in providerOptions"
+                    :key="opt.value"
+                    type="button"
+                    class="pv-card"
+                    :class="{ 'is-picked': providerValue === opt.value }"
+                    :title="opt.label"
+                    @click="applyProvider(opt.value)"
+                  >
+                    <span class="pv-icon" :class="{ 'is-img': opt.icon.startsWith('/') }">
+                      <img v-if="opt.icon.startsWith('/')" :src="opt.icon" alt="" />
+                      <i v-else class="fa-solid" :class="opt.icon" />
+                    </span>
+                    <span class="pv-name">{{ shortLabel(opt.label) }}</span>
+                  </button>
                 </div>
               </div>
+
               <p v-if="currentPreset?.note" class="sv-note">
                 <i class="fa-solid fa-circle-info" />
                 {{ currentPreset.note }}
@@ -545,6 +591,30 @@ function goBack() {
                     @update:model-value="draft.apiUrlFull = $event as boolean"
                   />
                 </div>
+              </div>
+
+              <!-- 接口模式：仅 OpenAI 档案（Anthropic 只有一种协议） -->
+              <div v-if="draft.provider === 'openai'" class="wz-field sv-mode-field">
+                <label>接口模式</label>
+                <div class="sv-mode-seg">
+                  <button
+                    type="button"
+                    class="sv-mode-btn"
+                    :class="{ 'is-on': draft.apiMode !== 'responses' }"
+                    @click="draft.apiMode = 'chat'"
+                  >
+                    Chat Completions
+                  </button>
+                  <button
+                    type="button"
+                    class="sv-mode-btn"
+                    :class="{ 'is-on': draft.apiMode === 'responses' }"
+                    @click="draft.apiMode = 'responses'"
+                  >
+                    Responses
+                  </button>
+                </div>
+                <label class="sv-mini">绝大多数兼容服务只支持 Chat；Responses 是 OpenAI 原生接口（GPT-5 / o 系列），请求地址与格式都不同</label>
               </div>
 
               <!-- 私有参数 -->
@@ -911,6 +981,121 @@ function goBack() {
 
   input {
     text-align: center;
+  }
+}
+
+// ── 服务商卡片网格 ────────────────────────────────────────
+.pv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(94px, 1fr));
+  gap: 8px;
+}
+
+.pv-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 11px 6px 9px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--input-bg);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.18s;
+
+  &:hover {
+    border-color: var(--ui-border-hover);
+
+    .pv-name {
+      color: var(--ink-main);
+    }
+  }
+
+  &.is-picked {
+    border-color: var(--ink-accent);
+    background: var(--ink-accent-soft);
+
+    .pv-name {
+      color: var(--ink-main);
+    }
+  }
+}
+
+// 品牌图标垫白底（暗色主题下深色 logo 也能看清）；图标字体用面层底
+.pv-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex-shrink: 0;
+
+  &.is-img {
+    background: #fff;
+    border: 1px solid var(--divider);
+
+    img {
+      width: 18px;
+      height: 18px;
+      object-fit: contain;
+    }
+  }
+
+  &:not(.is-img) {
+    background: var(--surface-2);
+    color: var(--ink-sec);
+    font-size: 13px;
+  }
+}
+
+.pv-name {
+  font-size: 11px;
+  color: var(--ink-sec);
+  text-align: center;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  transition: color 0.18s;
+}
+
+// ── 接口模式分段选择 ─────────────────────────────────────
+.sv-mode-field {  .sv-mode-seg {
+    display: inline-flex;
+    width: fit-content;
+    border: 1px solid var(--ui-border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .sv-mode-btn {
+    border: none;
+    background: transparent;
+    color: var(--ink-muted);
+    font-family: inherit;
+    font-size: 12px;
+    height: 32px;
+    padding: 0 18px;
+    cursor: pointer;
+    transition: all 0.18s;
+
+    & + & {
+      border-left: 1px solid var(--ui-border);
+    }
+
+    &:hover {
+      color: var(--ink-main);
+    }
+
+    &.is-on {
+      background: var(--ink-accent-soft);
+      color: var(--ink-main);
+      font-weight: 600;
+      box-shadow: inset 0 -2px 0 var(--ink-accent);
+    }
   }
 }
 

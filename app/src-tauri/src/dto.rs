@@ -245,6 +245,9 @@ pub struct AiProfileDto {
     pub thinking: Option<String>,
     /// 单次生成请求超时（秒）；None = 默认 300
     pub timeout_secs: Option<u64>,
+    /// OpenAI 接口模式：chat（Chat Completions，兼容最广）| responses（OpenAI 原生，GPT-5/o 系列）
+    /// 仅 provider="openai" 生效；anthropic 恒为 None
+    pub api_mode: Option<String>,
     /// 私有参数（deep merge 进请求体，支持 provider 私有字段）
     pub extra_body: Option<serde_json::Value>,
     /// 自定义请求头（追加，不覆盖认证头）
@@ -297,6 +300,10 @@ impl From<&story_studio_lib::ai::GlobalAiConfig> for AiConfigDto {
                             api_url_full: p.api_url_full,
                             thinking: p.thinking.as_ref().map(thinking_to_str),
                             timeout_secs: p.timeout_secs,
+                            api_mode: p.api_mode.as_ref().map(|m| match m {
+                                story_ai_runtime::ApiMode::Responses => "responses".to_string(),
+                                story_ai_runtime::ApiMode::Chat => "chat".to_string(),
+                            }),
                             extra_body: p.extra_body.clone(),
                             extra_headers: p
                                 .extra_headers
@@ -334,7 +341,15 @@ impl From<&AiProfileDto> for story_studio_lib::ai::ProviderProfile {
                 .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
             thinking: p.thinking.as_deref().and_then(thinking_from_str),
             timeout_secs: p.timeout_secs,
-            api_mode: None,
+            // anthropic provider 不使用该字段（恒 None）
+            api_mode: if p.provider.as_deref() == Some("openai") {
+                match p.api_mode.as_deref() {
+                    Some("responses") => Some(story_ai_runtime::ApiMode::Responses),
+                    _ => Some(story_ai_runtime::ApiMode::Chat),
+                }
+            } else {
+                None
+            },
         }
     }
 }
