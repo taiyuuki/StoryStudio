@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { api, type AgentEventDto, type ChatMetaDto } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
 
 const store = useWorkspaceStore()
+
+// 显式命名：RightDock 的 <KeepAlive include="AiPanel"> 靠它缓存本面板，
+// AI 会话进行中切走再回来不丢状态
+defineOptions({ name: 'AiPanel' })
 
 // ── 消息时间线 ────────────────────────────────────────────
 interface TimelineItem {
@@ -62,58 +66,60 @@ function clearThinking() {
   items.value = items.value.filter((it) => it.type !== 'thinking')
 }
 
-// ── 工具名 → 用户可读标签 ────────────────────────────────
+// ── 工具名 → 用户可读标签（与 tools/agent.rs 注册的工具一一对应） ──
 const toolLabels: Record<string, string> = {
+  // 实体 / 设定
   create_character: '创建角色',
   create_location: '创建地点',
   create_item: '创建道具',
   create_organization: '创建组织',
-  delete_character: '删除角色',
-  delete_location: '删除地点',
-  delete_item: '删除道具',
-  delete_organization: '删除组织',
-  update_character: '更新角色',
-  update_location: '更新地点',
-  update_item: '更新道具',
-  update_organization: '更新组织',
   search_entities: '查找角色设定',
   get_entity_detail: '查看角色档案',
+  update_entity: '更新设定档案',
+  delete_entity: '删除设定',
+  merge_entities: '合并设定',
+  profile_check: '核对档案一致性',
+  list_unresolved_refs: '查看未锚定指代',
+  resolve_unresolved_ref: '处置未锚定指代',
+  // 结构（章 / 场景）
   get_structure: '查看全书结构',
   create_chapter: '新建章节',
+  update_chapter: '调整章节',
+  delete_chapter: '删除章节',
   create_scene: '新建场景',
   update_scene: '调整场景',
+  delete_scene: '删除场景',
   save_scene_summaries: '批量保存摘要',
   repair_project: '修复数据',
-  delete_chapter: '删除章节',
-  delete_scene: '删除场景',
-  write_fragment: '撰写正文',
-  edit_fragment: '修改正文',
-  append_fragment: '续写正文',
+  // 正文（片段）
+  write_fragment_text: '撰写正文',
+  edit_fragment_text: '修改正文',
+  read_fragment_text: '读取正文',
   append_fragment_text: '续写正文',
   rewrite_fragment: '重写正文',
   delete_fragment: '删除正文',
   split_fragment: '拆分段落',
-  split_fragments: '拆分段落',
   merge_fragments: '合并段落',
   move_fragment: '调整段落顺序',
   set_fragment_anchor: '锚定实体',
   remove_fragment_anchor: '移除锚点',
   anchor_fragments: '锚定出场',
-  read_fragment: '读取正文',
-  read_fragment_text: '读取正文',
+  // 事实 / 关系
   add_assertion: '记录事实',
   retire_assertion: '废弃事实',
   delete_assertion: '删除事实',
   query_assertions: '查询事实',
   add_relation: '建立关系',
   remove_relation: '移除关系',
+  // 叙事线索
   create_thread: '新建线索',
-  get_thread: '查看线索',
   get_threads: '查看叙事线索',
-  advance_thread: '推进线索',
+  get_thread_detail: '查看线索详情',
   update_thread: '更新线索',
+  advance_thread: '推进线索',
   delete_thread: '删除线索',
   set_thread_knowledge: '更新线索知情状态',
+  // 查询 / 上下文
   get_story_recap: '回顾故事',
   get_relations: '查看关系网',
   get_character_state: '查看角色近况',
@@ -121,24 +127,25 @@ const toolLabels: Record<string, string> = {
   search_text: '全文检索',
   get_project_stats: '统计作品数据',
   get_scene_context: '查看场景上下文',
+  // 大纲 / 章节脉络 / 世界观
   get_outline: '查看大纲',
-  set_outline: '撰写大纲',
-  update_outline: '更新大纲',
-  get_worldview: '查看世界观设定',
-  set_worldview: '撰写世界观',
-  update_worldview: '更新世界观',
-  get_chapter_outline: '查看章节脉络',
-  set_chapter_outline: '撰写章节脉络',
+  set_outline_item: '撰写大纲',
+  update_outline_item: '更新大纲',
+  delete_outline_item: '删除大纲条目',
   design_chapters: '规划章节',
-  ai_check: '审校文稿',
+  get_chapter_outline: '查看章节脉络',
+  update_chapter_outline: '更新章节脉络',
+  delete_chapter_outline: '删除章节脉络',
+  get_worldview: '查看世界观设定',
+  set_worldview_item: '撰写世界观',
+  update_worldview_item: '更新世界观',
+  delete_worldview_item: '删除世界观条目',
+  // 检测
   ai_check_fragment: '审校段落',
   ai_check_chapter: '整章审校',
   ai_check_scene: '整场景审校',
   compile_check: '一致性检查',
-  profile_check: '核对档案一致性',
-  list_unresolved_refs: '查看未锚定指代',
-  resolve_unresolved_ref: '处置未锚定指代',
-  merge_entities: '合并设定',
+  // 其他
   get_writing_guide: '查阅写作指南',
   ask_user: '向你提问',
 }
@@ -446,6 +453,9 @@ watch(
 )
 
 onMounted(() => void loadSessions())
+
+// 从缓存恢复显示（切走再切回）：停用期间流式内容还在增长，回到底部
+onActivated(() => void scrollToBottom())
 </script>
 
 <template>

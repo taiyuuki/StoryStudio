@@ -86,7 +86,10 @@ const activeMeta = computed(() => {
           </button>
         </div>
         <div class="dock-body">
-          <component :is="activeComp" />
+          <!-- 只缓存妙笔面板：AI 会话进行中切走/关闭再回来，时间线与流式状态不丢 -->
+          <KeepAlive include="AiPanel">
+            <component :is="activeComp" v-if="activeComp" />
+          </KeepAlive>
         </div>
       </div>
     </Transition>
