@@ -133,7 +133,9 @@ impl Tool for GetChapterOutlineTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "get_chapter_outline".into(),
-            description: "读取章节脉络（chapters.toml），按卷分组展示各章的目标/节拍/涉及角色线索/状态。可选按卷或状态过滤。写新章节前调用以获取本章设计意图。".into(),
+            description: "读取章节脉络（chapters.toml），按卷分组展示各章的目标/节拍/涉及角色线索/状态。\
+            章节超过 20 章时默认列未完成章节与最近 15 章已完成；可用 volume_order 按卷、\
+            status 按状态过滤查看指定范围。写新章节前调用以获取本章设计意图。".into(),
             parameters: object_schema(vec![
                 ("volume_order", "string", "可选：只看某卷（1-based 卷序号）", false),
                 ("status", "string", "可选：只看某状态（planned/writing/completed）", false),
@@ -193,15 +195,55 @@ impl Tool for GetChapterOutlineTool {
             result.push('\n');
         }
 
-        // 章节脉络
-        let filtered: Vec<(usize, &ChapterOutlineDef)> = file
-            .chapters
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| volume_filter.is_none_or(|vo| c.volume_order == vo))
-            .filter(|(_, c)| status_filter.as_ref().is_none_or(|s| &c.status == s))
-            .filter(|(_, c)| include_completed || c.status != "completed")
-            .collect();
+        // 长篇智能默认：无任何过滤且章节很多时，只给「未完成 + 最近 15 章已完成」，
+        // 防止几百章的脉络（每章含节拍/角色/钩子）一次性灌满上下文
+        const SMART_THRESHOLD: usize = 20;
+        const RECENT_COMPLETED_SHOWN: usize = 15;
+        const MAX_PENDING_SHOWN: usize = 30;
+
+        let smart_default = volume_filter.is_none()
+            && status_filter.is_none()
+            && include_completed
+            && file.chapters.len() > SMART_THRESHOLD;
+
+        let filtered: Vec<(usize, &ChapterOutlineDef)> = if smart_default {
+            let recent_done: std::collections::HashSet<usize> = file
+                .chapters
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.status == "completed")
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>()
+                .iter()
+                .rev()
+                .take(RECENT_COMPLETED_SHOWN)
+                .copied()
+                .collect();
+            let mut pending_shown = 0usize;
+            file.chapters
+                .iter()
+                .enumerate()
+                .filter(|(i, c)| c.status != "completed" || recent_done.contains(i))
+                .filter(|(_, c)| {
+                    // 未完成章节也可能很多（如刚批量设计完），同样限量
+                    c.status == "completed"
+                        || {
+                            pending_shown += 1;
+                            pending_shown <= MAX_PENDING_SHOWN
+                        }
+                })
+                .map(|(i, c)| (i, c))
+                .collect()
+        } else {
+            file.chapters
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| volume_filter.is_none_or(|vo| c.volume_order == vo))
+                .filter(|(_, c)| status_filter.as_ref().is_none_or(|s| &c.status == s))
+                .filter(|(_, c)| include_completed || c.status != "completed")
+                .map(|(i, c)| (i, c))
+                .collect()
+        };
 
         if filtered.is_empty() {
             let mut note = "没有匹配的章节脉络".to_string();
@@ -281,6 +323,17 @@ impl Tool for GetChapterOutlineTool {
             if let Some(n) = next {
                 result.push_str(&format!("下一章待写: {}\n", n.title));
             }
+        }
+
+        // 智能默认模式的省略说明：引导按卷 / 按状态分批取
+        if smart_default {
+            let omitted = file.chapters.len() - filtered.len();
+            result.push_str(&format!(
+                "\n📖 共 {} 章脉络，本次省略 {} 章（多为早期已完成章节）。\
+                 需要早期内容时用 volume_order 按卷或 status 过滤分批查看，不要一次取全量。\n",
+                file.chapters.len(),
+                omitted,
+            ));
         }
 
         Ok(result.trim_end().to_string())
@@ -621,6 +674,54 @@ mod tests {
         init_project(tmp.path(), "test-novel").unwrap();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         (tmp, ctx)
+    }
+
+    #[test]
+    fn long_outline_defaults_to_smart_scope() {
+        let (_tmp, ctx) = setup();
+        // 25 章：前 18 章已完成、后 7 章待写 → 触发智能默认（阈值 20）
+        let mut toml = String::new();
+        for i in 1..=25 {
+            let status = if i <= 18 { "completed" } else { "planned" };
+            toml.push_str(&format!(
+                "[[chapters]]\ntitle = \"第{i}章\"\nvolume_order = 1\nstatus = \"{status}\"\nsummary = \"梗概{i}\"\n\n"
+            ));
+        }
+        toml.push_str("[[volumes]]\nname = \"第一卷\"\norder = 1\n");
+        std::fs::write(ctx.paths().chapters_toml(), toml).unwrap();
+
+        let tool = GetChapterOutlineTool::new(ctx.clone());
+
+        // 默认：只显示 7 个待写 + 最近 15 个已完成，早期 3 章被省略并给出提示
+        let out = tool.execute(&serde_json::json!({})).unwrap();
+        assert!(out.contains("省略 3 章"), "应省略 18-15=3 章: {out}");
+        assert!(!out.contains("第1章"), "最早的已完成章应被省略: {out}");
+        assert!(out.contains("第4章"), "最近 15 个已完成应保留: {out}");
+        assert!(out.contains("第25章"), "待写章节应全部保留: {out}");
+        assert!(out.contains("不要一次取全量"), "应引导分批查看: {out}");
+
+        // 显式按状态过滤：不受智能默认影响，能拿到全部 completed
+        let out = tool
+            .execute(&serde_json::json!({"status": "completed"}))
+            .unwrap();
+        assert!(out.contains("第1章"), "status 过滤应返回全部已完成: {out}");
+        assert!(!out.contains("省略"), "{out}");
+    }
+
+    #[test]
+    fn short_outline_unchanged() {
+        let (tmp, ctx) = setup();
+        std::fs::write(
+            ctx.paths().chapters_toml(),
+            "[[chapters]]\ntitle = \"第一章\"\nvolume_order = 1\n",
+        )
+        .unwrap();
+        let out = GetChapterOutlineTool::new(ctx.clone())
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(out.contains("第一章"));
+        assert!(!out.contains("省略"), "短脉络不应触发智能默认: {out}");
+        drop(tmp);
     }
 
     #[test]

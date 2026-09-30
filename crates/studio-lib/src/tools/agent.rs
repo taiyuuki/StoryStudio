@@ -261,9 +261,11 @@ fn global_agent_config() -> AgentConfig {
 /// 按妙笔档案声明的「长上下文」调整上下文预算（压缩阈值 = 预算 × 0.7）：
 /// - Some(true)：模型支持 100 万 token → 90 万，用满大窗口、减少过早压缩；
 /// - Some(false)：明确不支持 → 12 万（128K 窗口模型的保守值，避免超出窗口报错）；
-/// - None：未声明 → 默认 50 万（与 AgentConfig::default 一致）。
+/// - None：未声明 → 同样按 12 万保守处理。多数模型窗口是 128K，未声明时
+///   按大窗口（50 万）赌一把会在请求超窗时直接报错；大窗口模型请在档案里
+///   勾选「长上下文」获得 90 万预算。
 fn profile_context_budget() -> usize {
-    const DEFAULT_BUDGET: usize = 500_000;
+    const DEFAULT_BUDGET: usize = 120_000;
     let Ok(config) = crate::ai::read_global_ai_config() else {
         return DEFAULT_BUDGET;
     };
@@ -272,8 +274,7 @@ fn profile_context_budget() -> usize {
         .and_then(|p| p.long_context)
     {
         Some(true) => 900_000,
-        Some(false) => 120_000,
-        None => DEFAULT_BUDGET,
+        Some(false) | None => DEFAULT_BUDGET,
     }
 }
 

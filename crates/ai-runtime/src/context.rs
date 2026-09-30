@@ -5,6 +5,15 @@
 
 use story_ir::{DocNode, StableId, StoryIR};
 
+/// 取文本末尾至多 `max_chars` 个字符（按字符边界截断）
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    text.chars().skip(total - max_chars).collect()
+}
+
 // ============================================================================
 // ContextBuilder
 // ============================================================================
@@ -20,7 +29,11 @@ impl<'a> ContextBuilder<'a> {
     }
 
     /// 获取 Scene 的前 N 个 Fragment 的正文（提供连贯性）
+    ///
+    /// 单段截尾 [`FRAGMENT_TAIL_CHARS`] 字：片段理论上可以很长（如整场粘贴），
+    /// 不截断会把上下文撑得过大。
     pub fn recent_fragments(&self, scene_id: &StableId, count: usize) -> String {
+        const FRAGMENT_TAIL_CHARS: usize = 1200;
         let fragments = self.ir.document.children_of(scene_id);
 
         let start = fragments.len().saturating_sub(count);
@@ -29,6 +42,7 @@ impl<'a> ContextBuilder<'a> {
         recent
             .iter()
             .filter_map(|fid| self.ir.document.get_fragment(fid).map(|f| f.text.clone()))
+            .map(|text| tail_chars(&text, FRAGMENT_TAIL_CHARS))
             .collect::<Vec<_>>()
             .join("\n---\n")
     }
@@ -149,6 +163,43 @@ mod tests {
 
         let recent = builder.recent_fragments(&StableId::new_unchecked("sc_01"), 3);
         assert!(recent.contains("林风推开门"));
+    }
+
+    #[test]
+    fn recent_fragments_caps_each_fragment_tail() {
+        let mut ir = StoryIR::new();
+        ir.document.insert(DocNode::Scene(SceneNode {
+            id: StableId::new_unchecked("sc_01"),
+            chapter: StableId::new_unchecked("ch_01"),
+            title: None,
+            symbol: None,
+            prev: None,
+            next: None,
+            pov: None,
+            story_time_anchor: None,
+            story_time_gap: None,
+            story_time: None,
+            mood: None,
+            function: None,
+            summary: None,
+        }));
+        let long = "长".repeat(3000);
+        ir.document.insert(DocNode::Fragment(FragmentNode {
+            id: StableId::new_unchecked("f_001"),
+            scene: Some(StableId::new_unchecked("sc_01")),
+            prev: None,
+            next: None,
+            text: format!("{long}结尾在这里。"),
+            anchors: vec![],
+        }));
+        ir.document.set_children(
+            StableId::new_unchecked("sc_01"),
+            vec![StableId::new_unchecked("f_001")],
+        );
+
+        let recent = ContextBuilder::new(&ir).recent_fragments(&StableId::new_unchecked("sc_01"), 3);
+        assert!(recent.contains("结尾在这里"), "截尾应保留末尾: {recent:?}");
+        assert!(recent.chars().count() < 1300, "超长片段应被截断: {}", recent.chars().count());
     }
 
     #[test]

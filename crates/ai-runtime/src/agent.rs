@@ -564,7 +564,10 @@ impl Agent {
                     );
 
                     let result = match self.tools.execute(&tc.name, &tc.arguments) {
-                        Some(Ok(output)) => {
+                        Some(Ok(raw_output)) => {
+                            // 全局结果守卫：超长结果截断并引导模型改用过滤参数，
+                            // 防止一次大范围查询（全书结构/全部出场记录等）撑爆上下文
+                            let output = clamp_tool_result(&raw_output);
                             tracing::debug!(
                                 target: "agent::tool",
                                 tool = %tc.name,
@@ -1234,6 +1237,26 @@ fn truncate_chars(s: &str, max_chars: usize) -> &str {
     &s[..end]
 }
 
+/// 单个工具结果的字符上限：超出即截断（保留前半），并附上引导文字
+/// 让模型改用更小范围的调用方式（过滤参数 / 分批获取），而不是再次全量请求。
+/// 长篇小说后期，结构树 / 章节脉络 / 出场记录这类"索引型"工具的结果随书
+/// 线性膨胀，一次几十万字的结果会直接撑爆单次请求——这是所有工具共用的
+/// 最后一道闸。
+const MAX_TOOL_RESULT_CHARS: usize = 20_000;
+
+fn clamp_tool_result(raw: &str) -> String {
+    let total = raw.chars().count();
+    if total <= MAX_TOOL_RESULT_CHARS {
+        return raw.to_string();
+    }
+    format!(
+        "{}\n\n⚠️ 工具结果过长（共 {total} 字），已截断只保留前 {MAX_TOOL_RESULT_CHARS} 字。\
+         这通常意味着查询范围太大：请改用工具的过滤 / 范围参数（如 volume_order、status、\
+         scope、chapter_id 等）缩小到需要的部分，或分批获取；不要原样重复这次调用。",
+        truncate_chars(raw, MAX_TOOL_RESULT_CHARS)
+    )
+}
+
 fn find_safe_drain_boundary(messages: &[Message], desired: usize) -> usize {
     use crate::provider::Role;
     if messages.is_empty() || desired == 0 {
@@ -1451,6 +1474,20 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn clamp_tool_result_truncates_and_guides() {
+        // 不超限：原样返回
+        assert_eq!(clamp_tool_result("短结果"), "短结果");
+
+        // 超限：截断 + 引导改用过滤参数，长度受控
+        let huge = "字".repeat(MAX_TOOL_RESULT_CHARS + 5000);
+        let clamped = clamp_tool_result(&huge);
+        assert!(clamped.contains("已截断"), "应包含截断说明");
+        assert!(clamped.contains("缩小到需要的部分"), "应包含改用过滤参数的引导");
+        assert!(clamped.chars().count() < MAX_TOOL_RESULT_CHARS + 500);
+        assert!(clamped.starts_with(&"字".repeat(100)), "保留原文前段");
+    }
 
     /// Mock provider that returns "no tools needed" text
     #[derive(Debug)]

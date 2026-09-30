@@ -91,12 +91,18 @@ impl Tool for GetStructureTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "get_structure".into(),
-            description: "获取项目文档结构概览：书籍 → 章节 → 场景层次。".into(),
-            parameters: object_schema(vec![]),
+            description: "获取项目文档结构概览：书籍 → 章节两级，每章附场景数。\
+            传 chapter_id 可列出该章的场景明细（各场景标题与片段数）。".into(),
+            parameters: object_schema(vec![(
+                "chapter_id",
+                "string",
+                "可选：只展开该章节的场景列表（如 ch_0001）",
+                false,
+            )]),
         }
     }
 
-    fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
         let doc = &parse_output.ir.document;
 
@@ -111,26 +117,54 @@ impl Tool for GetStructureTool {
             })
             .unwrap_or_else(|| (StableId::new_unchecked("b_0001"), "未命名".to_string()));
 
+        let chapter_ids = doc.children_of(&book_id);
+
+        // 下钻模式：只展开指定章节的场景
+        if let Some(ch_id) = get_str_opt(arguments, "chapter_id") {
+            let sid = StableId::new_unchecked(&ch_id);
+            if doc.get_chapter(&sid).is_none() {
+                return Err(format!("章节 '{ch_id}' 不存在"));
+            }
+            let ch_title = doc
+                .get_chapter(&sid)
+                .map(|c| c.title.clone())
+                .unwrap_or_default();
+            let mut result = format!("章节: {ch_title} ({ch_id})\n");
+            for sc_id in doc.children_of(&sid) {
+                let sc_title = doc
+                    .get_scene(&sc_id)
+                    .and_then(|s| s.title.as_deref())
+                    .unwrap_or("无标题");
+                let frag_count = doc.children_of(&sc_id).len();
+                result.push_str(&format!(
+                    "  场景: {sc_title} ({sc_id}) [{frag_count} 片段]\n"
+                ));
+            }
+            if doc.children_of(&sid).is_empty() {
+                result.push_str("  （无场景）\n");
+            }
+            return Ok(result);
+        }
+
+        // 概览模式：场景折叠为计数（长篇几百章时保持输出有界）
         let mut result = format!("书籍: {book_title} ({book_id})\n");
-        for ch_id in doc.children_of(&book_id) {
+        for ch_id in chapter_ids {
             let ch_title = doc
                 .get_chapter(ch_id)
                 .map(|c| c.title.as_str())
                 .unwrap_or("?");
-            result.push_str(&format!("  章节: {ch_title} ({ch_id})\n"));
-            for sc_id in doc.children_of(ch_id) {
-                let sc_title = doc
-                    .get_scene(sc_id)
-                    .and_then(|s| s.title.as_deref())
-                    .unwrap_or("无标题");
-                let frag_count = doc.children_of(sc_id).len();
-                result.push_str(&format!(
-                    "    场景: {sc_title} ({sc_id}) [{frag_count} 片段]\n"
-                ));
-            }
+            result.push_str(&format!(
+                "  章节: {ch_title} ({ch_id}) [{} 场景]\n",
+                doc.children_of(ch_id).len()
+            ));
         }
-        if doc.children_of(&book_id).is_empty() {
+        if chapter_ids.is_empty() {
             result.push_str("  （无章节）\n");
+        } else {
+            result.push_str(&format!(
+                "\n（共 {} 章；要看某章的场景明细，传 chapter_id 下钻）\n",
+                chapter_ids.len()
+            ));
         }
         Ok(result)
     }
@@ -724,6 +758,39 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_project(tmp.path(), "test-novel").unwrap();
         tmp
+    }
+
+    #[test]
+    fn structure_overview_collapses_scenes_and_drill_down() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "渡口", None).unwrap();
+        crate::mutations::create_fragment(&paths, &sc, "雾没散。").unwrap();
+
+        // 概览：场景折叠为计数，不列场景行
+        let out = GetStructureTool::new(ctx.clone())
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(out.contains("[1 场景]"), "应显示场景计数: {out}");
+        assert!(!out.contains("场景: 渡口"), "概览不应列出场景明细: {out}");
+        assert!(out.contains("chapter_id 下钻"), "{out}");
+
+        // 下钻：展开该章的场景
+        let out = GetStructureTool::new(ctx.clone())
+            .execute(&serde_json::json!({ "chapter_id": ch }))
+            .unwrap();
+        assert!(out.contains("场景: 渡口"), "下钻应列出场景: {out}");
+        assert!(out.contains("[1 片段]"), "{out}");
+
+        // 下钻不存在的章节
+        let err = GetStructureTool::new(ctx)
+            .execute(&serde_json::json!({ "chapter_id": "ch_9999" }))
+            .unwrap_err();
+        assert!(err.contains("不存在"), "{err}");
     }
 
     #[test]

@@ -14,11 +14,11 @@ use std::sync::Arc;
 
 use story_ai_runtime::provider::{AiProvider, GenerateRequest, Message};
 use story_ai_runtime::{Tool, ToolDef};
-use story_project_format::{EntityFile, ProjectPaths};
+use story_project_format::{EntityFile, FragmentFile, ProjectPaths, StructureFile};
 
 use super::{get_str, get_str_opt, object_schema, ToolContext};
 
-/// 名册上限：超出的实体（按 角色→地点→道具→组织 顺序截断）不参与本次锚定
+/// 名册上限：超出的实体不参与本次锚定
 const ROSTER_CAP: usize = 40;
 
 /// 实体名册条目
@@ -29,8 +29,41 @@ struct RosterEntry {
     line: String,
 }
 
-/// 构建候选实体名册（id + 名称/别名/档案要点），按类型排序后截断。
-fn build_roster(paths: &ProjectPaths) -> Vec<RosterEntry> {
+/// 本场景各片段 frontmatter 已锚定的实体 ID 集合。
+///
+/// 名册上限之外的排序依据：场景里已出场/被提及的实体对指代消解最相关，
+/// 优先入册——否则长篇后期角色超过上限时，地点和道具永远排不进名册，
+/// 在锚定里"隐形"。
+fn scene_anchor_entities(paths: &ProjectPaths, fragment_id: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let Some(structure) = std::fs::read_to_string(paths.structure_toml())
+        .ok()
+        .and_then(|c| StructureFile::from_toml_str(&c).ok())
+    else {
+        return out;
+    };
+    let Some((_sid, scene)) = structure
+        .scene
+        .iter()
+        .find(|(_, sc)| sc.fragments.iter().any(|f| f == fragment_id))
+    else {
+        return out;
+    };
+    for fid in &scene.fragments {
+        let Some(path) = paths.file_for_id(fid) else { continue };
+        let Ok(content) = std::fs::read_to_string(path) else { continue };
+        let Ok(file) = FragmentFile::parse(&content) else { continue };
+        for a in file.frontmatter.anchors {
+            out.insert(a.entity);
+        }
+    }
+    out
+}
+
+/// 构建候选实体名册（id + 名称/别名/档案要点）。
+/// `focus` 中的实体优先（场景相关），其余按 角色→地点→道具→组织 排序补足，
+/// 合计截断到 [`ROSTER_CAP`]。
+fn build_roster(paths: &ProjectPaths, focus: &std::collections::HashSet<String>) -> Vec<RosterEntry> {
     let mut entries = Vec::new();
     for dir in [
         paths.characters_dir(),
@@ -77,6 +110,8 @@ fn build_roster(paths: &ProjectPaths) -> Vec<RosterEntry> {
             entries.push(RosterEntry { id, name, line });
         }
     }
+    // 场景相关实体优先（保持原有类型顺序），其余按原顺序补足
+    entries.sort_by_key(|e| !focus.contains(&e.id));
     entries.truncate(ROSTER_CAP);
     entries
 }
@@ -121,7 +156,7 @@ pub fn comprehension_anchor(
         return Ok(AnchorOutcome { anchored: Vec::new(), unresolved: Vec::new() });
     }
 
-    let roster = build_roster(&paths);
+    let roster = build_roster(&paths, &scene_anchor_entities(&paths, fragment_id));
     if roster.is_empty() {
         return Ok(AnchorOutcome { anchored: Vec::new(), unresolved: Vec::new() });
     }
@@ -753,6 +788,48 @@ mod tests {
             "{\"anchors\": [{\"entity\": \"c_9999\", \"role\": \"appears\", \"quote\": \"x\"}]}",
         );
         assert!(roster_outcome.anchored.is_empty());
+    }
+
+    #[test]
+    fn roster_prioritizes_scene_anchored_entities() {
+        // 41 个角色 > 名册上限 40：按类型顺序地点永远排不进去；
+        // 本场景已锚定的地点应优先入册，锚定才能生效
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::create_dir_all(dir.join("entities/locations")).unwrap();
+        for i in 1..=41 {
+            std::fs::write(
+                dir.join(format!("entities/characters/c_{i:04}.toml")),
+                format!("id = \"c_{i:04}\"\ndisplay_name = \"角色{i}\"\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            dir.join("entities/locations/l_0001.toml"),
+            "id = \"l_0001\"\ndisplay_name = \"档案楼\"\n\n[geography]\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "他在档案楼里整理红档。").unwrap();
+        crate::mutations::replace_fragment_anchors(
+            &paths,
+            &fid,
+            &[("l_0001".to_string(), "appears".to_string())],
+        )
+        .unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [{\"entity\": \"l_0001\", \"role\": \"appears\", \"quote\": \"他\"}], \"unresolved\": []}".to_string(),
+        });
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
+        assert_eq!(outcome.anchored.len(), 1, "{:?}", outcome.anchored);
+        assert_eq!(outcome.anchored[0].0, "l_0001");
     }
 
     #[test]

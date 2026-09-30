@@ -127,6 +127,14 @@ impl Tool for GetStoryRecapTool {
             return Ok("尚无章节内容，无法回顾。".to_string());
         }
 
+        // 场景过多（长篇全书回顾）：降级为章节粒度，防止几千行输出撑爆上下文
+        const RECAP_SCENE_COLLAPSE_THRESHOLD: usize = 200;
+        let total_scenes: usize = chapter_ids
+            .iter()
+            .map(|ch| ir.document.scenes_of_chapter(ch).len())
+            .sum();
+        let degraded = total_scenes > RECAP_SCENE_COLLAPSE_THRESHOLD;
+
         // 第一遍：统计需要生成摘要的场景数（cost 控制），并记录明细防误读
         let mut pending_scenes: Vec<String> = Vec::new();
         for ch_id in &chapter_ids {
@@ -180,6 +188,13 @@ impl Tool for GetStoryRecapTool {
             }
             out.push('\n');
         }
+        if degraded {
+            out.push_str(&format!(
+                "  （全书 {} 个场景，超过 {RECAP_SCENE_COLLAPSE_THRESHOLD}，已折叠为章节粒度；\
+                 需要场景细节请用 scope=chapter:<id> 分章回顾）\n",
+                total_scenes,
+            ));
+        }
         out.push('\n');
 
         let provider = self.ctx.provider.as_ref();
@@ -194,6 +209,24 @@ impl Tool for GetStoryRecapTool {
             let scene_ids = ir.document.scenes_of_chapter(ch_id);
             if scene_ids.is_empty() {
                 out.push_str("  （本章无场景）\n\n");
+                continue;
+            }
+
+            // 降级模式：本章一行（场景标题 + 已有摘要首句，整章截断），
+            // 不再做 POV / 实体明细 / 现场生成摘要
+            if degraded {
+                let parts: Vec<String> = scene_ids
+                    .iter()
+                    .filter_map(|sc_id| {
+                        let scene = ir.document.get_scene(sc_id)?;
+                        let title = scene.title.as_deref().unwrap_or("无标题");
+                        Some(match scene.summary.as_ref().filter(|s| !s.trim().is_empty()) {
+                            Some(s) => format!("{title}：{}", format_brief(s.trim(), 40)),
+                            None => title.to_string(),
+                        })
+                    })
+                    .collect();
+                out.push_str(&format!("  {}\n\n", format_brief(&parts.join("；"), 300)));
                 continue;
             }
 
@@ -595,18 +628,61 @@ impl Tool for FindMentionsTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "find_mentions".into(),
-            description: "查找指定实体在所有正文片段中的出场记录（含显式锚点与隐式文本匹配）。\
-            返回出场列表 + 角色类型（appears/mentioned/referenced）+ 所属场景 + 正文摘要。\
+            description: "查找指定实体在正文片段中的出场记录（含显式锚点与隐式文本匹配）。\
+            返回出场列表 + 角色类型（appears/mentioned/referenced）+ 所属场景 + 正文摘要，\
+            最多列出 50 条；可用 scope（chapter:<id> / scene:<id>）限定章节或场景。\
             用于检查角色/道具的历史出场、核对一致性、避免重复描述。"
                 .into(),
-            parameters: object_schema(vec![("entity_id", "string", "实体 ID（如 c_0001）", true)]),
+            parameters: object_schema(vec![
+                ("entity_id", "string", "实体 ID（如 c_0001）", true),
+                (
+                    "scope",
+                    "string",
+                    "范围：省略为全书；'chapter:<id>' 限定章节；'scene:<id>' 限定场景",
+                    false,
+                ),
+            ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let entity_id = get_str(arguments, "entity_id")?;
+        let scope = get_str_opt(arguments, "scope");
         let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
         let sid = StableId::new_unchecked(&entity_id);
+        let document = &parse_output.ir.document;
+
+        // 解析 scope（与 search_text 同语法）
+        let scope_chapter: Option<StableId> = scope
+            .as_deref()
+            .and_then(|s| s.strip_prefix("chapter:"))
+            .map(StableId::new_unchecked);
+        let scope_scene: Option<StableId> = scope
+            .as_deref()
+            .and_then(|s| s.strip_prefix("scene:"))
+            .map(StableId::new_unchecked);
+        if let Some(ch) = &scope_chapter {
+            if document.get_chapter(ch).is_none() {
+                return Err(format!("章节 '{}' 不存在", ch));
+            }
+        }
+        if let Some(sc) = &scope_scene {
+            if document.get_scene(sc).is_none() {
+                return Err(format!("场景 '{}' 不存在", sc));
+            }
+        }
+        let in_scope = |fid: &StableId| -> bool {
+            let owner = document.scene_of_fragment(fid);
+            if let Some(sc) = &scope_scene {
+                return owner.is_some_and(|s| s == sc);
+            }
+            if let Some(ch) = &scope_chapter {
+                return owner
+                    .and_then(|s| document.chapter_of_scene(s))
+                    .is_some_and(|c| c == ch);
+            }
+            true
+        };
 
         // 实体存在性校验
         if parse_output.ir.semantic.get(&sid).is_none() {
@@ -619,7 +695,6 @@ impl Tool for FindMentionsTool {
 
         // 出场记录：优先用 LocationIndex（含显式 anchors + 隐式 mentions）；
         // 若为空则回退扫描 fragment 的显式 anchors（与 get_entity_detail 一致）。
-        let document = &parse_output.ir.document;
         let mut appearances: Vec<(StableId, String)> = parse_output
             .location_index
             .appearances_of(&sid)
@@ -641,6 +716,9 @@ impl Tool for FindMentionsTool {
                 }
             }
         }
+
+        // scope 过滤
+        appearances.retain(|(fid, _)| in_scope(fid));
 
         if appearances.is_empty() {
             return Ok(format!("实体 {entity_id} 无出场记录。"));
@@ -673,7 +751,11 @@ impl Tool for FindMentionsTool {
             total_mentions
         ));
 
-        for (frag_id, role, count) in &grouped {
+        /// 单次列出的出场条数上限（高频实体全书几百条会撑爆上下文）
+        const MENTIONS_MAX_RESULTS: usize = 50;
+        let shown = grouped.len().min(MENTIONS_MAX_RESULTS);
+
+        for (frag_id, role, count) in grouped.iter().take(shown) {
             let scene_title = document
                 .scene_of_fragment(frag_id)
                 .and_then(|sid| document.get_scene(sid))
@@ -687,6 +769,12 @@ impl Tool for FindMentionsTool {
             out.push_str(&format!(
                 "  {}[{}] [{}] 场景「{}」: \"{}\"\n",
                 frag_id, times, role, scene_title, text
+            ));
+        }
+        if grouped.len() > shown {
+            out.push_str(&format!(
+                "  ……共 {} 个片段，已列出前 {shown} 条。请用 scope（chapter:<id> / scene:<id>）缩小范围查看其余出场。\n",
+                grouped.len()
             ));
         }
         Ok(out)
@@ -1245,6 +1333,88 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_project(tmp.path(), "test-novel").unwrap();
         tmp
+    }
+
+    #[test]
+    fn find_mentions_caps_results_and_scope_filters() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        // 2 章 × 30 片段，全部文本匹配"林风"（60 个片段 > 上限 50）
+        let mut structure = String::from("[book]\nid = \"b_root\"\ntitle = \"测试\"\nchapters = [\"ch_01\", \"ch_02\"]\n");
+        for ch in ["ch_01", "ch_02"] {
+            structure.push_str(&format!("\n[chapter.{ch}]\ntitle = \"章{ch}\"\nscenes = [\"sc_{ch}_01\"]\n"));
+        }
+        for ch in ["ch_01", "ch_02"] {
+            let fids: Vec<String> = (1..=30).map(|i| format!("f_{ch}_{i:02}")).collect();
+            structure.push_str(&format!(
+                "\n[scene.sc_{ch}_01]\ntitle = \"场景\"\nfragments = [{}]\n",
+                fids.iter().map(|f| format!("\"{f}\"")).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+        for ch in ["ch_01", "ch_02"] {
+            for i in 1..=30 {
+                std::fs::write(
+                    dir.join(format!("fragments/f_{ch}_{i:02}.md")),
+                    format!("---\nid: f_{ch}_{i:02}\n---\n林风在场景里走动。\n"),
+                )
+                .unwrap();
+            }
+        }
+        std::fs::create_dir_all(dir.join("entities/characters")).ok();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"林风\"\naliases = []\n",
+        )
+        .unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = FindMentionsTool::new(ctx);
+
+        // 默认：截断到 50 条并提示缩小范围
+        let out = tool.execute(&serde_json::json!({"entity_id": "c_0001"})).unwrap();
+        assert!(out.contains("60 个片段"), "{out}");
+        assert!(out.contains("已列出前 50 条"), "{out}");
+        assert!(out.contains("scope"), "{out}");
+
+        // scope 限定章节：该章 30 条全列，无截断提示、无他章条目
+        let out = tool
+            .execute(&serde_json::json!({"entity_id": "c_0001", "scope": "chapter:ch_01"}))
+            .unwrap();
+        assert!(out.contains("30 个片段"), "{out}");
+        assert!(!out.contains("f_ch_02"), "{out}");
+        assert!(!out.contains("已列出前"), "{out}");
+
+        // scope 限定不存在章节：报错
+        let err = tool
+            .execute(&serde_json::json!({"entity_id": "c_0001", "scope": "chapter:ch_99"}))
+            .unwrap_err();
+        assert!(err.contains("不存在"), "{err}");
+    }
+
+    #[test]
+    fn story_recap_degrades_to_chapter_granularity_for_huge_books() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        // 1 章 205 个场景（> 阈值 200）
+        let sids: Vec<String> = (1..=205).map(|i| format!("sc_big_{i:03}")).collect();
+        let mut structure = String::from("[book]\nid = \"b_root\"\ntitle = \"测试\"\nchapters = [\"ch_01\"]\n\n[chapter.ch_01]\ntitle = \"第一章\"\nscenes = [");
+        structure.push_str(&sids.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", "));
+        structure.push_str("]\n");
+        for (i, s) in sids.iter().enumerate() {
+            structure.push_str(&format!("\n[scene.{s}]\ntitle = \"场景{i}\"\nfragments = []\nsummary = \"概要{i}\"\n"));
+        }
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let out = GetStoryRecapTool::new(ctx)
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(out.contains("已折叠为章节粒度"), "{out}");
+        assert!(!out.contains("- 场景"), "降级后不应逐场景列行: {out}");
+        assert!(out.contains("场景0：概要0"), "章节行应含场景概要: {out}");
     }
 
     /// 写入一个带 summary 的场景 + 角色 + fragment fixture
