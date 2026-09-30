@@ -1,196 +1,51 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { api, type ChapterProgressDto, type WorkflowEventDto, type WorkflowIssueDto } from '@/api/backend'
-import { useWorkspaceStore } from '@/stores/workspace'
+import { nextTick, ref, useTemplateRef, watch } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useBookStore } from '@/stores/book'
 import { useUiStore } from '@/stores/ui'
 import OutlineBatchDialog from './OutlineBatchDialog.vue'
 
-const store = useWorkspaceStore()
+// 运行态 / 进度 / 预览都住在 store 里（不随面板销毁而丢）：
+// AI 正在成书时切走面板甚至关闭右栏再打开，一切从 store 原样恢复
+const book = useBookStore()
 const ui = useUiStore()
+const {
+  phase,
+  chapters,
+  targetWords,
+  maxChapters,
+  running,
+  thinking,
+  current,
+  beats,
+  preview,
+  written,
+  check,
+  paused,
+  summary,
+  error,
+  pendingCount,
+  hasChapters,
+  canStart,
+} = storeToRefs(book)
+const { runAction, stopRun, reload } = book
 
-// ── 状态 ──────────────────────────────────────────────────
-const phase = ref<'idle' | 'paused' | 'done'>('idle')
-const chapters = ref<ChapterProgressDto[]>([])
-const targetWords = ref(2000)
-const running = ref(false)
-const thinking = ref(false)
-
-const current = ref<{ index: number; title: string } | null>(null)
-const beats = ref<string[]>([])
-const preview = ref('')
-const written = ref(0)
-const check = ref<{ passed: boolean; issues: WorkflowIssueDto[] } | null>(null)
-const paused = ref<{ index: number; title: string; issues: WorkflowIssueDto[] } | null>(null)
-const summary = ref('')
-const error = ref('')
-
-const previewEl = ref<HTMLElement | null>(null)
-let runSeq = 0
 const outlineOpen = ref(false)
+
+// 停用 / 关闭期间积累的预览流，面板在时自动贴底
+const previewEl = useTemplateRef<HTMLElement>('previewEl')
+watch(preview, () => {
+  void nextTick(() => {
+    const el = previewEl.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+})
 
 function onOutlineSaved() {
   void reload()
 }
 
-// ── 数据加载 ──────────────────────────────────────────────
-async function reload() {
-  if (!store.root) return
-  try {
-    const [state, progress] = await Promise.all([
-      api.workflowStatus(store.root),
-      api.chapterProgress(store.root),
-    ])
-    phase.value = (state.phase as 'idle' | 'paused' | 'done') ?? 'idle'
-    chapters.value = progress
-    if (state.targetWords > 0) targetWords.value = state.targetWords
-    paused.value =
-      state.pausedIndex != null
-        ? {
-            index: state.pausedIndex,
-            title: state.pausedTitle ?? '',
-            issues: state.pausedIssues,
-          }
-        : null
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  }
-}
-
-watch(
-  () => store.root,
-  () => {
-    summary.value = ''
-    error.value = ''
-    void reload()
-  },
-  { immediate: true },
-)
-
-// ── 事件处理 ──────────────────────────────────────────────
-function onEvent(ev: WorkflowEventDto) {
-  switch (ev.kind) {
-    case 'runStarted':
-      thinking.value = true
-      summary.value = ''
-      error.value = ''
-      break
-    case 'chapterStarted':
-      current.value = { index: ev.index ?? 0, title: ev.title ?? '' }
-      beats.value = []
-      preview.value = ''
-      written.value = 0
-      check.value = null
-      thinking.value = true
-      syncChapter(ev.index ?? 0, 'writing')
-      break
-    case 'beats':
-      beats.value = ev.beats
-      break
-    case 'delta': {
-      thinking.value = false
-      preview.value = (preview.value + (ev.text ?? '')).slice(-2400)
-      written.value += (ev.text ?? '').replace(/\s/g, '').length
-      void nextTick(() => {
-        const el = previewEl.value
-        if (el) el.scrollTop = el.scrollHeight
-      })
-      break
-    }
-    case 'committed':
-      written.value = ev.words ?? written.value
-      break
-    case 'qualityCheck':
-      check.value = { passed: ev.passed ?? true, issues: ev.issues }
-      break
-    case 'chapterCompleted':
-      syncChapter(ev.index ?? 0, 'completed')
-      break
-    case 'paused':
-      thinking.value = false
-      paused.value = {
-        index: ev.index ?? 0,
-        title: ev.title ?? '',
-        issues: ev.issues,
-      }
-      phase.value = 'paused'
-      break
-    case 'cancelled':
-      break
-    case 'finished':
-      finish(ev.completedThisRun ?? 0, ev.remaining ?? 0, ev.text ?? '')
-      break
-  }
-}
-
-function syncChapter(index: number, status: string) {
-  const ch = chapters.value.find((c) => c.index === index)
-  if (ch) ch.status = status
-}
-
-const OUTCOME_TEXT: Record<string, (done: number, left: number) => string> = {
-  done: (done) => `全部章节已写成${done > 0 ? `（本次 ${done} 章）` : ''}。`,
-  paused: (done) => `有一章需要你过目${done > 0 ? `（此前已完成 ${done} 章）` : ''}。`,
-  cancelled: (done, left) =>
-    `已停下，进度都保住了${done > 0 ? `，本次写成 ${done} 章` : ''}${left > 0 ? `，还剩 ${left} 章待写` : ''}。`,
-  batch_limit: (done, left) => `本批 ${done} 章已写完，还剩 ${left} 章下次继续。`,
-}
-
-function finish(done: number, remaining: number, outcome: string) {
-  if (!running.value) return // finished 事件与命令返回双通路，只结算一次
-  running.value = false
-  thinking.value = false
-  current.value = null
-  summary.value = (OUTCOME_TEXT[outcome] ?? OUTCOME_TEXT.done)(done, remaining)
-  if (outcome === 'done') phase.value = 'done'
-  void store.refresh()
-  void reload()
-}
-
-// ── 动作 ──────────────────────────────────────────────────
-async function runAction(action: 'run' | 'approve' | 'rewrite' | 'skip') {
-  if (!store.root || running.value) return
-  running.value = true
-  error.value = ''
-  paused.value = null
-  summary.value = ''
-  if (action === 'run') thinking.value = true
-  const seq = ++runSeq
-
-  try {
-    const report = await api.workflowRun(
-      store.root,
-      action,
-      action === 'run' ? targetWords.value : null,
-      null,
-      onEvent,
-    )
-    if (seq !== runSeq) return
-    finish(report.completedThisRun, report.remaining, report.outcome)
-  } catch (err) {
-    if (seq !== runSeq) return
-    running.value = false
-    thinking.value = false
-    error.value = err instanceof Error ? err.message : String(err)
-    void reload()
-  }
-}
-
-async function stopRun() {
-  await api.workflowCancel()
-}
-
-onBeforeUnmount(() => {
-  // 面板关掉不停流水线；切项目时取消，避免写到旧目录
-  if (running.value && store.root) void api.workflowCancel()
-})
-
 // ── 展示 ──────────────────────────────────────────────────
-const pendingCount = computed(
-  () => chapters.value.filter((c) => c.status !== 'completed').length,
-)
-const hasChapters = computed(() => chapters.value.length > 0)
-const canStart = computed(() => !running.value && hasChapters.value && phase.value !== 'paused')
-
 const STATUS_TEXT: Record<string, string> = {
   planned: '待写',
   writing: '写作中',
@@ -300,10 +155,26 @@ const ISSUE_ICON: Record<string, string> = {
         <i class="fa-regular fa-circle-check" />
         全部章节已完成
       </div>
-      <label class="bk-field">
-        <span>每章目标字数</span>
-        <input v-model.number="targetWords" type="number" min="500" step="100" :disabled="running" />
-      </label>
+      <div class="bk-fields">
+        <label class="bk-field">
+          <span>每章目标字数</span>
+          <input v-model.number="targetWords" type="number" min="500" step="100" :disabled="running" />
+        </label>
+        <label
+          class="bk-field"
+          title="限制 AI 单次连续成书的章数，写完自动停下等你检视；0 或留空 = 不限，直到全部完成"
+        >
+          <span>本次最多写几章</span>
+          <input
+            v-model.number="maxChapters"
+            type="number"
+            min="0"
+            step="1"
+            placeholder="不限"
+            :disabled="running"
+          />
+        </label>
+      </div>
       <button class="ink-btn ink-btn--primary bk-start" @click="runAction('run')">
         <i class="fa-solid fa-play" />
         {{ pendingCount === chapters.length ? '开始成书' : '继续成书' }}
@@ -608,7 +479,7 @@ const ISSUE_ICON: Record<string, string> = {
 .bk-setup {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .bk-done-banner {
@@ -618,21 +489,32 @@ const ISSUE_ICON: Record<string, string> = {
   color: var(--ink-accent);
 }
 
+// 两个设置字段并排等宽：标签在上、输入框同宽对齐
+.bk-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
 .bk-field {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12.5px;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
   color: var(--ink-muted);
 
   input {
-    width: 90px;
-    padding: 5px 8px;
+    width: 100%;
+    padding: 6px 9px;
     border: 1px solid var(--divider);
     border-radius: 8px;
     background: var(--surface-1);
     color: var(--ink-main);
     font-size: 12.5px;
+
+    &::placeholder {
+      color: var(--ink-disabled);
+    }
 
     &:focus {
       outline: none;
@@ -642,6 +524,7 @@ const ISSUE_ICON: Record<string, string> = {
 }
 
 .bk-start {
+  width: 100%;
   justify-content: center;
 }
 

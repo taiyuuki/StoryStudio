@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
 import { computed } from 'vue'
+import { useBookStore } from '@/stores/book'
 import { useMiaoStore } from '@/stores/miao'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -18,6 +19,13 @@ import ChaptersPanel from './ChaptersPanel.vue'
 const ui = useUiStore()
 const store = useWorkspaceStore()
 const miao = useMiaoStore()
+const book = useBookStore()
+
+/** 会话/流水线进行中（含面板关闭时）：对应轨道图标呼吸提示后台还在跑 */
+const busyPanels = computed<Record<string, boolean>>(() => ({
+  miao: miao.running,
+  book: book.running,
+}))
 
 const panels = computed(
   () =>
@@ -69,7 +77,7 @@ const activeMeta = computed(() => {
         v-for="[key, p] in panels"
         :key="key"
         class="rail-btn"
-        :class="{ 'is-active': ui.activePanel === key, 'is-busy': key === 'miao' && miao.running }"
+        :class="{ 'is-active': ui.activePanel === key, 'is-busy': busyPanels[key] }"
         :title="p.label"
         @click="ui.togglePanel(key as any)"
       >
@@ -143,7 +151,7 @@ const activeMeta = computed(() => {
     color: var(--ink-accent);
   }
 
-  // 妙笔会话进行中（含面板关闭时）：图标呼吸提示后台还在跑
+  // 会话 / 流水线进行中（含面板关闭时）：图标呼吸提示后台还在跑
   &.is-busy:not(.is-active) {
     color: var(--ink-accent);
 
