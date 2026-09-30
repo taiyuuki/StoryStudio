@@ -1,35 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onMounted, ref, useTemplateRef, watch } from 'vue'
-import { api, type AgentEventDto, type ChatMetaDto } from '@/api/backend'
-import { useWorkspaceStore } from '@/stores/workspace'
+import { nextTick, onActivated, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { storeToRefs } from 'pinia'
+import type { ChatMetaDto } from '@/api/backend'
+import { useMiaoStore } from '@/stores/miao'
 
-const store = useWorkspaceStore()
-
-// 显式命名：RightDock 的 <KeepAlive include="AiPanel"> 靠它缓存本面板，
-// AI 会话进行中切走再回来不丢状态
+// 显式命名：RightDock 的 <KeepAlive include="AiPanel"> 靠它缓存本面板
 defineOptions({ name: 'AiPanel' })
 
-// ── 消息时间线 ────────────────────────────────────────────
-interface TimelineItem {
-  key: number
-  type: 'user' | 'ai' | 'reasoning' | 'tool' | 'ask' | 'error' | 'status' | 'thinking'
-  text: string
-  streaming?: boolean
-  tool?: string
-  toolResult?: string
-  /** 工具未返回结果即中断（错误/取消），图标显示为失败 */
-  toolFailed?: boolean
-  toolOpen?: boolean
-  options?: string[]
-  answered?: boolean
-}
+// 时间线 / 运行态 / 会话绑定都住在 store 里（不随面板销毁而丢）：
+// AI 会话进行中切走面板甚至关闭右栏再打开，按钮态、时间线与会话绑定
+// 原样恢复，不会在旧会话还在后台跑时又发起新会话
+const miao = useMiaoStore()
+const { items, running, input, sessionId, sessions, answerMode } = storeToRefs(miao)
+const { send, pickOption, stop, removeSession, loadSessions } = miao
 
-const items = ref<TimelineItem[]>([])
-const running = ref(false)
-const input = ref('')
-let seq = 0
-/** 当前待回答的提问 key */
-let pendingAskKey: number | null = null
+const historyOpen = ref(false)
 
 const listRef = useTemplateRef<HTMLElement>('list')
 
@@ -39,32 +24,11 @@ async function scrollToBottom() {
   if (el) el.scrollTop = el.scrollHeight
 }
 
-function push(item: Omit<TimelineItem, 'key'>): TimelineItem {
-  // 新项插入即终结上一段 AI 回复的流式状态（光标消失）
-  const prev = items.value[items.value.length - 1]
-  if (prev?.type === 'ai') prev.streaming = false
-  const full = { key: ++seq, ...item }
-  items.value.push(full)
-  void scrollToBottom()
-  return full
-}
-
-function replaceStatus(text: string) {
-  // 瞬态状态（进度 / 重试）只保留最后一条
-  const last = items.value[items.value.length - 1]
-  if (last?.type === 'status') last.text = text
-  else push({ type: 'status', text })
-}
-
-// ── 思考状态 ──────────────────────────────────────────────
-function showThinking() {
-  clearThinking()
-  push({ type: 'thinking', text: '妙笔正在思考' })
-}
-
-function clearThinking() {
-  items.value = items.value.filter((it) => it.type !== 'thinking')
-}
+// 流式内容增长（含面板停用期间积累的）自动贴底
+watch(
+  () => items.value[items.value.length - 1]?.text,
+  () => void scrollToBottom(),
+)
 
 // ── 工具名 → 用户可读标签（与 tools/agent.rs 注册的工具一一对应） ──
 const toolLabels: Record<string, string> = {
@@ -155,302 +119,22 @@ function toolLabel(name: string | null | undefined): string {
   return toolLabels[name] ?? name.replace(/_/g, ' ')
 }
 
-// ── 妙笔改动 → 刷新工作台 ────────────────────────────────
-const MUTATION_PREFIXES = [
-  'create_', 'write_', 'edit_', 'append_', 'rewrite_', 'delete_', 'update_',
-  'add_', 'remove_', 'set_', 'move_', 'merge_', 'split_', 'advance_',
-  'insert_', 'design_',
-]
-const FRAGMENT_TOOLS = new Set([
-  'write_fragment', 'edit_fragment', 'append_fragment', 'rewrite_fragment',
-  'delete_fragment', 'split_fragment', 'split_fragments', 'merge_fragments',
-  'move_fragment',
-])
-
-let refreshTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleWorkbenchRefresh(reloadScene: boolean) {
-  if (refreshTimer) clearTimeout(refreshTimer)
-  refreshTimer = setTimeout(() => {
-    refreshTimer = null
-    void store.refresh()
-    if (reloadScene && store.scene) void store.selectScene(store.scene.id)
-  }, 600)
-}
-
-// ── 会话历史 ──────────────────────────────────────────────
-const sessions = ref<ChatMetaDto[]>([])
-const historyOpen = ref(false)
-/** 后端是否保有本会话记忆（进程内）；从磁盘恢复的会话为 false，首条消息需带上下文重建 */
-let backendAlive = false
-let sessionId = ''
-let sessionTitle = ''
-
-let persistTimer: ReturnType<typeof setTimeout> | null = null
-function persist() {
-  if (!sessionId || !store.root) return
-  if (persistTimer) clearTimeout(persistTimer)
-  persistTimer = setTimeout(() => {
-    persistTimer = null
-    if (!sessionId || !store.root) return
-    const persistable = items.value
-      .filter((it) => it.type !== 'thinking' && it.type !== 'status')
-      .map((it) => ({
-        type: it.type,
-        text: it.text,
-        tool: it.tool,
-        toolResult: it.toolResult,
-        options: it.options,
-        answered: it.answered,
-      }))
-    void api.chatSave(store.root, {
-      id: sessionId,
-      title: sessionTitle,
-      updatedAt: Date.now(),
-      items: persistable as unknown as Record<string, unknown>[],
-    })
-    void loadSessions()
-  }, 800)
-}
-
-async function loadSessions() {
-  if (!store.root) {
-    sessions.value = []
-    return
-  }
-  try {
-    sessions.value = await api.chatList(store.root)
-  } catch {
-    sessions.value = []
-  }
-}
-
-function ensureSession(firstMessage: string) {
-  if (sessionId) return
-  sessionId = crypto.randomUUID()
-  sessionTitle = firstMessage.trim().slice(0, 24) || '新的话题'
-}
-
-/** 恢复的会话首条消息：把之前的对话记录带给后端重建上下文 */
-function reseedMessage(message: string): string {
-  const turns = items.value
-    .filter((it) => it.type === 'user' || it.type === 'ai')
-    .map((it) => (it.type === 'user' ? `用户：${it.text}` : `妙笔：${it.text}`))
-  const history = turns.join('\n').slice(-6000)
-  return [
-    '（会话恢复）以下是我们之前的对话记录，请据此恢复上下文，不要重复已完成的操作：',
-    '……' + history,
-    `（用户继续说）${message}`,
-  ].join('\n')
-}
-
-function resetConversation() {
-  if (sessionId) void api.agentDropSession(sessionId)
-  sessionId = ''
-  sessionTitle = ''
-  backendAlive = false
-  items.value = []
-  pendingAskKey = null
-  running.value = false
-}
-
-async function resume(meta: ChatMetaDto) {
-  if (!store.root) return
-  if (running.value) return
-  persist()
-  try {
-    const chat = await api.chatLoad(store.root, meta.id)
-    items.value = (chat.items as unknown as Omit<TimelineItem, 'key'>[]).map((it) => ({
-      ...it,
-      key: ++seq,
-      streaming: false,
-      toolOpen: false,
-    }))
-    sessionId = chat.id
-    sessionTitle = chat.title
-    backendAlive = false
-    historyOpen.value = false
-    void scrollToBottom()
-  } catch (err) {
-    items.value = [{ key: ++seq, type: 'error', text: (err as Error).message }]
-  }
-}
-
-async function removeSession(meta: ChatMetaDto) {
-  await api.chatDelete(store.root!, meta.id)
-  if (meta.id === sessionId) resetConversation()
-  await loadSessions()
-}
-
-function newChat() {
-  if (running.value) return
-  persist()
-  resetConversation()
-  historyOpen.value = false
-}
-
+// ── 会话历史（视图部分；数据与流程在 store） ──────────────
 function fmtSessionTime(ts: number): string {
   const d = new Date(ts)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getMonth() + 1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-// ── 事件消费 ──────────────────────────────────────────────
-function onEvent(ev: AgentEventDto) {
-  const last = items.value[items.value.length - 1]
-
-  switch (ev.kind) {
-    case 'ai': {
-      // 增量：续接到最后一条流式回复。
-      // 回合结束时 agent 会再推送一次完整全文（记入轨迹用），
-      // 表现为"以已累积内容为前缀的更长文本"——此时替换而非追加。
-      if (last?.type === 'ai' && last.streaming) {
-        if (ev.text.length >= last.text.length && ev.text.startsWith(last.text)) {
-          last.text = ev.text
-        } else {
-          last.text += ev.text
-        }
-      } else {
-        push({ type: 'ai', text: ev.text, streaming: true })
-      }
-      clearThinking()
-      void scrollToBottom()
-      persist()
-      break
-    }
-    case 'toolCall': {
-      push({ type: 'tool', text: '', tool: ev.tool ?? undefined })
-      persist()
-      break
-    }
-    case 'toolResult': {
-      // 回填最近一个未完成的同名工具项
-      for (let i = items.value.length - 1; i >= 0; i--) {
-        const it = items.value[i]
-        if (it.type === 'tool' && it.tool === ev.tool && it.toolResult === undefined) {
-          it.toolResult = ev.detail ?? ''
-          break
-        }
-      }
-      // 改动类工具完成 → 刷新工作台（结构树/字数/编辑器）
-      const tool = ev.tool ?? ''
-      if (MUTATION_PREFIXES.some((p) => tool.startsWith(p))) {
-        scheduleWorkbenchRefresh(FRAGMENT_TOOLS.has(tool))
-      }
-      // 工具执行完 → 下一轮思考
-      showThinking()
-      persist()
-      break
-    }
-    case 'reasoning': {
-      if (last?.type === 'reasoning') last.text += ev.text
-      else push({ type: 'reasoning', text: ev.text })
-      break
-    }
-    case 'ask': {
-      clearThinking()
-      const item = push({ type: 'ask', text: ev.text, options: ev.options ?? [], answered: false })
-      pendingAskKey = item.key
-      persist()
-      break
-    }
-    case 'planProgress':
-      replaceStatus(
-        ev.extra ? `正在执行 ${(ev.extra as { current?: number; total?: number }).current}/${(ev.extra as { current?: number; total?: number }).total}：${ev.text}` : ev.text,
-      )
-      break
-    case 'retrying':
-      replaceStatus(`网络波动，正在重试（第 ${(ev.extra as { attempt?: number })?.attempt ?? '?'} 次）…`)
-      break
-    case 'compacted':
-      replaceStatus('对话较长，已自动整理上下文')
-      break
-    case 'error':
-      clearThinking()
-      sweepFailedTools()
-      push({ type: 'error', text: ev.text })
-      persist()
-      break
-  }
+async function resume(meta: ChatMetaDto) {
+  historyOpen.value = false
+  await miao.resume(meta)
 }
 
-/** 本轮中断（错误/取消）时，把仍处于"进行中"的工具项收尾为失败态，
- * 避免转圈图标永久停留 */
-function sweepFailedTools() {
-  for (const it of items.value) {
-    if (it.type === 'tool' && it.toolResult === undefined) {
-      it.toolResult = '（未返回结果——本轮已中断）'
-      it.toolFailed = true
-    }
-  }
+function newChat() {
+  historyOpen.value = false
+  miao.newChat()
 }
-
-// ── 发送 ──────────────────────────────────────────────────
-const answerMode = computed(() => pendingAskKey !== null)
-
-async function send() {
-  const text = input.value.trim()
-  if (!text || running.value || !store.root) return
-  input.value = ''
-
-  if (answerMode.value) {
-    // 回答 Agent 的提问
-    const askItem = items.value.find((it) => it.key === pendingAskKey)
-    if (askItem) askItem.answered = true
-    pendingAskKey = null
-    push({ type: 'user', text })
-    showThinking()
-    await api.agentRespond(sessionId, text)
-    persist()
-    return
-  }
-
-  ensureSession(text)
-  push({ type: 'user', text })
-  showThinking()
-
-  // 恢复的会话：后端无记忆，首条消息携带历史记录重建上下文
-  const outbound = backendAlive ? text : reseedMessage(text)
-  backendAlive = true
-  persist()
-
-  running.value = true
-  try {
-    await api.agentChat(store.root, sessionId, outbound, onEvent)
-  } catch (err) {
-    push({ type: 'error', text: (err as Error).message })
-  } finally {
-    running.value = false
-    clearThinking()
-    sweepFailedTools()
-    const last = items.value[items.value.length - 1]
-    if (last?.type === 'ai') last.streaming = false
-    pendingAskKey = null
-    persist()
-  }
-}
-
-async function pickOption(option: string) {
-  if (!answerMode.value || running.value) return
-  input.value = option
-  await send()
-}
-
-async function stop() {
-  if (!sessionId) return
-  pendingAskKey = null
-  await api.agentCancel(sessionId)
-}
-
-// 换项目 → 清空（会话历史随项目存取）
-watch(
-  () => store.root,
-  () => {
-    if (sessionId) void api.agentDropSession(sessionId)
-    resetConversation()
-    historyOpen.value = false
-    void loadSessions()
-  },
-)
 
 onMounted(() => void loadSessions())
 

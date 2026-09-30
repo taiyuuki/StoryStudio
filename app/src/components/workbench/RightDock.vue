@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
 import { computed } from 'vue'
+import { useMiaoStore } from '@/stores/miao'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import AiPanel from './AiPanel.vue'
@@ -16,6 +17,7 @@ import ChaptersPanel from './ChaptersPanel.vue'
 
 const ui = useUiStore()
 const store = useWorkspaceStore()
+const miao = useMiaoStore()
 
 const panels = computed(
   () =>
@@ -67,7 +69,7 @@ const activeMeta = computed(() => {
         v-for="[key, p] in panels"
         :key="key"
         class="rail-btn"
-        :class="{ 'is-active': ui.activePanel === key }"
+        :class="{ 'is-active': ui.activePanel === key, 'is-busy': key === 'miao' && miao.running }"
         :title="p.label"
         @click="ui.togglePanel(key as any)"
       >
@@ -139,6 +141,21 @@ const activeMeta = computed(() => {
   &.is-active {
     background: var(--ink-accent-soft);
     color: var(--ink-accent);
+  }
+
+  // 妙笔会话进行中（含面板关闭时）：图标呼吸提示后台还在跑
+  &.is-busy:not(.is-active) {
+    color: var(--ink-accent);
+
+    i {
+      animation: rail-busy 1.2s ease-in-out infinite;
+    }
+  }
+}
+
+@keyframes rail-busy {
+  50% {
+    opacity: 0.4;
   }
 }
 
