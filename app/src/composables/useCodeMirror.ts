@@ -4,6 +4,7 @@ import { EditorView, keymap } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
+import { aiGhostCompletion, type AiGhostCompletionConfig } from './aiGhostCompletion'
 
 /** 水墨纸面主题 — 衬线、大行距、段距、暖纸底 */
 const inkTheme = EditorView.theme({
@@ -46,6 +47,8 @@ interface UseCodeMirrorOptions {
   onChange: (text: string) => void
   placeholder?: string
   readonly?: boolean
+  /** AI 幽灵补全（不传则不启用该能力） */
+  aiComplete?: AiGhostCompletionConfig
 }
 
 export function useCodeMirror(options: UseCodeMirrorOptions) {
@@ -66,6 +69,9 @@ export function useCodeMirror(options: UseCodeMirrorOptions) {
       doc: options.doc.value,
       extensions: [
         history(),
+        // 幽灵补全键位（Tab 采纳 / Esc 关闭）先于默认键位生效；
+        // 未命中时照常落入缩进等默认行为
+        ...(options.aiComplete ? [aiGhostCompletion(options.aiComplete)] : []),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         markdown(),
         inkTheme,

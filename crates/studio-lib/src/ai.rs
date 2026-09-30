@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use story_ai_runtime::{
-    AiProvider, AnthropicProvider, ApiMode, AssertionDraft, ContextBuilder, ExtractAssertionsTask,
-    FragmentDraft, GenerateRequest, Message, OpenAiProvider, StreamEvent, Task, ThinkingConfig,
-    WriteFragmentTask,
+    AiError, AiProvider, AnthropicProvider, ApiMode, AssertionDraft, CancelToken, ContextBuilder,
+    ExtractAssertionsTask, FragmentDraft, GenerateRequest, Message, OpenAiProvider, StreamEvent,
+    Task, ThinkingConfig, WriteFragmentTask, stream_generate_with_cancel,
 };
-use story_ir::{SemanticNode, StableId};
+use story_ir::{DocNode, SemanticNode, StableId};
 use story_parser::parse_project;
 use story_project_format::ProjectPaths;
 
@@ -37,6 +37,15 @@ pub struct ExtractResult {
     pub tokens_used: usize,
 }
 
+/// 行内补全（幽灵补全）结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompleteResult {
+    /// 补全文本（从光标处续写）
+    pub text: String,
+    /// token 消耗
+    pub tokens_used: usize,
+}
+
 /// 按用途分配档案的场景常量（桌面端 / CLI 共用）
 pub mod purpose {
     /// 场景续写（write_fragment_streaming）
@@ -51,9 +60,11 @@ pub mod purpose {
     pub const CHECK: &str = "check";
     /// AI 建书（create_ai_book：灵感 → 书名/设定/大纲）
     pub const DESIGN: &str = "design";
+    /// 行内补全（complete_fragment_streaming，编辑器幽灵补全）
+    pub const COMPLETE: &str = "complete";
 
     /// 全部合法用途（校验 / UI 列表用）
-    pub const ALL: &[&str] = &[WRITE, AGENT, WORKFLOW, EXTRACT, CHECK, DESIGN];
+    pub const ALL: &[&str] = &[WRITE, AGENT, WORKFLOW, EXTRACT, CHECK, DESIGN, COMPLETE];
 }
 
 // ============================================================================
@@ -388,6 +399,177 @@ pub fn write_fragment_streaming(
         drafts,
         tokens_used,
     })
+}
+
+// ============================================================================
+// 行内补全（幽灵补全）
+// ============================================================================
+
+/// 取文本末尾至多 `max_chars` 个字符（按字符边界截断，供上下文截短用）
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    text.chars().skip(total - max_chars).collect()
+}
+
+/// 组装行内补全的 system / user 提示词（纯函数，便于测试）
+fn build_complete_prompt(
+    pov: Option<&str>,
+    scene_title: Option<&str>,
+    prev_fragments: &str,
+    before: &str,
+    after: Option<&str>,
+) -> (String, String) {
+    let mut system = String::from(crate::prompts::COMPLETE_FRAGMENT);
+    if let Some(pov) = pov {
+        system.push_str(&format!("\n本场景视角：{pov}。"));
+    }
+    if let Some(title) = scene_title {
+        system.push_str(&format!("\n场景：{title}。"));
+    }
+
+    let mut user = String::new();
+    if !prev_fragments.is_empty() {
+        user.push_str(&format!("【本场景前文】\n{prev_fragments}\n\n"));
+    }
+    user.push_str(&format!("【光标前正文】\n{before}\n\n"));
+    if let Some(after) = after.filter(|s| !s.trim().is_empty()) {
+        user.push_str(&format!(
+            "【光标后正文】（你补的文字要与它衔接）\n{}\n\n",
+            tail_chars(after, 300)
+        ));
+    }
+    user.push_str("【任务】\n只输出从光标处续写下去的文字。");
+
+    (system, user)
+}
+
+/// AI 行内补全（编辑器幽灵补全，流式）
+///
+/// 与 [`write_fragment_streaming`] 的区别：不落盘、不拆段 —— 只把「从光标
+/// 处续写的下文」流式推给前端渲染成幽灵文字，作者 Tab 采纳后才进入正常
+/// 编辑 / 保存链路。因此：
+///
+/// - `before` / `after` 用编辑器实况文本（当前片段可能还没保存，磁盘上的
+///   片段文本不作数）；本片段之前的片段仍从项目解析取（久未变动，够稳）。
+/// - `provider` 与 `on_delta` 以 Arc 传入：内部走
+///   [`stream_generate_with_cancel`] 的 'static 生成线程。
+/// - `cancel_token` 触发时立即返回（取消是正常操作，不记失败台账）。
+#[allow(clippy::too_many_arguments)]
+pub fn complete_fragment_streaming(
+    dir: &Path,
+    fragment_id: &str,
+    before: &str,
+    after: Option<&str>,
+    provider: std::sync::Arc<dyn AiProvider>,
+    cancel_token: &CancelToken,
+    on_delta: &std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<CompleteResult, StudioError> {
+    // 1. 解析项目，定位片段所属场景
+    let parse_output = parse_project(dir).map_err(StudioError::from)?;
+    let fid = StableId::new_unchecked(fragment_id);
+    let scene_id = match parse_output.ir.document.get(&fid) {
+        Some(DocNode::Fragment(f)) => f.scene.clone(),
+        _ => {
+            return Err(StudioError::NotFound(format!(
+                "Fragment '{fragment_id}' 不存在"
+            )))
+        }
+    };
+    let scene_id = scene_id.ok_or_else(|| {
+        StudioError::NotFound(format!("Fragment '{fragment_id}' 不属于任何场景"))
+    })?;
+
+    // 2. 构建上下文：本片段之前的最近两段（各取末尾 600 字）+ POV / 场景标题
+    let builder = ContextBuilder::new(&parse_output.ir);
+    let scene = parse_output.ir.document.get_scene(&scene_id);
+    let pov = scene
+        .and_then(|s| s.pov.clone())
+        .and_then(|id| builder.character_brief(&id));
+    let scene_title = scene.and_then(|s| s.title.clone());
+
+    let prev_fragments: Vec<String> = parse_output
+        .ir
+        .document
+        .children_of(&scene_id)
+        .iter()
+        .take_while(|id| **id != fid)
+        .filter_map(|id| match parse_output.ir.document.get(id) {
+            Some(DocNode::Fragment(f)) => Some(f.text.clone()),
+            _ => None,
+        })
+        .collect();
+    let prev = prev_texts_tail(&prev_fragments, 2, 600);
+
+    // 3. 请求（短输出；思考型模型的 reasoning 计入 max_tokens，留足头部）
+    let (system, user) = build_complete_prompt(
+        pov.as_deref(),
+        scene_title.as_deref(),
+        &prev,
+        before,
+        after,
+    );
+    let request = GenerateRequest {
+        system,
+        messages: vec![Message::user(user)],
+        model: String::new(),
+        temperature: 0.6,
+        max_tokens: 2048,
+        tools: Vec::new(),
+    };
+
+    // 4. 可取消的流式生成，增量原样转发
+    let provider_id = provider.id().to_string();
+    let on_delta = std::sync::Arc::clone(on_delta);
+    let sink = std::sync::Arc::new(move |event: StreamEvent| {
+        if let StreamEvent::Delta { delta } = event {
+            on_delta(&delta);
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let response = match stream_generate_with_cancel(provider, &request, cancel_token, sink) {
+        Ok(resp) => resp,
+        Err(AiError::Cancelled) => return Err(StudioError::Ai("已取消行内补全".to_string())),
+        Err(e) => {
+            crate::ai_ledger::record(
+                dir,
+                "行内补全",
+                &provider_id,
+                0,
+                started.elapsed().as_millis() as u64,
+                false,
+                Some(&e.to_string()),
+            );
+            return Err(StudioError::Ai(e.to_string()));
+        }
+    };
+    crate::ai_ledger::record(
+        dir,
+        "行内补全",
+        &provider_id,
+        response.usage.total() as u64,
+        started.elapsed().as_millis() as u64,
+        true,
+        None,
+    );
+
+    Ok(CompleteResult {
+        text: response.text,
+        tokens_used: response.usage.total(),
+    })
+}
+
+/// 汇总前文片段：取最后 `count` 段，每段截尾 `max_chars` 字
+fn prev_texts_tail(texts: &[String], count: usize, max_chars: usize) -> String {
+    let start = texts.len().saturating_sub(count);
+    texts[start..]
+        .iter()
+        .map(|t| tail_chars(t, max_chars))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ============================================================================
@@ -1131,6 +1313,53 @@ mod purpose_tests {
         // provider_from_config 的 None 分支不 panic，构造走旧字段路径
         let provider = provider_from_config(&config, None, "anthropic", None).unwrap();
         assert_eq!(provider.id(), "anthropic");
+    }
+
+    #[test]
+    fn tail_chars_keeps_suffix_on_char_boundary() {
+        assert_eq!(tail_chars("林风推开门", 3), "推开门");
+        assert_eq!(tail_chars("短", 10), "短");
+        // 多字节字符不截半
+        let tailed = tail_chars("风雨如晦鸡鸣不已", 4);
+        assert_eq!(tailed, "鸡鸣不已");
+    }
+
+    #[test]
+    fn prev_texts_tail_takes_last_n() {
+        let texts: Vec<String> = vec!["一".to_string(), "二".to_string(), "三".to_string()];
+        assert_eq!(prev_texts_tail(&texts, 2, 100), "二\n三");
+        assert_eq!(prev_texts_tail(&texts, 5, 100), "一\n二\n三");
+        assert_eq!(prev_texts_tail(&[], 2, 100), "");
+    }
+
+    #[test]
+    fn build_complete_prompt_sections() {
+        let (system, user) = build_complete_prompt(
+            Some("林风（林少侠）"),
+            Some("渡口"),
+            "前一段的正文。",
+            "他推开门，",
+            None,
+        );
+        assert!(system.contains("行内补全"));
+        assert!(system.contains("林风"));
+        assert!(system.contains("渡口"));
+        assert!(user.contains("【本场景前文】"));
+        assert!(user.contains("前一段的正文"));
+        assert!(user.contains("【光标前正文】\n他推开门，"));
+        // 没有光标后文本时不输出该段
+        assert!(!user.contains("【光标后正文】"));
+        assert!(user.contains("只输出从光标处续写"));
+    }
+
+    #[test]
+    fn build_complete_prompt_includes_after_when_present() {
+        let (_, user) = build_complete_prompt(None, None, "", "开头", Some("，后面还有半句。"));
+        assert!(user.contains("【光标后正文】"));
+        assert!(user.contains("，后面还有半句。"));
+        // 空白 after 视为没有
+        let (_, user) = build_complete_prompt(None, None, "", "开头", Some("   "));
+        assert!(!user.contains("【光标后正文】"));
     }
 }
 

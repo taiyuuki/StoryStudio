@@ -96,6 +96,8 @@ pub fn run() {
             commands::ai_list_models,
             commands::ai_test_profile,
             commands::ai_write_scene,
+            commands::ai_complete_fragment,
+            commands::ai_complete_cancel,
             commands::agent_chat,
             commands::agent_respond,
             commands::agent_cancel,

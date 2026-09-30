@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import type { FragmentDto } from '@/api/backend'
+import { api } from '@/api/backend'
+import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useCodeMirror } from '@/composables/useCodeMirror'
 import FragmentHistoryDialog from './FragmentHistoryDialog.vue'
@@ -12,6 +14,7 @@ const props = defineProps<{
 }>()
 
 const store = useWorkspaceStore()
+const ui = useUiStore()
 
 // 编辑中的文本（延迟同步到 store，避免每键触发全树刷新）
 const doc = ref(props.fragment.text)
@@ -23,6 +26,15 @@ const { container, create } = useCodeMirror({
     scheduleSave(text)
   },
   placeholder: '落笔…',
+  aiComplete: {
+    // 幽灵补全：输入停顿后预测下文，Tab 采纳 / Esc 关闭
+    enabled: () => ui.aiGhost,
+    fetch: (before, after, onDelta) =>
+      api
+        .aiCompleteFragment(store.root, props.fragment.id, before, after, onDelta)
+        .then((r) => r.text),
+    onCancel: () => void api.aiCompleteCancel(),
+  },
 })
 
 onMounted(() => {

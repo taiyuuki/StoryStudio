@@ -23,6 +23,8 @@ export const useUiStore = defineStore(
     const recentProjects = ref<RecentProject[]>([])
     const activePanel = ref<DockPanel>(null)
     const dockWidth = ref(360)
+    /** 编辑器 AI 幽灵补全（Tab 采纳 / Esc 关闭） */
+    const aiGhost = ref(true)
     
 
     function applyTheme() {
@@ -58,6 +60,7 @@ export const useUiStore = defineStore(
       recentProjects,
       activePanel,
       dockWidth,
+      aiGhost,
       toggleTheme,
       rememberProject,
       forgetProject,
@@ -67,7 +70,7 @@ export const useUiStore = defineStore(
   {
     persist: {
       storage: localStorage,
-      pick: ['recentProjects', 'activePanel', 'dockWidth'],
+      pick: ['recentProjects', 'activePanel', 'dockWidth', 'aiGhost'],
     },
   },
 )

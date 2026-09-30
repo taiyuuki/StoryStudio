@@ -632,6 +632,101 @@ pub async fn ai_write_scene(
     }
 }
 
+// ── 行内补全（幽灵补全）──────────────────────────────────
+
+/// 行内补全的取消槽：同一时刻只保留最新一次补全，新请求自动顶掉旧请求
+static COMPLETE_CANCEL: std::sync::Mutex<Option<story_ai_runtime::CancelToken>> =
+    std::sync::Mutex::new(None);
+
+/// 占用补全槽位：取消旧令牌，登记并返回新令牌
+fn begin_complete_slot() -> story_ai_runtime::CancelToken {
+    let mut guard = COMPLETE_CANCEL.lock().unwrap();
+    if let Some(old) = guard.take() {
+        old.cancel();
+    }
+    let token = story_ai_runtime::CancelToken::new();
+    *guard = Some(token.clone());
+    token
+}
+
+/// 主动取消当前补全（无补全在跑时是空操作）
+fn cancel_complete_slot() {
+    if let Some(token) = COMPLETE_CANCEL.lock().unwrap().take() {
+        token.cancel();
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiCompleteResultDto {
+    pub text: String,
+    pub tokens_used: usize,
+}
+
+/// AI 行内补全（编辑器幽灵补全，流式）
+///
+/// 增量经 Channel 推送（kind="delta"），结束发 kind="done"（text 为完整补全），
+/// 返回值作兜底。补全讲究快：超时 90 秒；新请求 / 取消命令会终止旧请求。
+#[tauri::command]
+pub async fn ai_complete_fragment(
+    root: String,
+    fragment_id: String,
+    before: String,
+    after: Option<String>,
+    on_event: tauri::ipc::Channel<WriteStreamMsg>,
+) -> R<AiCompleteResultDto> {
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let provider = active_provider(lib::purpose::COMPLETE)?;
+        let token = begin_complete_slot();
+
+        let done_channel = on_event.clone();
+        let on_delta: std::sync::Arc<dyn Fn(&str) + Send + Sync> =
+            std::sync::Arc::new(move |delta: &str| {
+                let _ = on_event.send(WriteStreamMsg {
+                    kind: "delta".into(),
+                    text: delta.to_string(),
+                });
+            });
+
+        let result = lib::complete_fragment_streaming(
+            Path::new(&root),
+            &fragment_id,
+            &before,
+            after.as_deref(),
+            provider,
+            &token,
+            &on_delta,
+        )
+        .map_err(e)?;
+
+        let _ = done_channel.send(WriteStreamMsg {
+            kind: "done".into(),
+            text: result.text.clone(),
+        });
+
+        Ok(AiCompleteResultDto {
+            text: result.text,
+            tokens_used: result.tokens_used,
+        })
+    });
+
+    match tokio::time::timeout(std::time::Duration::from_secs(90), task).await {
+        Ok(res) => res.map_err(|err| format!("任务执行失败: {err}"))?,
+        Err(_) => {
+            cancel_complete_slot();
+            Err("行内补全超时，请稍候再试".to_string())
+        }
+    }
+}
+
+/// 取消进行中的行内补全（编辑器里继续打字 / 关闭幽灵时调用）
+#[tauri::command]
+pub fn ai_complete_cancel() -> bool {
+    let had = COMPLETE_CANCEL.lock().unwrap().is_some();
+    cancel_complete_slot();
+    had
+}
+
 // ── Agent 对话（妙笔） ───────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -31,6 +31,9 @@ pub(crate) const BOOK_OUTLINE: &str = include_str!("prompts/book_outline.md");
 /// 场景摘要生成（get_story_recap 兜底）的 system prompt
 pub(crate) const SCENE_SUMMARY: &str = include_str!("prompts/scene_summary.md");
 
+/// 行内补全（编辑器幽灵补全）的 system prompt
+pub(crate) const COMPLETE_FRAGMENT: &str = include_str!("prompts/complete_fragment.md");
+
 /// 逐章成书：节拍设计的 system prompt
 pub(crate) const CHAPTER_BEATS_SYSTEM: &str = include_str!("prompts/chapter_beats_system.md");
 
@@ -74,6 +77,7 @@ mod tests {
             ("BOOK_WORLD", BOOK_WORLD),
             ("BOOK_OUTLINE", BOOK_OUTLINE),
             ("SCENE_SUMMARY", SCENE_SUMMARY),
+            ("COMPLETE_FRAGMENT", COMPLETE_FRAGMENT),
             ("CHAPTER_BEATS_SYSTEM", CHAPTER_BEATS_SYSTEM),
             ("CHAPTER_BEATS_TASK", CHAPTER_BEATS_TASK),
         ] {

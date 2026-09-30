@@ -56,6 +56,20 @@ async function saveSummary() {
         </div>
 
         <div class="tool-right">
+          <button
+            class="ink-btn ink-btn--sm ai-ghost-toggle"
+            :class="{ 'is-on': ui.aiGhost }"
+            :title="
+              ui.aiGhost
+                ? 'AI 行内补全已开启：输入停顿时预测下文（灰色幽灵字），Tab 采纳 / Esc 关闭 / Alt+\\ 手动触发。点击关闭'
+                : 'AI 行内补全已关闭。点击开启：输入停顿时预测下文，Tab 采纳'
+            "
+            @click="ui.aiGhost = !ui.aiGhost"
+          >
+            <i class="fa-solid fa-ghost" />
+            {{ ui.aiGhost ? '补全开' : '补全关' }}
+          </button>
+
           <ElPopover v-model:visible="metaOpen" placement="bottom-end" :width="380" trigger="click">
             <template #reference>
               <button class="ink-btn ink-btn--sm" title="场景设定">
@@ -245,6 +259,13 @@ async function saveSummary() {
 .tool-right {
   display: flex;
   gap: 8px;
+}
+
+// AI 行内补全开关：开启时以强调色点亮
+.ai-ghost-toggle.is-on {
+  color: var(--ink-accent);
+  border-color: var(--ink-accent);
+  background: var(--ink-accent-soft);
 }
 
 // ── 纸面 ────────────────────────────────────────────────

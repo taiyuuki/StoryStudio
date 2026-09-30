@@ -312,6 +312,11 @@ export interface AiWriteResultDto {
   tokensUsed: number
 }
 
+export interface AiCompleteResultDto {
+  text: string
+  tokensUsed: number
+}
+
 // ── 片段版本历史 / 码字统计 / AI 账本 ─────────────────────
 
 export interface FragmentVersionDto {
@@ -823,6 +828,30 @@ export const api = {
       instruction,
       onEvent: channel,
     })
+  },
+  /** 行内补全结果（幽灵补全，不落盘） */
+  aiCompleteFragment(
+    root: string,
+    fragmentId: string,
+    before: string,
+    after: string | null,
+    onDelta: (delta: string) => void,
+  ) {
+    const channel = new Channel<WriteStreamMsg>()
+    channel.onmessage = (msg) => {
+      if (msg.kind === 'delta') onDelta(msg.text)
+    }
+    return call<AiCompleteResultDto>('ai_complete_fragment', {
+      root,
+      fragmentId,
+      before,
+      after,
+      onEvent: channel,
+    })
+  },
+  /** 取消进行中的行内补全（继续打字 / 关闭幽灵时） */
+  aiCompleteCancel() {
+    return call<boolean>('ai_complete_cancel')
   },
   /** Agent 对话：步骤经回调实时推送 */
   agentChat(
