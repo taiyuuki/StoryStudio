@@ -22,6 +22,7 @@ pub mod stats;
 pub mod timeline;
 pub mod mutations;
 pub mod project;
+mod prompts;
 pub mod tools;
 pub mod workflow;
 

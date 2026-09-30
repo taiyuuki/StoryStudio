@@ -342,19 +342,15 @@ fn concept_prompt(o: &BookCreationOptions) -> String {
         .map(|g| format!("\n【题材】{g}"))
         .unwrap_or_else(|| "\n【题材】由你判断最合适的题材".to_string());
 
-    format!(
-        "你是一位资深网文主编，擅长把一句话灵感打磨成能长跑的系列企划。\n\
-        \n【灵感】{}\n{genre_line}{extras}\n{guide}\n\
-        请给出 {CONCEPT_CANDIDATES} 个差异明显的候选方向（题材切入点、主角处境、卖点各不相同）。\n\
-        只输出一个 JSON 对象（字符串内的引号用「」），字段：\n\
-        - concepts：数组，{CONCEPT_CANDIDATES} 项，每项：\n\
-        \x20 - title：书名，2-8 字，有记忆点\n\
-        \x20 - tagline：一句话卖点\n\
-        \x20 - blurb：给读者看的简介，80-150 字\n\
-        \x20 - premise：核心设定与主线脉络，200-300 字（写清世界基调、主角处境、核心冲突与长线悬念）\n\
-        \x20 - theme：主题词\n\
-        \x20 - setting：故事发生地概述",
-        o.idea
+    crate::prompts::render(
+        crate::prompts::BOOK_CONCEPTS,
+        &[
+            ("idea", o.idea.as_str()),
+            ("genre_line", &genre_line),
+            ("extras", &extras),
+            ("guide", &guide),
+            ("candidates", &CONCEPT_CANDIDATES.to_string()),
+        ],
     )
 }
 
@@ -440,19 +436,16 @@ fn world_prompt(concept: &BookConcept, o: &BookCreationOptions, n_chars: u32) ->
         .as_deref()
         .map(|g| format!("【题材】{g}\n"))
         .unwrap_or_default();
-    format!(
-        "你是一位世界观与人物设定的行家，为下面这本新书搭建设定。\n\
-        \n【书名】《{}》\n{genre_line}{extras}【主线】{}\n【主题】{}\n\
-        \n只输出一个 JSON 对象（字符串内的引号用「」），字段：\n\
-        - concepts：[{{name, category, summary}}] 3-6 项基础概念（世界规则/纪元/种族等）\n\
-        - systems：[{{name, kind, levels, rules, summary}}] 0-3 项力量体系（kind 取 cultivation/magic/technology/power；levels 写等级链；rules 写规则与代价）\n\
-        - locations：[{{name, kind, parent, features, summary}}] 3-8 个地点，覆盖世界地理与剧情发生地（kind 取 continent/nation/city/realm/landform；大区域在前、具体地点在后；parent 填上级地点名）\n\
-        - organizations：[{{name, kind, leader, territory, ideology, summary}}] 0-4 个组织势力（kind 取 sect/nation/clan/guild/organization）\n\
-        - eras：[纪元名] 0-3 个（故事内历法）\n\
-        - characters：[{{name, role, gender, occupation, personality, background, aliases:[别名]}}] 恰好 {n_chars} 个主要角色（role 取 protagonist/love_interest/antagonist/mentor/support；必须含 1 名主角与 1 名主要反派）\n\
-        - relations：[{{from, to, relation}}] 角色间关系（from/to 用角色名；relation 如 师徒/宿敌/兄妹）\n\
-        - threads：[{{title, description, priority}}] 2-5 条叙事线索（伏笔/悬念；priority 取 main/minor）",
-        concept.title, concept.premise, concept.theme
+    crate::prompts::render(
+        crate::prompts::BOOK_WORLD,
+        &[
+            ("title", concept.title.as_str()),
+            ("genre_line", &genre_line),
+            ("extras", &extras),
+            ("premise", concept.premise.as_str()),
+            ("theme", concept.theme.as_str()),
+            ("n_chars", &n_chars.to_string()),
+        ],
     )
 }
 
@@ -944,29 +937,28 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
         }
     }
     let next_index = ctx.existing_chapters + 1;
+    let characters = if ctx.character_names.is_empty() {
+        "（尚未建角色）".to_string()
+    } else {
+        ctx.character_names.join("、")
+    };
+    let threads = if ctx.thread_titles.is_empty() {
+        "（尚未建线索）".to_string()
+    } else {
+        ctx.thread_titles.join("、")
+    };
 
-    format!(
-        "你是一位精通节奏设计的网文大纲师，为这本书续排接下来的章节脉络。\n\
-        \n【书的主线】{}\n{head}{existing}【主要角色】{}\n【叙事线索】{}\n\
-        \n接下来是第 {next_index} 章起，请排 {} 章的脉络。\
-        若最后一卷已排超过 12 章，请在 volumes 里给出下一卷；否则 volumes 留空数组。\n\
-        只输出一个 JSON 对象（字符串内的引号用「」），字段：\n\
-        - volumes：[{{name, order, theme, summary}}] 新增卷（order 接续现有最大卷号）\n\
-        - chapters：[{{title, volume_order, summary, goal, beats:[...], characters:[出场角色名], hook}}] \
-        恰好 {count} 章，每章 beats 3-6 个（每个一句话）；要与前面的钩子衔接、章章有推进，\
-        推进叙事线索但不要在批内仓促收束长线悬念",
-        ctx.premise,
-        if ctx.character_names.is_empty() {
-            "（尚未建角色）".to_string()
-        } else {
-            ctx.character_names.join("、")
-        },
-        if ctx.thread_titles.is_empty() {
-            "（尚未建线索）".to_string()
-        } else {
-            ctx.thread_titles.join("、")
-        },
-        count,
+    crate::prompts::render(
+        crate::prompts::BOOK_OUTLINE,
+        &[
+            ("premise", ctx.premise.as_str()),
+            ("head", &head),
+            ("existing", &existing),
+            ("characters", &characters),
+            ("threads", &threads),
+            ("next_index", &next_index.to_string()),
+            ("count", &count.to_string()),
+        ],
     )
 }
 
@@ -1584,6 +1576,42 @@ mod tests {
         assert!(p.contains("热血"));
         assert!(p.contains("100 万字"));
         assert!(p.contains("题材创作指导"), "玄幻应命中内置 fantasy 指导");
+    }
+
+    #[test]
+    fn world_and_outline_prompts_fill_templates() {
+        // 锁定模板转写：占位符填充正确、关键结构完整
+        let concept = BookConcept {
+            title: "拾灯录".into(),
+            premise: "灵灯将熄".into(),
+            theme: "执念".into(),
+            ..Default::default()
+        };
+        let wp = world_prompt(&concept, &options(), 3);
+        assert!(wp.contains("【书名】《拾灯录》"));
+        assert!(wp.contains("【主线】灵灯将熄"));
+        assert!(wp.contains("恰好 3 个主要角色"));
+        assert!(wp.contains("[{name, role, gender, occupation, personality, background, aliases:[别名]}]"));
+
+        let ctx = OutlineContext {
+            premise: "灵灯将熄".into(),
+            genre: None,
+            pov: None,
+            style: None,
+            audience: None,
+            chapter_words: None,
+            character_names: vec!["阿澈".into()],
+            thread_titles: vec![],
+            volumes: vec![("第一卷".into(), 1, 3)],
+            recent_chapters: vec![],
+            completed_summaries: vec![],
+            existing_chapters: 3,
+        };
+        let op = outline_prompt(&ctx, 5);
+        assert!(op.contains("第 4 章起，请排 5 章的脉络"));
+        assert!(op.contains("【主要角色】阿澈"));
+        assert!(op.contains("【叙事线索】（尚未建线索）"));
+        assert!(op.contains("已排 3 章"));
     }
 
     #[test]

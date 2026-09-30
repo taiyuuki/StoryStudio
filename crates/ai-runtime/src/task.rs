@@ -210,11 +210,7 @@ impl Task for WriteFragmentTask {
     }
 
     fn build_context(&self, _ir: &StoryIR) -> TaskContext {
-        let mut system = String::from(
-            "你是一位小说作者。请以自然语言续写故事正文。\n\
-             只输出正文，不要输出元信息。\n\
-             如涉及角色出场，在正文前用 frontmatter 标注 anchors。",
-        );
+        let mut system = String::from(crate::prompts::WRITE_FRAGMENT);
 
         if let Some(ref pov) = self.pov_name {
             system.push_str(&format!("\n本场景视角：{pov}。"));
@@ -286,14 +282,7 @@ impl Task for WriteChapterTask {
 
     fn build_context(&self, _ir: &StoryIR) -> TaskContext {
         let m = &self.materials;
-        let system = String::from(
-            "你是一位深耕网文连载的小说作者，擅长在既定节拍内写出信息密度高、\n\
-             有画面感的正文。要求：\n\
-             - 只输出正文本身，不要输出大纲、节拍编号、标题或任何元信息。\n\
-             - 如有角色出场，可在正文前用 frontmatter 标注 anchors。\n\
-             - 严格遵守给定的节拍顺序与章末钩子，不要跳写后面的剧情。\n\
-             - 目标字数是硬性要求，正文字数应达到目标的 90% 以上。",
-        );
+        let system = String::from(crate::prompts::WRITE_CHAPTER);
 
         let mut user = String::new();
         if !m.outline_brief.is_empty() {
@@ -386,23 +375,12 @@ impl Task for ExtractAssertionsTask {
     }
 
     fn build_context(&self, _ir: &StoryIR) -> TaskContext {
-        let system = format!(
-            "你是知识抽取器。从以下故事文本中提取可验证的断言。\n\
-             只抽取这些类型的断言：{:?}\n\
-             每条断言必须包含：subject（角色名）、predicate、object（值）、quote（原文摘录）。\n\
-             如果能确定时间范围，附带 from_year / until_year。\n\n\
-             输出 YAML 格式，例如：\n\
-             ```yaml\n\
-             - subject: 林风\n\
-               predicate: alive\n\
-               object: true\n\
-               quote: 林风还活着\n\
-               from_year: 1086\n\
-             ```\n\
-             如果文本中没有可抽取的断言，输出空列表 `[]`。\n\n\
-             已知角色：{}",
-            self.predicates,
-            self.known_characters.join("、")
+        let system = crate::prompts::render(
+            crate::prompts::EXTRACT_ASSERTIONS,
+            &[
+                ("predicates", &format!("{:?}", self.predicates)),
+                ("known_characters", &self.known_characters.join("、")),
+            ],
         );
 
         let user = format!("请从以下文本中抽取断言：\n\n{}", self.fragment_text);

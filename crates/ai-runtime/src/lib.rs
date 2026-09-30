@@ -18,6 +18,7 @@ pub mod interactive;
 pub mod pipeline;
 pub mod provider;
 pub mod providers;
+mod prompts;
 pub mod session;
 pub mod stream_cancel;
 pub mod task;

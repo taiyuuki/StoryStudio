@@ -332,8 +332,7 @@ impl GetStoryRecapTool {
 
         // 调 LLM 生成摘要
         let truncated = format_brief(&text, SUMMARIZE_TEXT_MAX_CHARS);
-        let system = "你是一位小说编辑助手。用 2-3 句中文概括下面这个场景发生了什么，\
-                      重点是情节推进、角色互动和关键事件。不要评价，只客观概述。";
+        let system = crate::prompts::SCENE_SUMMARY;
         let user = format!("场景正文：\n\n{truncated}");
         let request = GenerateRequest {
             system: system.to_string(),

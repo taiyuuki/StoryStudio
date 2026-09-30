@@ -1078,10 +1078,10 @@ fn generate_beats(
     if let Some(h) = &def.hook {
         user.push_str(&format!("章末钩子：{h}\n"));
     }
-    user.push_str("\n【任务】\n为本章设计 4-8 个叙事节拍（每个节拍一句话，覆盖开场、推进、转折、收束）。\n只输出 JSON 字符串数组，如 [\"节拍一\", \"节拍二\"]，不要输出其他内容。");
+    user.push_str(crate::prompts::CHAPTER_BEATS_TASK);
 
     let request = GenerateRequest {
-        system: "你是一位资深网文编辑，擅长把章节梗概拆解为可执行的叙事节拍。".into(),
+        system: crate::prompts::CHAPTER_BEATS_SYSTEM.into(),
         messages: vec![Message::user(user)],
         model: String::new(),
         temperature: 0.4,
