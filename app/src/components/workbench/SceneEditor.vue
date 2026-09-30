@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -23,6 +23,25 @@ async function updateTitle(value: string) {
   const next = value.trim()
   if (next === (scene.value.title ?? '')) return
   await store.updateScene(scene.value.id, { title: next })
+}
+
+// ── 场景摘要（纸面行内编辑，失焦保存） ──────────────────────
+const summaryEditing = ref(false)
+const summaryDraft = ref('')
+const summaryEl = ref<HTMLTextAreaElement | null>(null)
+
+function startSummaryEdit() {
+  summaryDraft.value = scene.value?.summary ?? ''
+  summaryEditing.value = true
+  void nextTick(() => summaryEl.value?.focus())
+}
+
+async function saveSummary() {
+  if (!summaryEditing.value || !scene.value) return
+  summaryEditing.value = false
+  const next = summaryDraft.value.trim()
+  if (next === (scene.value.summary ?? '')) return
+  await store.updateScene(scene.value.id, { summary: next || null })
 }
 </script>
 
@@ -77,6 +96,28 @@ async function updateTitle(value: string) {
                 <i class="fa-solid fa-mug-hot" /> {{ scene.mood }}
               </span>
             </div>
+
+            <!-- 场景摘要：写完顺手补一句，AI 写续与全书回顾会用到 -->
+            <div v-if="summaryEditing" class="paper-summary-edit">
+              <textarea
+                ref="summaryEl"
+                v-model="summaryDraft"
+                rows="3"
+                placeholder="一句话概括这个场景发生了什么（Esc 取消）"
+                @blur="saveSummary"
+                @keydown.escape.prevent="summaryEditing = false"
+              />
+            </div>
+            <button
+              v-else
+              class="paper-summary"
+              :class="{ 'is-empty': !scene.summary }"
+              title="场景摘要——点击编辑"
+              @click="startSummaryEdit"
+            >
+              <i class="fa-solid fa-quote-left" />
+              <span>{{ scene.summary || '写一句这场发生了什么…' }}</span>
+            </button>
           </header>
 
           <div class="fragments">
@@ -279,6 +320,82 @@ async function updateTitle(value: string) {
     display: inline-flex;
     align-items: center;
     gap: 5px;
+  }
+}
+
+// 场景摘要：引文式小字，空态显示引导语，点击进入行内编辑
+.paper-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 7px;
+  max-width: 540px;
+  margin: 10px auto 0;
+  padding: 2px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-sec);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.8;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+
+  i {
+    font-size: 9px;
+    color: var(--ink-disabled);
+    flex-shrink: 0;
+    transform: translateY(-1px);
+  }
+
+  span {
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    text-align: left;
+  }
+
+  &.is-empty {
+    color: var(--ink-disabled);
+  }
+
+  &:hover {
+    background: var(--surface-2);
+    color: var(--ink-main);
+
+    &.is-empty {
+      color: var(--ink-accent);
+    }
+  }
+}
+
+.paper-summary-edit {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+
+  textarea {
+    width: 100%;
+    max-width: 540px;
+    min-height: 118px;
+    padding: 11px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--ink-accent);
+    background: var(--input-bg);
+    color: var(--ink-main);
+    font-family: inherit;
+    font-size: 12.5px;
+    line-height: 1.8;
+    resize: vertical;
+    outline: none;
+
+    &::placeholder {
+      color: var(--ink-disabled);
+    }
   }
 }
 

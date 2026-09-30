@@ -190,6 +190,7 @@ function sceneTitle(s: SceneDto): string {
             :key="sc.id"
             class="scene-row"
             :class="{ 'is-active': sc.id === store.scene?.id }"
+            :title="sc.summary ?? undefined"
             @click="selectScene(sc.id)"
           >
             <span class="scene-dot" />

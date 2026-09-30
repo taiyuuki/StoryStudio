@@ -10,7 +10,6 @@ const form = reactive({
   title: '',
   pov: '' as string,
   mood: '',
-  summary: '',
   year: null as number | null,
   month: null as number | null,
   day: null as number | null,
@@ -24,7 +23,6 @@ watch(
     form.title = s.title ?? ''
     form.pov = s.pov ?? ''
     form.mood = s.mood ?? ''
-    form.summary = s.summary ?? ''
     form.year = s.storyTime?.year ?? null
     form.month = s.storyTime?.month ?? null
     form.day = s.storyTime?.day ?? null
@@ -42,7 +40,6 @@ async function save() {
     title: form.title,
     pov: form.pov || null,
     mood: form.mood || null,
-    summary: form.summary || null,
     storyTime,
   })
   emit('close')
@@ -78,11 +75,6 @@ async function save() {
         <input v-model.number="form.month" type="number" placeholder="月" min="1" max="12" class="num" />
         <input v-model.number="form.day" type="number" placeholder="日" min="1" max="31" class="num" />
       </div>
-    </div>
-
-    <div class="mf-row mf-row--col">
-      <label>场景摘要</label>
-      <textarea v-model="form.summary" rows="3" placeholder="一句话概括这个场景发生了什么" />
     </div>
 
     <div class="mf-actions">
