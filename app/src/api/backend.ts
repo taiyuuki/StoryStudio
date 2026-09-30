@@ -69,11 +69,23 @@ export interface ThreadDto {
   description: string | null
   goal: string | null
   priority: 'main' | 'minor' | string
+  /** 计划埋设卷号（null = 全书长线） */
+  dueVolume: number | null
   tags: string[]
   plantedAt: string | null
   revealedAt: string | null
   resolvedAt: string | null
   abandoned: boolean
+}
+
+/** 未锚定指代台账记录（anchoring.toml） */
+export interface UnresolvedRefDto {
+  fragmentId: string
+  quote: string
+  hint: string
+  /** pending | ignored | resolved */
+  status: string
+  target: string | null
 }
 
 // ── 世界观（概念 / 体系 / 历法；地理与势力走实体） ──────────
@@ -162,6 +174,7 @@ export interface WorkspaceDto {
   entities: EntityDto[]
   relations: RelationDto[]
   threads: ThreadDto[]
+  unresolvedRefs: UnresolvedRefDto[]
   totalWords: number
 }
 
@@ -659,6 +672,26 @@ export const api = {
   saveEntity(root: string, entity: EntityDto) {
     return call<EntityDto>('save_entity', { root, entity })
   },
+  mergeEntities(root: string, fromEntityId: string, intoEntityId: string) {
+    return call<string>('merge_entities', { root, fromEntityId, intoEntityId })
+  },
+  resolveUnresolved(
+    root: string,
+    fragmentId: string,
+    quote: string,
+    action: 'create' | 'merge' | 'ignore',
+    opts?: { targetEntityId?: string; name?: string; kind?: EntityKind },
+  ) {
+    return call<string>('resolve_unresolved', {
+      root,
+      fragmentId,
+      quote,
+      action,
+      targetEntityId: opts?.targetEntityId,
+      name: opts?.name,
+      kind: opts?.kind,
+    })
+  },
   addRelation(root: string, from: string, to: string, relation: string) {
     return call<RelationDto>('add_relation', { root, from, to, relation })
   },
@@ -667,13 +700,32 @@ export const api = {
   },
 
   // ── 叙事线索 ──────────────────────────────────────────
-  createThread(root: string, title: string, description: string, priority: string) {
-    return call<ThreadDto>('create_thread', { root, title, description, priority })
+  createThread(
+    root: string,
+    title: string,
+    description: string,
+    priority: string,
+    dueVolume?: number | null,
+  ) {
+    return call<ThreadDto>('create_thread', {
+      root,
+      title,
+      description,
+      priority,
+      dueVolume: dueVolume ?? null,
+    })
   },
   updateThread(
     root: string,
     threadId: string,
-    patch: { title?: string; description?: string; goal?: string; priority?: string },
+    patch: {
+      title?: string
+      description?: string
+      goal?: string
+      priority?: string
+      /** 传 0 表示清除（恢复全书长线） */
+      dueVolume?: number
+    },
   ) {
     return call<void>('update_thread', { root, threadId, ...patch })
   },

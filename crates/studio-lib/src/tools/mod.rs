@@ -82,6 +82,15 @@ pub(super) fn get_str_opt(args: &serde_json::Value, key: &str) -> Option<String>
         .filter(|s| !s.is_empty())
 }
 
+pub(super) fn get_u32_opt(args: &serde_json::Value, key: &str) -> Option<u32> {
+    match args.get(key) {
+        Some(v) => v.as_u64().map(|n| n as u32).or_else(|| {
+            v.as_str().and_then(|s| s.trim().parse::<u32>().ok())
+        }),
+        None => None,
+    }
+}
+
 pub(super) fn format_brief(text: &str, max_len: usize) -> String {
     if text.len() > max_len {
         // 按字符边界截断，避免在 UTF-8 多字节字符中间切断（会 panic）

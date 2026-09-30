@@ -93,6 +93,23 @@ async function remove(e: EntityDto) {
   if (selectedId.value === e.id) selectedId.value = null
 }
 
+// ── 合并（匿名占位实体真名揭晓后并入正式档案） ──────────────
+const merging = ref(false)
+const mergeTargetId = ref('')
+
+const mergeCandidates = computed(() =>
+  entities.value.filter((e) => e.id !== selectedId.value),
+)
+
+async function doMerge() {
+  if (!selected.value || !mergeTargetId.value) return
+  const ok = await store.mergeEntities(selected.value.id, mergeTargetId.value)
+  if (ok) {
+    merging.value = false
+    selectedId.value = null
+  }
+}
+
 const presetRelations = [
   'mentor_of', 'family_of', 'lover_of', 'enemy_of', 'rival_of', 'subordinate_of', 'knows',
 ]
@@ -366,11 +383,37 @@ function label(r: string): string {
           <i class="fa-solid fa-check" />
           保存
         </button>
+        <button
+          class="ink-btn ink-btn--sm"
+          title="把本实体并入另一同类型实体（锚点/关系/POV 等引用自动重定向）——匿名占位实体真名揭晓后用它"
+          @click="merging = !merging"
+        >
+          <i class="fa-solid fa-code-merge" />
+          合并到…
+        </button>
         <button class="ink-btn ink-btn--sm ink-btn--danger" @click="remove(selected); selectedId = null">
           <i class="fa-regular fa-trash-can" />
           删除
         </button>
-      </div>    </div>
+      </div>
+
+      <!-- 合并目标选择 -->
+      <div v-if="merging" class="merge-box">
+        <select v-model="mergeTargetId">
+          <option value="" disabled>选择保留的目标实体（本实体将并入它）</option>
+          <option v-for="e in mergeCandidates" :key="e.id" :value="e.id">
+            {{ e.displayName }}（{{ e.id }}）
+          </option>
+        </select>
+        <button
+          class="ink-btn ink-btn--sm ink-btn--primary"
+          :disabled="!mergeTargetId"
+          @click="doMerge"
+        >
+          合并
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -741,5 +784,28 @@ function label(r: string): string {
   margin-top: 6px;
   padding-top: 12px;
   border-top: 1px solid var(--divider);
+}
+
+.merge-box {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px dashed var(--ui-border);
+  background: var(--ink-accent-soft);
+
+  select {
+    flex: 1;
+    height: 28px;
+    padding: 0 6px;
+    border-radius: 6px;
+    border: 1px solid var(--ui-border);
+    background: var(--input-bg);
+    color: var(--ink-main);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+  }
 }
 </style>

@@ -16,7 +16,7 @@ use story_ai_runtime::provider::{AiProvider, GenerateRequest, Message};
 use story_ai_runtime::{Tool, ToolDef};
 use story_project_format::{EntityFile, ProjectPaths};
 
-use super::{get_str_opt, object_schema, ToolContext};
+use super::{get_str, get_str_opt, object_schema, ToolContext};
 
 /// 名册上限：超出的实体（按 角色→地点→道具→组织 顺序截断）不参与本次锚定
 const ROSTER_CAP: usize = 40;
@@ -86,6 +86,22 @@ pub struct AnchorOutcome {
     pub unresolved: Vec<(String, String)>,
 }
 
+/// 读取片段正文（剥 frontmatter）
+fn fragment_body(paths: &ProjectPaths, fragment_id: &str) -> Result<String, String> {
+    let path = paths
+        .file_for_id(fragment_id)
+        .ok_or_else(|| format!("无效的片段 ID: {fragment_id}"))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("读取片段失败: {e}"))?;
+    Ok(if let Some(rest) = content.strip_prefix("---") {
+        rest.find("---")
+            .map(|end| content[3 + end + 3..].trim_start_matches(['\r', '\n']).to_string())
+            .unwrap_or(content.clone())
+    } else {
+        content.clone()
+    })
+}
+
 /// 对单个片段执行理解锚定。
 ///
 /// LLM 失败时返回 Err（调用方决定是否吞掉），片段内容不受影响。
@@ -97,18 +113,7 @@ pub fn comprehension_anchor(
     let paths = ctx.paths();
 
     // 读正文（剥 frontmatter）
-    let path = paths
-        .file_for_id(fragment_id)
-        .ok_or_else(|| format!("无效的片段 ID: {fragment_id}"))?;
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("读取片段失败: {e}"))?;
-    let body = if let Some(rest) = content.strip_prefix("---") {
-        rest.find("---")
-            .map(|end| content[3 + end + 3..].trim_start_matches(['\r', '\n']).to_string())
-            .unwrap_or(content.clone())
-    } else {
-        content.clone()
-    };
+    let body = fragment_body(&paths, fragment_id)?;
     if body.trim().is_empty() {
         return Ok(AnchorOutcome { anchored: Vec::new(), unresolved: Vec::new() });
     }
@@ -221,19 +226,47 @@ fn parse_anchor_response(text: &str, roster: &[RosterEntry]) -> Result<AnchorOut
 }
 
 /// 执行锚定并落盘（合并 helper：供 write/append 工具与批量工具共用）
+///
+/// 除 LLM 锚点外还会：
+/// 1. 把本次上报的未锚定指代同步进 anchoring.toml 台账（含改稿清理），
+///    回执中的 unresolved 替换为**仍待处置**的指代——已忽略/已归拢的不再提示；
+/// 2. 已归拢（resolved 且有 target）且 quote 仍在正文中的记录，
+///    把目标实体并入锚点集，处置真正生效到出场索引。
 pub fn anchor_and_apply(
     ctx: &ToolContext,
     provider: &Arc<dyn AiProvider>,
     fragment_id: &str,
 ) -> Result<AnchorOutcome, String> {
-    let outcome = comprehension_anchor(ctx, provider, fragment_id)?;
-    if !outcome.anchored.is_empty() {
-        let pairs: Vec<(String, String)> = outcome
-            .anchored
-            .iter()
-            .map(|(id, role, _)| (id.clone(), role.clone()))
-            .collect();
-        crate::mutations::replace_fragment_anchors(&ctx.paths(), fragment_id, &pairs)
+    let paths = ctx.paths();
+    let mut outcome = comprehension_anchor(ctx, provider, fragment_id)?;
+    let body = fragment_body(&paths, fragment_id)?;
+
+    // 台账同步（best-effort：失败不阻断锚定）
+    let pending = crate::mutations::sync_unresolved_refs(&paths, fragment_id, &body, &outcome.unresolved)
+        .unwrap_or_default();
+    outcome.unresolved = pending;
+
+    // 已归拢目标的锚点并入 LLM 权威集（按实体去重，LLM 的 role 优先）
+    let mut pairs: Vec<(String, String)> = outcome
+        .anchored
+        .iter()
+        .map(|(id, role, _)| (id.clone(), role.clone()))
+        .collect();
+    for r in crate::mutations::load_unresolved_refs(&paths).unwrap_or_default() {
+        if r.fragment_id == fragment_id
+            && r.status == "resolved"
+            && body.contains(&r.quote)
+        {
+            if let Some(target) = &r.target {
+                if !pairs.iter().any(|(id, _)| id == target) {
+                    pairs.push((target.clone(), "referenced".to_string()));
+                }
+            }
+        }
+    }
+
+    if !pairs.is_empty() {
+        crate::mutations::replace_fragment_anchors(&paths, fragment_id, &pairs)
             .map_err(|e| e.to_string())?;
     }
     Ok(outcome)
@@ -250,10 +283,14 @@ pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) 
         }
     }
     if !outcome.unresolved.is_empty() {
-        note.push_str("\n未锚定指代（名册中无匹配，若为新角色请建档）：");
+        note.push_str("\n未锚定指代（名册中无匹配，待处置）：");
         for (quote, hint) in &outcome.unresolved {
             note.push_str(&format!("\n  - \"{quote}\"（{hint}）"));
         }
+        note.push_str(
+            "\n处置方式：resolve_unresolved_ref 建档（匿名指代可用占位名如「九一真凶」）、\
+             归拢到已有实体或忽略；已处置的后续不再提示。",
+        );
     }
     note
 }
@@ -327,16 +364,20 @@ impl Tool for AnchorFragmentsTool {
         }
 
         let mut anchored_count = 0usize;
+        let mut pending_count = 0usize;
         let mut failed: Vec<String> = Vec::new();
         for fid in &names {
             match anchor_and_apply(&self.ctx, provider, fid) {
-                Ok(o) => anchored_count += o.anchored.len(),
+                Ok(o) => {
+                    anchored_count += o.anchored.len();
+                    pending_count += o.unresolved.len();
+                }
                 Err(e) => failed.push(format!("{fid}: {e}")),
             }
         }
 
         let mut out = format!(
-            "批量锚定完成：处理 {} 个片段（共 {total} 个{}），落锚 {anchored_count} 处",
+            "批量锚定完成：处理 {} 个片段（共 {total} 个{}），落锚 {anchored_count} 处，待处置指代 {pending_count} 条（list_unresolved_refs 可查看）",
             names.len(),
             if total > BATCH_CAP { "，达单次上限，请分批" } else { "" },
         );
@@ -344,6 +385,126 @@ impl Tool for AnchorFragmentsTool {
             out.push_str(&format!("\n失败 {} 个：{}", failed.len(), failed.join("；")));
         }
         Ok(out)
+    }
+}
+
+// ============================================================================
+// 未锚定指代处置工具 — list_unresolved_refs / resolve_unresolved_ref
+// ============================================================================
+
+pub struct ListUnresolvedRefsTool {
+    ctx: ToolContext,
+}
+impl ListUnresolvedRefsTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for ListUnresolvedRefsTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "list_unresolved_refs".into(),
+            description: "列出未锚定指代台账：待处置的名册外指代（如\"摆的人\"\"写的人\"），\
+            以及已忽略/已归拢的处置记录。省略 fragment_id 则列出全部。\
+            待处置项用 resolve_unresolved_ref 处置。".into(),
+            parameters: object_schema(vec![(
+                "fragment_id",
+                "string",
+                "片段 ID（省略则列出全部）",
+                false,
+            )]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let fid = get_str_opt(arguments, "fragment_id");
+        let refs = crate::mutations::load_unresolved_refs(&self.ctx.paths())
+            .map_err(|e| e.to_string())?;
+        let selected: Vec<_> = refs
+            .iter()
+            .filter(|r| fid.as_deref().is_none_or(|f| r.fragment_id == f))
+            .collect();
+
+        if selected.is_empty() {
+            return Ok("未锚定指代台账为空。".to_string());
+        }
+
+        let pending: Vec<_> = selected.iter().filter(|r| r.is_pending()).collect();
+        let mut out = format!("共 {} 条记录，待处置 {} 条：", selected.len(), pending.len());
+        for r in &selected {
+            let status = match r.status.as_str() {
+                "ignored" => "已忽略".to_string(),
+                "resolved" => match &r.target {
+                    Some(t) => format!("已归拢到 {t}"),
+                    None => "已归拢".to_string(),
+                },
+                _ => "待处置".to_string(),
+            };
+            out.push_str(&format!(
+                "\n  - {}「{}」（{}）：{}",
+                r.fragment_id, r.quote, r.hint, status
+            ));
+        }
+        Ok(out)
+    }
+}
+
+pub struct ResolveUnresolvedRefTool {
+    ctx: ToolContext,
+}
+impl ResolveUnresolvedRefTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for ResolveUnresolvedRefTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "resolve_unresolved_ref".into(),
+            description: "处置一条未锚定指代（先可用 list_unresolved_refs 查看待处置清单）：\
+            action=create 为其新建档案（匿名指代用占位名，如悬疑里的凶手指代\
+            \"摆的人/写的人\"可建档为「九一真凶」，真名揭晓后 merge_entities 合并）；\
+            action=merge 归拢到已有实体（需 target_entity_id）；\
+            action=ignore 忽略，后续锚定不再提示。\
+            建档/归拢会自动为所在片段补锚点。".into(),
+            parameters: object_schema(vec![
+                ("fragment_id", "string", "指代所在片段 ID", true),
+                ("quote", "string", "指代原文（台账中的 quote，需完全一致）", true),
+                ("action", "string", "处置动作：create | merge | ignore", true),
+                (
+                    "target_entity_id",
+                    "string",
+                    "merge 时归拢到的实体 ID",
+                    false,
+                ),
+                ("name", "string", "create 时新档案的名称（可用占位名）", false),
+                (
+                    "kind",
+                    "string",
+                    "create 时的实体类型：characters（默认）/ locations / items / organizations",
+                    false,
+                ),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let fragment_id = get_str(arguments, "fragment_id")?;
+        let quote = get_str(arguments, "quote")?;
+        let action = get_str(arguments, "action")?;
+        let summary = crate::mutations::resolve_unresolved_ref(
+            &self.ctx.paths(),
+            &fragment_id,
+            &quote,
+            &action,
+            get_str_opt(arguments, "target_entity_id").as_deref(),
+            get_str_opt(arguments, "name").as_deref(),
+            get_str_opt(arguments, "kind").as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(summary)
     }
 }
 
@@ -398,7 +559,7 @@ mod tests {
         let fid = crate::mutations::create_fragment(
             &paths,
             &sc,
-            "那名佣兵靠在门边，一言不发。后来他开口了。",
+            "那名佣兵靠在门边，一言不发。门口还站着一个穿灰袍的女人。后来他开口了。",
         )
         .unwrap();
 
@@ -423,6 +584,131 @@ mod tests {
         let note = format_anchor_note(&outcome, &paths);
         assert!(note.contains("那名佣兵"), "{note}");
         assert!(note.contains("穿灰袍的女人"), "{note}");
+
+        // 台账已记录 pending
+        let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].quote, "穿灰袍的女人");
+        assert!(refs[0].is_pending());
+    }
+
+    #[test]
+    fn resolved_ref_not_reprompted_and_target_anchored() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"沈屹\"\n\n[profile]\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(
+            &paths,
+            &sc,
+            "摆的人懂行，知道我们先看什么。沈屹蹲下身。",
+        )
+        .unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [], \"unresolved\": [{\"quote\": \"摆的人\", \"hint\": \"疑似凶手\"}]}".to_string(),
+        });
+        let ctx = ToolContext::new(dir.to_path_buf());
+
+        // 第一次锚定：上报并记录 pending
+        let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
+        assert_eq!(outcome.unresolved.len(), 1);
+
+        // 处置：建档为匿名占位实体
+        let summary = crate::mutations::resolve_unresolved_ref(
+            &paths,
+            &fid,
+            "摆的人",
+            "create",
+            None,
+            Some("九一真凶"),
+            Some("characters"),
+        )
+        .unwrap();
+        assert!(summary.contains("九一真凶"), "{summary}");
+
+        // 再次锚定（LLM 重复上报同一条）：不再出现在回执 pending 里
+        let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
+        assert!(outcome.unresolved.is_empty(), "{:?}", outcome.unresolved);
+
+        // 台账状态 resolved 且带目标；目标实体的锚点已并入片段
+        let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
+        assert_eq!(refs[0].status, "resolved");
+        let target = refs[0].target.clone().unwrap();
+        let content = std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+        assert!(content.contains(&format!("entity: {target}")), "{content}");
+    }
+
+    #[test]
+    fn ignored_ref_not_reprompted() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"沈屹\"\n\n[profile]\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "写的人不慌。").unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [], \"unresolved\": [{\"quote\": \"写的人\", \"hint\": \"疑似凶手\"}]}".to_string(),
+        });
+        let ctx = ToolContext::new(dir.to_path_buf());
+        anchor_and_apply(&ctx, &provider, &fid).unwrap();
+
+        crate::mutations::resolve_unresolved_ref(&paths, &fid, "写的人", "ignore", None, None, None)
+            .unwrap();
+
+        let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
+        assert!(outcome.unresolved.is_empty());
+    }
+
+    #[test]
+    fn stale_ref_cleaned_when_quote_removed_from_body() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"沈屹\"\n\n[profile]\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "摆的人懂行。").unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [], \"unresolved\": [{\"quote\": \"摆的人\", \"hint\": \"疑似凶手\"}]}".to_string(),
+        });
+        let ctx = ToolContext::new(dir.to_path_buf());
+        anchor_and_apply(&ctx, &provider, &fid).unwrap();
+        assert_eq!(crate::mutations::load_unresolved_refs(&paths).unwrap().len(), 1);
+
+        // 改稿：正文不再包含该指代（重写片段），重新锚定后台账自动清理
+        crate::mutations::write_fragment_text(&paths, &fid, "现场已经清理干净。").unwrap();
+        let provider_clean: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [], \"unresolved\": []}".to_string(),
+        });
+        anchor_and_apply(&ctx, &provider_clean, &fid).unwrap();
+        assert!(crate::mutations::load_unresolved_refs(&paths).unwrap().is_empty());
     }
 
     #[test]

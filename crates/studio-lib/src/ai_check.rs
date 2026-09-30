@@ -47,6 +47,9 @@ pub struct AiCheckItem {
     pub severity: AiCheckSeverity,
     /// 一两句话说明这段话的问题，具体、直接、不堆术语
     pub explanation: String,
+    /// 批量检测（场景/章节级）时命中所在的片段；单片段检测为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fragment_id: Option<String>,
 }
 
 /// AI 检测报告
@@ -131,6 +134,191 @@ pub fn check_text(
         items,
         summary,
         tokens_used,
+    })
+}
+
+// ============================================================================
+// 批量检测（场景 / 章节级）
+// ============================================================================
+
+/// 批量检测范围
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckScope {
+    Scene,
+    Chapter,
+}
+
+impl CheckScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CheckScope::Scene => "scene",
+            CheckScope::Chapter => "chapter",
+        }
+    }
+}
+
+/// 批量检测报告（场景/章节级）——多片段聚合，命中项带片段归因
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiCheckBatchReport {
+    /// "scene" | "chapter"
+    pub scope: String,
+    pub scope_id: String,
+    /// 命中项（按阅读顺序，fragment_id 指明所在片段）
+    pub items: Vec<AiCheckItem>,
+    pub summary: String,
+    pub tokens_used: usize,
+    /// 检测覆盖的片段（阅读序）与各自命中数
+    pub fragment_hits: Vec<(String, usize)>,
+}
+
+impl AiCheckBatchReport {
+    /// 真实命中数（排除 parse_error）
+    pub fn hit_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| i.feature_id != "parse_error")
+            .count()
+    }
+}
+
+/// 单次 LLM 检测的正文规模上限：超出则按片段边界分块检测。
+/// 上限兼顾检测质量（跨片段的重复句式能在一块里看出来）与输出配额。
+const SCOPE_CHUNK_CHAR_CAP: usize = 6000;
+
+/// 按阅读序收集范围内的片段 ID
+fn scope_fragments(
+    paths: &ProjectPaths,
+    scope: CheckScope,
+    id: &str,
+) -> Result<Vec<String>, StudioError> {
+    let structure_path = paths.structure_toml();
+    let content = std::fs::read_to_string(&structure_path)
+        .map_err(|e| StudioError::Io(format!("读取 structure.toml 失败: {e}")))?;
+    let structure = story_project_format::StructureFile::from_toml_str(&content)
+        .map_err(|e| StudioError::Config(format!("解析 structure.toml 失败: {e}")))?;
+
+    let scene_ids: Vec<String> = match scope {
+        CheckScope::Scene => vec![id.to_string()],
+        CheckScope::Chapter => {
+            let chapter = structure.chapter.get(id).ok_or_else(|| {
+                StudioError::NotFound(format!("章节 '{id}' 不存在"))
+            })?;
+            chapter.scenes.clone()
+        }
+    };
+
+    let mut fragment_ids = Vec::new();
+    for sc in &scene_ids {
+        let scene = structure
+            .scene
+            .get(sc)
+            .ok_or_else(|| StudioError::NotFound(format!("场景 '{sc}' 不存在")))?;
+        fragment_ids.extend(scene.fragments.iter().cloned());
+    }
+    Ok(fragment_ids)
+}
+
+/// 场景/章节级批量检测：聚合正文按片段边界分块，逐块调 LLM，
+/// 命中项按 quote 回查片段归属（查不到时归到块内首片段）。
+pub fn check_scope(
+    dir: &Path,
+    scope: CheckScope,
+    id: &str,
+    provider: &Arc<dyn AiProvider>,
+) -> Result<AiCheckBatchReport, StudioError> {
+    let paths = ProjectPaths::new(dir);
+    let fragment_ids = scope_fragments(&paths, scope, id)?;
+    if fragment_ids.is_empty() {
+        return Err(StudioError::Ai(format!(
+            "范围 {} {id} 下没有片段",
+            scope.as_str()
+        )));
+    }
+
+    // 阅读序正文（跳过空正文片段）
+    let mut bodies: Vec<(String, String)> = Vec::new();
+    for fid in &fragment_ids {
+        let body = read_fragment_body(&paths, fid)?;
+        if !body.is_empty() {
+            bodies.push((fid.clone(), body));
+        }
+    }
+    if bodies.is_empty() {
+        return Err(StudioError::Ai(format!(
+            "范围 {} {id} 下的片段正文均为空",
+            scope.as_str()
+        )));
+    }
+
+    // 分块：按片段边界凑块，单片段超上限时独占一块
+    let mut chunks: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    let mut current_chars = 0usize;
+    for (idx, (_, body)) in bodies.iter().enumerate() {
+        let len = body.chars().count();
+        if !current.is_empty() && current_chars + len > SCOPE_CHUNK_CHAR_CAP {
+            chunks.push(std::mem::take(&mut current));
+            current_chars = 0;
+        }
+        current.push(idx);
+        current_chars += len;
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    let mut all_items: Vec<AiCheckItem> = Vec::new();
+    let mut fragment_hits: Vec<(String, usize)> =
+        bodies.iter().map(|(fid, _)| (fid.clone(), 0)).collect();
+    let mut tokens_used = 0usize;
+    let mut best_summary = String::new();
+    let mut best_summary_hits = 0usize;
+
+    for chunk in &chunks {
+        let text = chunk
+            .iter()
+            .map(|&i| bodies[i].1.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let (items, summary, tokens) = check_text_inner(&text, provider)?;
+        tokens_used += tokens;
+
+        let mut chunk_hits = 0usize;
+        for mut item in items {
+            if item.feature_id == "parse_error" {
+                all_items.push(item);
+                continue;
+            }
+            chunk_hits += 1;
+            // 归因：quote 出现在哪个片段
+            let owner = chunk
+                .iter()
+                .find(|&&i| !item.quote.is_empty() && bodies[i].1.contains(&item.quote))
+                .copied()
+                .unwrap_or(chunk[0]);
+            item.fragment_id = Some(bodies[owner].0.clone());
+            if let Some(hit) = fragment_hits.iter_mut().find(|(fid, _)| *fid == bodies[owner].0) {
+                hit.1 += 1;
+            }
+            all_items.push(item);
+        }
+        if chunk_hits > best_summary_hits {
+            best_summary_hits = chunk_hits;
+            best_summary = summary;
+        }
+    }
+
+    if best_summary.is_empty() {
+        best_summary = default_summary(&all_items);
+    }
+
+    Ok(AiCheckBatchReport {
+        scope: scope.as_str().to_string(),
+        scope_id: id.to_string(),
+        items: all_items,
+        summary: best_summary,
+        tokens_used,
+        fragment_hits,
     })
 }
 
@@ -259,6 +447,7 @@ fn parse_report(raw: &str) -> Vec<AiCheckItem> {
         feature_name: "报告解析失败".to_string(),
         severity: AiCheckSeverity::Weak,
         explanation: format!("LLM 返回的内容无法解析为 JSON，原始内容：\n\n{raw}"),
+        fragment_id: None,
     }]
 }
 
@@ -387,6 +576,7 @@ fn loose_extract_items(input: &str) -> Vec<AiCheckItem> {
                 feature_name: item.feature_name,
                 severity: parse_severity(&item.severity),
                 explanation: item.explanation,
+                fragment_id: None,
             });
         }
     }
@@ -436,6 +626,7 @@ fn report_to_items(report: LlmReport) -> Vec<AiCheckItem> {
             feature_name: item.feature_name,
             severity: parse_severity(&item.severity),
             explanation: item.explanation,
+            fragment_id: None,
         })
         .collect()
 }
@@ -583,5 +774,90 @@ mod tests {
         let items = parse_report("这不是 JSON，也没有花括号");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].feature_id, "parse_error");
+    }
+
+    // ========================================================================
+    // check_scope（场景/章节批量）测试
+    // ========================================================================
+
+    #[derive(Debug)]
+    struct MockCheckProvider {
+        response: String,
+    }
+    impl AiProvider for MockCheckProvider {
+        fn id(&self) -> &str {
+            "mock-check"
+        }
+        fn generate(
+            &self,
+            _request: &story_ai_runtime::provider::GenerateRequest,
+        ) -> Result<story_ai_runtime::provider::GenerateResponse, story_ai_runtime::provider::AiError>
+        {
+            Ok(story_ai_runtime::provider::GenerateResponse {
+                text: self.response.clone(),
+                usage: story_ai_runtime::provider::TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                },
+                stop_reason: story_ai_runtime::provider::StopReason::EndTurn,
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    fn setup_scope_project() -> (tempfile::TempDir, String, String, Vec<String>) {
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "t").unwrap();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let f1 = crate::mutations::create_fragment(&paths, &sc, "第一段正文，字字如金。").unwrap();
+        let f2 = crate::mutations::create_fragment(&paths, &sc, "第二段正文，情绪没有名字。").unwrap();
+        (tmp, ch, sc, vec![f1, f2])
+    }
+
+    #[test]
+    fn check_scope_chapter_attributes_items_to_fragments() {
+        let (tmp, ch, _sc, fids) = setup_scope_project();
+        let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
+            response: r#"{"items":[{"quote":"第二段正文","feature_id":"3","feature_name":"匀速排比","severity":"Medium","explanation":"测试归因到第二片段。"}],"summary":"整体尚可。"}"#.to_string(),
+        });
+
+        let report = check_scope(tmp.path(), CheckScope::Chapter, &ch, &provider).unwrap();
+        assert_eq!(report.scope, "chapter");
+        assert_eq!(report.hit_count(), 1);
+
+        // quote 出现在 f2 → 归因到 f2
+        assert_eq!(report.items[0].fragment_id.as_deref(), Some(fids[1].as_str()));
+
+        // 覆盖两个片段，命中分布正确
+        assert_eq!(report.fragment_hits.len(), 2);
+        assert_eq!(report.fragment_hits[0], (fids[0].clone(), 0));
+        assert_eq!(report.fragment_hits[1], (fids[1].clone(), 1));
+        assert_eq!(report.summary, "整体尚可。");
+    }
+
+    #[test]
+    fn check_scope_scene_only_covers_scene_fragments() {
+        let (tmp, _ch, sc, fids) = setup_scope_project();
+        let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
+            response: r#"{"items":[],"summary":"未发现明显 AI 特征。"}"#.to_string(),
+        });
+
+        let report = check_scope(tmp.path(), CheckScope::Scene, &sc, &provider).unwrap();
+        assert_eq!(report.scope, "scene");
+        let covered: Vec<&String> = report.fragment_hits.iter().map(|(f, _)| f).collect();
+        assert_eq!(covered, fids.iter().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn check_scope_missing_scope_errors() {
+        let (tmp, _ch, _sc, _) = setup_scope_project();
+        let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
+            response: "{}".to_string(),
+        });
+        assert!(check_scope(tmp.path(), CheckScope::Chapter, "ch_99", &provider).is_err());
+        assert!(check_scope(tmp.path(), CheckScope::Scene, "sc_99", &provider).is_err());
     }
 }

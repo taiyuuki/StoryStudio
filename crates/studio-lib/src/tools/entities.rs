@@ -679,23 +679,7 @@ impl Tool for GetEntityDetailTool {
 
         // —— 出场记录（LocationIndex：显式锚点 + 隐式文本匹配，与 find_mentions 同源；
         //      按片段去重，同一片段多次出现标 ×N）——
-        let sid = StableId::new_unchecked(&entity_id);
-        let mut grouped: Vec<(String, usize)> = Vec::new();
-        for a in parse_output.location_index.appearances_of(&sid) {
-            let fid = a.fragment.as_str().to_string();
-            match grouped.iter_mut().find(|(f, _)| *f == fid) {
-                Some(entry) => entry.1 += 1,
-                None => grouped.push((fid, 1)),
-            }
-        }
-        if grouped.is_empty() {
-            // 兜底：LocationIndex 为空时直接扫描显式 anchors
-            for (fid, fnode) in parse_output.ir.document.all_fragments() {
-                if fnode.anchors.iter().any(|a| a.entity == sid) {
-                    grouped.push((fid.as_str().to_string(), 1));
-                }
-            }
-        }
+        let grouped = collect_appearances(&parse_output, &entity_id);
         let mut appearances = Vec::new();
         for (fid, count) in &grouped {
             let brief = parse_output
@@ -707,11 +691,283 @@ impl Tool for GetEntityDetailTool {
             let times = if *count > 1 { format!(" ×{count}") } else { String::new() };
             appearances.push(format!("  - {fid}{times}: \"{brief}\""));
         }
-out.push_str(&format!("\n  出场({} 个片段):\n", grouped.len()));
+        out.push_str(&format!("\n  出场({} 个片段):\n", grouped.len()));
         out.push_str(&appearances.join("\n"));
+        out.push_str("\n\n提示：可用 profile_check 核对该实体档案与正文描写的一致性（软提示）。");
 
         Ok(out)
     }
+}
+
+/// 收集实体的出场片段（LocationIndex 优先，空则兜底扫描显式锚点）。
+///
+/// 返回 (fragment_id, 出现次数)，按片段去重——get_entity_detail 展示与
+/// profile_check 取证共用。
+fn collect_appearances(
+    parse_output: &story_parser::ParseOutput,
+    entity_id: &str,
+) -> Vec<(String, usize)> {
+    let sid = StableId::new_unchecked(entity_id);
+    let mut grouped: Vec<(String, usize)> = Vec::new();
+    for a in parse_output.location_index.appearances_of(&sid) {
+        let fid = a.fragment.as_str().to_string();
+        match grouped.iter_mut().find(|(f, _)| *f == fid) {
+            Some(entry) => entry.1 += 1,
+            None => grouped.push((fid, 1)),
+        }
+    }
+    if grouped.is_empty() {
+        // 兜底：LocationIndex 为空时直接扫描显式 anchors
+        for (fid, fnode) in parse_output.ir.document.all_fragments() {
+            if fnode.anchors.iter().any(|a| a.entity == sid) {
+                grouped.push((fid.as_str().to_string(), 1));
+            }
+        }
+    }
+    grouped
+}
+
+// ============================================================================
+// profile_check — 档案与正文一致性核对（软提示）
+// ============================================================================
+
+pub struct ProfileCheckTool {
+    ctx: ToolContext,
+}
+impl ProfileCheckTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+/// LLM 返回的冲突报告
+#[derive(Debug, Default, serde::Deserialize)]
+struct ProfileCheckLlm {
+    #[serde(default)]
+    conflicts: Vec<ProfileConflictLlm>,
+    #[serde(default)]
+    summary: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProfileConflictLlm {
+    field: String,
+    profile_value: String,
+    text_value: String,
+    #[serde(default)]
+    quote: String,
+    #[serde(default)]
+    fragment_id: String,
+}
+
+impl Tool for ProfileCheckTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "profile_check".into(),
+            description: "核对实体档案与正文描写的一致性（软提示，非错误）：把档案的事实性字段\
+            （职务/身份/隶属/存亡/所在地/亲缘/时间线）与出场片段摘要对照，报告出入处\
+            （如档案写「退休副局长」、正文里却以现职身份下令）。\
+            档案过时也可能是有意的伏笔设计——报告只帮作者看见出入。\
+            整章交付前可对主要角色各跑一遍。".into(),
+            parameters: object_schema(vec![(
+                "entity_id",
+                "string",
+                "要核对的实体 ID（如 c_0005）",
+                true,
+            )]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let entity_id = get_str(arguments, "entity_id")?;
+        let provider = self
+            .ctx
+            .provider
+            .as_ref()
+            .ok_or_else(|| "profile_check 需要 provider，当前未配置".to_string())?;
+        let paths = self.ctx.paths();
+
+        // 档案：原始 TOML（完整字段）
+        let entity_path = paths
+            .file_for_id(&entity_id)
+            .ok_or_else(|| format!("无效的实体 ID: {entity_id}"))?;
+        if !entity_path.exists() {
+            return Err(format!("实体 '{entity_id}' 不存在"));
+        }
+        let content = std::fs::read_to_string(&entity_path)
+            .map_err(|e| format!("读取实体文件失败: {e}"))?;
+        let entity =
+            EntityFile::from_toml_str(&content).map_err(|e| format!("解析实体失败: {e}"))?;
+
+        // 出场取证：片段摘要（上限 12 条，60 字摘要 + 次数）
+        const APPEARANCE_CAP: usize = 12;
+        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let grouped = collect_appearances(&parse_output, &entity_id);
+        if grouped.is_empty() {
+            return Ok(format!(
+                "实体 {}「{}」暂无出场记录，无正文可比对。",
+                entity_id, entity.display_name
+            ));
+        }
+
+        let mut evidence = String::new();
+        for (fid, count) in grouped.iter().take(APPEARANCE_CAP) {
+            let brief = parse_output
+                .ir
+                .document
+                .get_fragment(&StableId::new_unchecked(fid))
+                .map(|f| format_brief(&f.text, 60))
+                .unwrap_or_default();
+            let times = if *count > 1 { format!(" ×{count}") } else { String::new() };
+            evidence.push_str(&format!("- {fid}{times}: {brief}\n"));
+        }
+        if grouped.len() > APPEARANCE_CAP {
+            evidence.push_str(&format!("（其余 {} 个片段略）\n", grouped.len() - APPEARANCE_CAP));
+        }
+
+        // 档案字段摘要（事实性字段拼进 prompt）
+        let mut profile_text = format!("名称：{}\n", entity.display_name);
+        if !entity.aliases.is_empty() {
+            profile_text.push_str(&format!("别名：{}\n", entity.aliases.join("、")));
+        }
+        let mut section = |title: &str, pairs: Vec<(&str, Option<&String>)>| {
+            let filled: Vec<String> = pairs
+                .into_iter()
+                .filter_map(|(k, v)| v.map(|v| format!("{k}: {v}")))
+                .collect();
+            if !filled.is_empty() {
+                profile_text.push_str(&format!("[{title}]\n{}\n", filled.join("\n")));
+            }
+        };
+        if let Some(p) = &entity.profile {
+            section(
+                "角色档案",
+                vec![
+                    ("race", p.race.as_ref()),
+                    ("gender", p.gender.as_ref()),
+                    ("occupation", p.occupation.as_ref()),
+                    ("appearance", p.appearance.as_ref()),
+                    ("background", p.background.as_ref()),
+                    ("personality", p.personality.as_ref()),
+                ],
+            );
+        }
+        if let Some(g) = &entity.geography {
+            section(
+                "地理",
+                vec![
+                    ("kind", g.kind.as_ref()),
+                    ("position", g.position.as_ref()),
+                    ("summary", g.summary.as_ref()),
+                ],
+            );
+        }
+        if let Some(i) = &entity.item {
+            section(
+                "道具",
+                vec![("kind", i.kind.as_ref()), ("description", i.description.as_ref())],
+            );
+        }
+        if let Some(o) = &entity.org {
+            section(
+                "组织",
+                vec![
+                    ("kind", o.kind.as_ref()),
+                    ("leader", o.leader.as_ref()),
+                    ("territory", o.territory.as_ref()),
+                    ("summary", o.summary.as_ref()),
+                ],
+            );
+        }
+
+        let user = format!(
+            "实体档案（{entity_id}）：\n{profile_text}\n出场片段摘要（阅读序）：\n{evidence}"
+        );
+
+        let request = story_ai_runtime::provider::GenerateRequest {
+            system: crate::prompts::PROFILE_CHECK.to_string(),
+            messages: vec![story_ai_runtime::provider::Message::user(user)],
+            model: String::new(),
+            temperature: 0.1,
+            max_tokens: 16384,
+            tools: Vec::new(),
+        };
+        let response = super::retry_generate(provider, &request)
+            .map_err(|e| format!("一致性核对调用失败: {e}"))?;
+
+        let report = parse_profile_check_response(&response.text);
+        Ok(format_profile_check(&entity_id, &entity.display_name, &report))
+    }
+}
+
+/// 宽松解析 LLM 的核对输出（直解 → 剥围栏 → 首尾花括号）
+fn parse_profile_check_response(raw: &str) -> ProfileCheckLlm {
+    let cleaned = raw.trim();
+    let candidates = {
+        let mut v = vec![cleaned.to_string()];
+        let stripped = cleaned
+            .trim_start_matches("```")
+            .trim_start_matches("json")
+            .trim();
+        v.push(stripped.strip_suffix("```").unwrap_or(stripped).trim().to_string());
+        if let (Some(s), Some(e)) = (cleaned.find('{'), cleaned.rfind('}')) {
+            if e > s {
+                v.push(cleaned[s..=e].to_string());
+            }
+        }
+        v
+    };
+    for c in candidates {
+        if let Ok(report) = serde_json::from_str::<ProfileCheckLlm>(&c) {
+            return report;
+        }
+    }
+    ProfileCheckLlm {
+        conflicts: vec![],
+        summary: format!("核对结果解析失败，原始内容：{cleaned}"),
+    }
+}
+
+fn format_profile_check(entity_id: &str, name: &str, report: &ProfileCheckLlm) -> String {
+    if report.conflicts.is_empty() {
+        return format!(
+            "档案一致性核对（{entity_id}「{name}」）：未见明显出入。{}",
+            if report.summary.is_empty() {
+                String::new()
+            } else {
+                report.summary.clone()
+            }
+        );
+    }
+
+    let mut out = format!(
+        "档案一致性核对（{entity_id}「{name}」）：发现 {} 处出入（软提示——也可能是有意设计，如档案过时作为伏笔）：",
+        report.conflicts.len()
+    );
+    for (idx, c) in report.conflicts.iter().enumerate() {
+        out.push_str(&format!(
+            "\n{}. 字段 {}：档案「{}」 vs 正文「{}」",
+            idx + 1,
+            c.field,
+            c.profile_value,
+            c.text_value
+        ));
+        if !c.quote.is_empty() {
+            out.push_str(&format!(
+                "\n   原文「{}」（{}）",
+                c.quote,
+                if c.fragment_id.is_empty() {
+                    "片段未知"
+                } else {
+                    &c.fragment_id
+                }
+            ));
+        }
+    }
+    if !report.summary.is_empty() {
+        out.push_str(&format!("\n总结：{}", report.summary));
+    }
+    out
 }
 
 /// 渲染角色档案 [profile] 段
@@ -867,6 +1123,55 @@ impl Tool for DeleteEntityTool {
         Ok(format!(
             "实体 {entity_id} 已删除（相关断言/关系/锚点引用未清理，建议执行 compile_check 检查悬空引用）"
         ))
+    }
+}
+
+// ============================================================================
+// merge_entities
+// ============================================================================
+
+pub struct MergeEntitiesTool {
+    ctx: ToolContext,
+}
+impl MergeEntitiesTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for MergeEntitiesTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "merge_entities".into(),
+            description: "合并实体：把 from_entity 的一切引用重定向到 into_entity 并删除 from\
+            （两者须同类型）。典型场景：匿名占位实体（如「九一真凶」）在真名揭晓后\
+            并入正式角色档案。from 的档案名与别名转入目标的别名，其余档案字段不合并。\
+            重定向范围：片段锚点、关系边（合并产生的自环删除）、断言、场景 POV、\
+            章节脉络出场表、线索观察者、outline 角色弧线、未锚定指代归拢目标。".into(),
+            parameters: object_schema(vec![
+                (
+                    "from_entity_id",
+                    "string",
+                    "被合并的实体 ID（如匿名占位实体）",
+                    true,
+                ),
+                (
+                    "into_entity_id",
+                    "string",
+                    "保留的目标实体 ID",
+                    true,
+                ),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let from_id = get_str(arguments, "from_entity_id")?;
+        let into_id = get_str(arguments, "into_entity_id")?;
+        let paths = self.ctx.paths();
+        let report =
+            crate::mutations::merge_entities(&paths, &from_id, &into_id).map_err(|e| e.to_string())?;
+        Ok(report.summary(&from_id, &into_id))
     }
 }
 
@@ -1277,6 +1582,38 @@ kind = "weapon"
         // "风" 同时匹配"林风"和"寒霜剑"（别名"霜剑"不含"风"，只匹配林风）
         let result = tool.execute(&serde_json::json!({ "query": "风" })).unwrap();
         assert!(result.contains("林风"));
+    }
+
+    #[test]
+    fn profile_check_response_parses_conflicts() {
+        // 康明远式案例：档案「退休副局长」 vs 正文现职行为
+        let raw = r#"{"conflicts":[{"field":"occupation","profile_value":"退休副局长、市警察协会顾问","text_value":"现职局长，到场下令专案重启","quote":"康明远宣布专案重启","fragment_id":"f_0001"}],"summary":"档案与正文职务描述存在出入。"}"#;
+        let report = parse_profile_check_response(raw);
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].field, "occupation");
+        assert_eq!(report.conflicts[0].fragment_id, "f_0001");
+
+        let out = format_profile_check("c_0005", "康明远", &report);
+        assert!(out.contains("发现 1 处出入"), "{out}");
+        assert!(out.contains("退休副局长"), "{out}");
+        assert!(out.contains("f_0001"), "{out}");
+        assert!(out.contains("软提示"), "{out}");
+    }
+
+    #[test]
+    fn profile_check_response_parses_fenced_and_empty() {
+        let fenced = "```json\n{\"conflicts\":[],\"summary\":\"未见明显出入。\"}\n```";
+        let report = parse_profile_check_response(fenced);
+        assert!(report.conflicts.is_empty());
+        assert_eq!(report.summary, "未见明显出入。");
+
+        let out = format_profile_check("c_0001", "某角色", &report);
+        assert!(out.contains("未见明显出入"), "{out}");
+
+        // 完全无法解析 → 不 panic，summary 提示解析失败
+        let report = parse_profile_check_response("这不是 JSON");
+        assert!(report.conflicts.is_empty());
+        assert!(report.summary.contains("解析失败"));
     }
 
     #[test]

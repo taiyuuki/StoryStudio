@@ -293,14 +293,56 @@ pub fn remove_relation(root: String, relation_id: String) -> R<()> {
     mutations::remove_relation(&paths(&root), &relation_id).map_err(e)
 }
 
+#[tauri::command]
+pub fn merge_entities(root: String, from_entity_id: String, into_entity_id: String) -> R<String> {
+    let report = mutations::merge_entities(&paths(&root), &from_entity_id, &into_entity_id)
+        .map_err(e)?;
+    Ok(report.summary(&from_entity_id, &into_entity_id))
+}
+
+#[tauri::command]
+pub fn resolve_unresolved(
+    root: String,
+    fragment_id: String,
+    quote: String,
+    action: String,
+    target_entity_id: Option<String>,
+    name: Option<String>,
+    kind: Option<String>,
+) -> R<String> {
+    mutations::resolve_unresolved_ref(
+        &paths(&root),
+        &fragment_id,
+        &quote,
+        &action,
+        target_entity_id.as_deref(),
+        name.as_deref(),
+        kind.as_deref(),
+    )
+    .map_err(e)
+}
+
 // ============================================================================
 // 叙事线索
 // ============================================================================
 
 #[tauri::command]
-pub fn create_thread(root: String, title: String, description: String, priority: String) -> R<ThreadDto> {
-    let id = mutations::create_thread(&paths(&root), title.trim(), &description, &priority, None)
-        .map_err(e)?;
+pub fn create_thread(
+    root: String,
+    title: String,
+    description: String,
+    priority: String,
+    due_volume: Option<u32>,
+) -> R<ThreadDto> {
+    let id = mutations::create_thread(
+        &paths(&root),
+        title.trim(),
+        &description,
+        &priority,
+        None,
+        due_volume,
+    )
+    .map_err(e)?;
     load_thread(&root, &id)
 }
 
@@ -312,7 +354,15 @@ pub fn update_thread(
     description: Option<String>,
     goal: Option<String>,
     priority: Option<String>,
+    // 计划埋设卷号：不传 = 不变；0 = 清除（恢复全书长线）；n = 设为第 n 卷
+    due_volume: Option<u32>,
 ) -> R<()> {
+    // Tauri IPC 的 JSON null 与缺省不可区分，用 0 表示清除
+    let due: Option<Option<u32>> = match due_volume {
+        None => None,
+        Some(0) => Some(None),
+        Some(n) => Some(Some(n)),
+    };
     mutations::update_thread(
         &paths(&root),
         &thread_id,
@@ -321,6 +371,7 @@ pub fn update_thread(
         goal.as_deref(),
         priority.as_deref(),
         None,
+        due,
     )
     .map_err(e)
     .map(|_| ())

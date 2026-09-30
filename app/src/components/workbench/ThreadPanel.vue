@@ -1,14 +1,40 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import type { ThreadDto, VolumeGroupDto } from '@/api/backend'
+import { api } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { ThreadDto } from '@/api/backend'
 
 const store = useWorkspaceStore()
 
 const creating = ref(false)
-const form = ref({ title: '', description: '', priority: 'minor' })
+const form = ref({ title: '', description: '', priority: 'minor', dueVolume: 0 })
 const editingId = ref<string | null>(null)
-const editDraft = ref({ title: '', goal: '', priority: 'minor' })
+const editDraft = ref({ title: '', goal: '', priority: 'minor', dueVolume: 0 })
+
+/** 卷列表（计划埋设卷下拉用）；0 = 全书长线 */
+const volumes = ref<VolumeGroupDto[]>([])
+onMounted(async () => {
+  if (!store.root) return
+  try {
+    const data = await api.getChapterOutline(store.root)
+    volumes.value = [...data.volumes].sort((a, b) => a.order - b.order)
+  } catch {
+    volumes.value = []
+  }
+})
+
+const volumeOptions = computed(() => {
+  const orders = new Set(volumes.value.map((v) => v.order))
+  // 线索上已设置的卷号不在卷列表里时也保留选项
+  for (const t of store.ws?.threads ?? []) {
+    if (t.dueVolume) orders.add(t.dueVolume)
+  }
+  return [...orders].sort((a, b) => a - b)
+})
+
+function dueLabel(t: ThreadDto): string {
+  return t.dueVolume ? `第${t.dueVolume}卷` : '全书长线'
+}
 
 const threads = computed(() => {
   const list = [...(store.ws?.threads ?? [])]
@@ -48,14 +74,24 @@ async function create() {
     creating.value = false
     return
   }
-  await store.createThread(f.title.trim(), f.description.trim(), f.priority)
+  await store.createThread(
+    f.title.trim(),
+    f.description.trim(),
+    f.priority,
+    f.dueVolume || null,
+  )
   creating.value = false
-  form.value = { title: '', description: '', priority: 'minor' }
+  form.value = { title: '', description: '', priority: 'minor', dueVolume: 0 }
 }
 
 function startEdit(t: ThreadDto) {
   editingId.value = t.id
-  editDraft.value = { title: t.title, goal: t.goal ?? '', priority: t.priority }
+  editDraft.value = {
+    title: t.title,
+    goal: t.goal ?? '',
+    priority: t.priority,
+    dueVolume: t.dueVolume ?? 0,
+  }
 }
 
 async function saveEdit(id: string) {
@@ -63,6 +99,8 @@ async function saveEdit(id: string) {
     title: editDraft.value.title.trim(),
     goal: editDraft.value.goal.trim(),
     priority: editDraft.value.priority,
+    // 0 = 清除，恢复全书长线
+    dueVolume: editDraft.value.dueVolume,
   })
   editingId.value = null
 }
@@ -87,6 +125,10 @@ async function saveEdit(id: string) {
           <option value="main">主线</option>
           <option value="minor">支线</option>
         </select>
+        <select v-model="form.dueVolume" title="计划埋设卷">
+          <option :value="0">全书长线</option>
+          <option v-for="v in volumeOptions" :key="v" :value="v">第{{ v }}卷埋设</option>
+        </select>
         <button class="ink-btn ink-btn--sm ink-btn--primary" @click="create">创建</button>
         <button class="ink-btn ink-btn--sm" @click="creating = false">取消</button>
       </div>
@@ -106,6 +148,10 @@ async function saveEdit(id: string) {
             <option value="main">主线</option>
             <option value="minor">支线</option>
           </select>
+          <select v-model="editDraft.dueVolume" title="计划埋设卷；到卷未埋会升级为「本卷该埋未埋」">
+            <option :value="0">全书长线</option>
+            <option v-for="v in volumeOptions" :key="v" :value="v">第{{ v }}卷埋设</option>
+          </select>
           <button class="ink-btn ink-btn--sm ink-btn--primary" @click="saveEdit(t.id)">保存</button>
           <button class="ink-btn ink-btn--sm" @click="editingId = null">取消</button>
         </div>
@@ -117,6 +163,13 @@ async function saveEdit(id: string) {
           </span>
           <span class="tc-status" :class="statusMeta[statusOf(t)].cls">
             {{ statusMeta[statusOf(t)].label }}
+          </span>
+          <span
+            v-if="statusOf(t) === 'planned' && t.dueVolume"
+            class="tc-due"
+            title="计划埋设卷；到卷已完稿仍未埋会提示「本卷该埋未埋」"
+          >
+            <i class="fa-regular fa-clock" /> {{ dueLabel(t) }}
           </span>
           <span style="flex: 1" />
           <button class="tc-act" title="编辑" @click="startEdit(t)">
@@ -275,7 +328,14 @@ async function saveEdit(id: string) {
   &.st-planted { background: color-mix(in srgb, var(--ink-positive) 14%, transparent); color: var(--ink-positive); }
   &.st-revealed { background: color-mix(in srgb, var(--ink-warning) 15%, transparent); color: var(--ink-warning); }
   &.st-resolved { background: var(--ink-accent-soft); color: var(--ink-accent); }
-  &.st-abandoned { background: color-mix(in srgb, var(--state-danger) 12%, transparent); color: var(--state-danger); }
+  &.st-abandoned { background: color-mix(in srgb, var(--state-danger) 12%, transparent); color: var(--state-danger); }}
+
+.tc-due {
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .tc-act {

@@ -6,7 +6,7 @@ use story_ir::StableId;
 use story_parser::parse_project;
 use story_project_format::FragmentFile;
 
-use super::{get_str, get_str_opt, object_schema, ToolContext};
+use super::{get_str, get_str_opt, get_u32_opt, object_schema, ToolContext};
 
 // ============================================================================
 // add_assertion
@@ -288,6 +288,13 @@ impl Tool for CreateThreadTool {
                 ("description", "string", "线索描述", true),
                 ("priority", "string", "优先级（main/minor）", false),
                 ("planted_at", "string", "埋设位置（场景 ID 或片段 ID，如 sc_01_01 / f_0003）", false),
+                (
+                    "due_volume",
+                    "integer",
+                    "计划埋设卷号（如 1 = 第一卷内应埋设）。到卷仍未埋会报「本卷该埋未埋」；\
+                    不设则视为全书长线，仅在低级别提示",
+                    false,
+                ),
             ]),
         }
     }
@@ -297,6 +304,7 @@ impl Tool for CreateThreadTool {
         let description = get_str(arguments, "description")?;
         let priority = get_str_opt(arguments, "priority").unwrap_or_else(|| "minor".to_string());
         let planted = get_str_opt(arguments, "planted_at");
+        let due_volume = get_u32_opt(arguments, "due_volume");
 
         let paths = self.ctx.paths();
         let new_id = crate::mutations::create_thread(
@@ -305,6 +313,7 @@ impl Tool for CreateThreadTool {
             &description,
             &priority,
             planted.as_deref(),
+            due_volume,
         )
         .map_err(|e| e.to_string())?;
 
@@ -444,7 +453,7 @@ impl Tool for UpdateThreadTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "update_thread".into(),
-            description: "修改已有线索的核心字段（title/description/goal/priority/tags），\
+            description: "修改已有线索的核心字段（title/description/goal/priority/tags/due_volume），\
             只更新提供的字段。tags 以逗号分隔，整体覆盖。操作前先 get_threads 确认 ID。"
                 .into(),
             parameters: object_schema(vec![
@@ -454,6 +463,12 @@ impl Tool for UpdateThreadTool {
                 ("goal", "string", "叙事目标（给 AI 的上下文）", false),
                 ("priority", "string", "优先级: main / minor", false),
                 ("tags", "string", "标签，逗号分隔（整体覆盖）", false),
+                (
+                    "due_volume",
+                    "integer",
+                    "计划埋设卷号（如 1 = 第一卷内应埋设）；传 0 表示清除、恢复全书长线",
+                    false,
+                ),
             ]),
         }
     }
@@ -469,6 +484,10 @@ impl Tool for UpdateThreadTool {
                 .map(|t| t.trim().to_string())
                 .collect::<Vec<_>>()
         });
+        // None=不动；Some(n)=设为第 n 卷（0 清除）
+        let due_volume = arguments.get("due_volume").map(|_| {
+            get_u32_opt(arguments, "due_volume")
+        });
 
         let paths = self.ctx.paths();
         let changed = crate::mutations::update_thread(
@@ -479,6 +498,7 @@ impl Tool for UpdateThreadTool {
             goal.as_deref(),
             priority.as_deref(),
             tags.as_deref(),
+            due_volume,
         )
         .map_err(|e| e.to_string())?;
 

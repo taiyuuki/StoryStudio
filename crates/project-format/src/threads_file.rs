@@ -30,6 +30,10 @@ pub struct ThreadDef {
     /// 优先级：main | minor（默认 minor）
     #[serde(default = "default_priority")]
     pub priority: String,
+    /// 计划埋设卷号（1-based，对应 chapters.toml 的 volume_order）。
+    /// 未设置视为全书长线；已到卷仍未埋设时诊断升级为「本卷该埋未埋」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_volume: Option<u32>,
     /// 开放标签
     #[serde(default)]
     pub tags: Vec<String>,
@@ -199,9 +203,34 @@ title = "感情线"
         let t = &file.threads[0];
         assert_eq!(t.id, "t_002");
         assert_eq!(t.priority, "minor"); // 默认值
+        assert!(t.due_volume.is_none()); // 默认全书长线
         assert!(t.assertions.is_empty());
         assert!(t.knowledge.is_empty());
         assert!(!t.abandoned);
+    }
+
+    #[test]
+    fn parse_due_volume() {
+        let toml_str = r#"
+[[thread]]
+id = "t_010"
+title = "卷级线索"
+priority = "main"
+due_volume = 2
+"#;
+        let file = ThreadsFile::from_toml_str(toml_str).unwrap();
+        assert_eq!(file.threads[0].due_volume, Some(2));
+
+        // 序列化往返保持
+        let serialized = file.to_toml_string().unwrap();
+        assert!(serialized.contains("due_volume = 2"), "{serialized}");
+        let reparsed = ThreadsFile::from_toml_str(&serialized).unwrap();
+        assert_eq!(reparsed.threads[0].due_volume, Some(2));
+
+        // 未设置的线索序列化时不应带 due_volume 字段
+        let bare = ThreadsFile::from_toml_str("[[thread]]\nid = \"t_011\"\ntitle = \"x\"\n").unwrap();
+        let s = bare.to_toml_string().unwrap();
+        assert!(!s.contains("due_volume"), "{s}");
     }
 
     #[test]

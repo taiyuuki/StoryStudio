@@ -40,7 +40,10 @@ pub use book_studio::{
     BookCreationOptions, ChapterItem, OutlineBatchDraft, VolumeItem, WorldDraft, WorldSaveReport,
     CONCEPT_CANDIDATES, MAX_BATCH_CHAPTERS,
 };
-pub use ai_check::{check_fragment, check_text, AiCheckItem, AiCheckReport, AiCheckSeverity};
+pub use ai_check::{
+    check_fragment, check_scope, check_text, AiCheckBatchReport, AiCheckItem, AiCheckReport,
+    AiCheckSeverity, CheckScope,
+};
 pub use compile::{compile_project, compile_project_full, CompileResult, CompileStats};
 pub use error::StudioError;
 pub use export::{export_chapters_markdown, export_markdown};

@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import AiPanel from './AiPanel.vue'
+import AnchoringReviewPanel from './AnchoringReviewPanel.vue'
 import BookPanel from './BookPanel.vue'
 import EntityPanel from './EntityPanel.vue'
 import ThreadPanel from './ThreadPanel.vue'
@@ -24,6 +25,15 @@ const panels = computed(
       ['book', { label: '逐章成书', icon: 'fa-solid fa-book-open', comp: BookPanel }],
       ['chapters', { label: '章节脉络', icon: 'fa-solid fa-list-ol', comp: ChaptersPanel }],
       ['entities', { label: '设定', icon: 'fa-solid fa-users', comp: EntityPanel }],
+      [
+        'anchoring',
+        {
+          label: '锚定待审',
+          icon: 'fa-solid fa-anchor',
+          comp: AnchoringReviewPanel,
+          badge: store.ws?.unresolvedRefs.filter((r) => r.status === 'pending').length ?? 0,
+        },
+      ],
       ['worldview', { label: '世界观', icon: 'fa-solid fa-globe', comp: WorldviewPanel }],
       ['threads', { label: '叙事线索', icon: 'fa-solid fa-route', comp: ThreadPanel }],
       [

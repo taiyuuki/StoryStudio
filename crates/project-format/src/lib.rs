@@ -3,6 +3,7 @@
 //! 定义 Story Studio Project 的文件格式与目录结构。
 //! 每种信息只有一个 Source of Truth（§3）。
 
+pub mod anchoring_file;
 pub mod chapters_file;
 pub mod compiler_toml;
 pub mod entity_file;
@@ -18,6 +19,7 @@ pub mod structure_toml;
 pub mod threads_file;
 pub mod worldview_file;
 
+pub use anchoring_file::{AnchoringFile, AnchoringFileError, UnresolvedRefDef};
 pub use chapters_file::{
     is_valid_status, ChapterOutlineDef, ChaptersFile, ChaptersFileError, VolumeGroupDef,
 };

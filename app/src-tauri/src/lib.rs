@@ -70,6 +70,8 @@ pub fn run() {
             commands::create_entity,
             commands::delete_entity,
             commands::save_entity,
+            commands::merge_entities,
+            commands::resolve_unresolved,
             commands::add_relation,
             commands::remove_relation,
             // 叙事线索

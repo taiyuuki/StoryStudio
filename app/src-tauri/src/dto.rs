@@ -32,7 +32,21 @@ pub struct WorkspaceDto {
     pub entities: Vec<EntityDto>,
     pub relations: Vec<RelationDto>,
     pub threads: Vec<ThreadDto>,
+    /// 未锚定指代台账（理解锚定产出 + 处置状态）
+    pub unresolved_refs: Vec<UnresolvedRefDto>,
     pub total_words: u64,
+}
+
+/// 未锚定指代记录（anchoring.toml 单条 ref）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedRefDto {
+    pub fragment_id: String,
+    pub quote: String,
+    pub hint: String,
+    /// pending | ignored | resolved
+    pub status: String,
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +153,8 @@ pub struct ThreadDto {
     pub goal: Option<String>,
     /// main | minor
     pub priority: String,
+    /// 计划埋设卷号（None = 全书长线）
+    pub due_volume: Option<u32>,
     pub tags: Vec<String>,
     pub planted_at: Option<String>,
     pub revealed_at: Option<String>,
@@ -478,6 +494,7 @@ pub fn to_thread_dto(t: &ThreadDef) -> ThreadDto {
         description: t.description.clone(),
         goal: t.goal.clone(),
         priority: t.priority.clone(),
+        due_volume: t.due_volume,
         tags: t.tags.clone(),
         planted_at: t.planted_at.clone(),
         revealed_at: t.revealed_at.clone(),
@@ -943,6 +960,19 @@ pub fn build_workspace(root: &Path, info: &story_studio_lib::ProjectInfo) -> Res
         .map(to_thread_dto)
         .collect();
 
+    // 未锚定指代台账（anchoring.toml，可缺省）
+    let unresolved_refs = load_toml::<story_project_format::AnchoringFile>(&paths.anchoring_toml())?
+        .refs
+        .iter()
+        .map(|r| UnresolvedRefDto {
+            fragment_id: r.fragment_id.clone(),
+            quote: r.quote.clone(),
+            hint: r.hint.clone(),
+            status: r.status.clone(),
+            target: r.target.clone(),
+        })
+        .collect();
+
     let total_words = chapters
         .iter()
         .flat_map(|c| c.scenes.iter())
@@ -960,6 +990,7 @@ pub fn build_workspace(root: &Path, info: &story_studio_lib::ProjectInfo) -> Res
         entities,
         relations,
         threads,
+        unresolved_refs,
         total_words,
     })
 }

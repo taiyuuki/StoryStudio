@@ -67,6 +67,11 @@ impl ProjectPaths {
         self.root.join("relations.toml")
     }
 
+    /// 未锚定指代处置台账（理解锚定的名册外指代与处置记录）
+    pub fn anchoring_toml(&self) -> PathBuf {
+        self.root.join("anchoring.toml")
+    }
+
     pub fn assertions_toml(&self) -> PathBuf {
         self.knowledge_dir().join("assertions.toml")
     }

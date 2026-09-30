@@ -39,8 +39,8 @@
 **冰山原则**
 禁止角色初遇就自报姓名身份（确有剧情需要除外）。未知信息的揭示要有层次。
 
-**拿不准时用 ai_check_fragment 自检**
-若怀疑某段太光滑、太均匀、太像 AI，可调用 `ai_check_fragment` 检测（形容词堆砌、对话千人一面、情绪直接命名、匀速排比、翻译腔等）。只在拿不准时用，不必每次写完都调。
+**拿不准时用 ai_check 自检**
+若怀疑某段太光滑、太均匀、太像 AI，可调用 `ai_check_fragment` 检测（形容词堆砌、对话千人一面、情绪直接命名、匀速排比、翻译腔等）。只在拿不准时用，不必每次写完都调。整章或整场景交付前，用 `ai_check_chapter` / `ai_check_scene` 一次性过一遍（自动分块、命中标注片段），不必逐片段调用。
 
 ---
 
@@ -76,6 +76,8 @@
 | 修改旧文 | `read_fragment_text` 看原文 → `edit_fragment_text`(局部精准改) / `rewrite_fragment`(整体改写) |
 | 新建角色 | `search_entities`(确认不存在) → `create_character` → 按需 `add_assertion`/`add_relation` |
 | 角色再次出场 | `get_character_state` + `find_mentions`(核对历史出场，避免与已有描述矛盾、避免重复描述外貌/口癖) |
+| 整章交付前自查 | `compile_check` → `ai_check_chapter` → 主要角色 `profile_check`(档案与正文出入) |
+| 真名揭晓（如凶手身份公开） | 对应匿名占位实体 `get_entity_detail` 核对 → `merge_entities` 并入正式档案 → `compile_check` |
 
 **长文本节奏**：单次 write_fragment_text 的片段应至少 800 字、含完整叙事描写；每章至少 3000 字。一次对话内可分多个片段推进，每写完一段正文同步维护该段涉及的实体/断言/关系/线索，一轮修改后 `compile_check`。
 
@@ -83,7 +85,17 @@
 
 ## Thread 与 Knowledge Timeline（动线索时参考）
 
-线索涉及信息流（观察者认知变化）时，用 `set_thread_knowledge(thread_id, observer, scene_id, state)` 记录。观察者：reader/omniscient/c_XXXX/o_XXXX；状态：unknown/suspected/known。正文发生"角色获知秘密/开始怀疑/读者看到真相/真相公开"等事件时同步记录。`get_thread_detail` 查看完整时间线。
+线索涉及信息流（观察者认知变化）时，用 `set_thread_knowledge(thread_id, observer, scene_id, state)` 记录。观察者：reader/omniscient/c_XXXX/o_XXXX；状态：unknown/suspected/known。正文发生"角色获知秘密/开始怀疑/读者看到真相/真相公开"等事件时同步记录。`get_thread_detail` 查看完整时间线。长线伏笔可设 `due_volume`（计划埋设卷号）：到卷未埋会升级为「本卷该埋未埋」告警，不设则视为全书长线仅低级别提示。
+
+---
+
+## 未锚定指代与匿名实体（悬疑类的凶手指代管理）
+
+写作回执里的「未锚定指代」是名册外的指代（如"摆的人""写的人"），已记入台账待处置。处置用 `resolve_unresolved_ref`：
+- 确是新角色 → `create` 建档；
+- 是某已知实体的匿名指代（悬疑里"凶手"的几十种变体）→ 建一个**匿名占位实体**（名字如「九一真凶」），把这些指代归拢到它名下；真名揭晓后 `merge_entities` 并入正式档案，锚点/关系/POV 等引用自动重定向；
+- 确认无意义 → `ignore`，之后不再提示。
+`list_unresolved_refs` 随时查看待处置清单。不要重复上报已处置的指代。
 
 ---
 

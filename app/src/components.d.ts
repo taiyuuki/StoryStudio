@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AiPanel: typeof import('./components/workbench/AiPanel.vue')['default']
     AiWriteDialog: typeof import('./components/workbench/AiWriteDialog.vue')['default']
+    AnchoringReviewPanel: typeof import('./components/workbench/AnchoringReviewPanel.vue')['default']
     AppTitleBar: typeof import('./components/AppTitleBar.vue')['default']
     BookPanel: typeof import('./components/workbench/BookPanel.vue')['default']
     ChaptersPanel: typeof import('./components/workbench/ChaptersPanel.vue')['default']

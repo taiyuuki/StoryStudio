@@ -129,7 +129,9 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(CreateOrganizationTool::new(ctx.clone())));
     registry.register(Box::new(SearchEntitiesTool::new(ctx.clone())));
     registry.register(Box::new(GetEntityDetailTool::new(ctx.clone())));
+    registry.register(Box::new(ProfileCheckTool::new(ctx.clone())));
     registry.register(Box::new(DeleteEntityTool::new(ctx.clone())));
+    registry.register(Box::new(MergeEntitiesTool::new(ctx.clone())));
     registry.register(Box::new(GetStoryRecapTool::new(ctx.clone())));
     registry.register(Box::new(GetRelationsTool::new(ctx.clone())));
     registry.register(Box::new(QueryAssertionsTool::new(ctx.clone())));
@@ -172,7 +174,11 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(SetFragmentAnchorTool::new(ctx.clone())));
     registry.register(Box::new(RemoveFragmentAnchorTool::new(ctx.clone())));
     registry.register(Box::new(AnchorFragmentsTool::new(ctx.clone())));
+    registry.register(Box::new(ListUnresolvedRefsTool::new(ctx.clone())));
+    registry.register(Box::new(ResolveUnresolvedRefTool::new(ctx.clone())));
     registry.register(Box::new(AiCheckTool::new(ctx.clone())));
+    registry.register(Box::new(AiCheckScopeTool::chapter(ctx.clone())));
+    registry.register(Box::new(AiCheckScopeTool::scene(ctx.clone())));
     registry.register(Box::new(UpdateEntityTool::new(ctx.clone())));
     registry.register(Box::new(GetOutlineTool::new(ctx.clone())));
     registry.register(Box::new(SetOutlineItemTool::new(ctx.clone())));

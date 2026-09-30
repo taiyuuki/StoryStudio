@@ -13,6 +13,9 @@ pub(crate) const AGENT_GLOBAL: &str = include_str!("prompts/agent_global.md");
 /// AI 味检测（ai_check_fragment）的 system prompt
 pub(crate) const AI_CHECK: &str = include_str!("prompts/ai_check.md");
 
+/// 档案与正文一致性核对（profile_check）的 system prompt
+pub(crate) const PROFILE_CHECK: &str = include_str!("prompts/profile_check.md");
+
 /// 开书第 1 步：概念候选生成。
 /// 占位符：`{{idea}}` / `{{genre_line}}` / `{{extras}}` / `{{guide}}` / `{{candidates}}`
 pub(crate) const BOOK_CONCEPTS: &str = include_str!("prompts/book_concepts.md");
@@ -66,6 +69,7 @@ mod tests {
             ("AGENT_PROJECT", AGENT_PROJECT),
             ("AGENT_GLOBAL", AGENT_GLOBAL),
             ("AI_CHECK", AI_CHECK),
+            ("PROFILE_CHECK", PROFILE_CHECK),
             ("BOOK_CONCEPTS", BOOK_CONCEPTS),
             ("BOOK_WORLD", BOOK_WORLD),
             ("BOOK_OUTLINE", BOOK_OUTLINE),

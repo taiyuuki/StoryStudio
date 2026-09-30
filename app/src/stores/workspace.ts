@@ -383,6 +383,53 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  /** 合并实体（from 并入 into：锚点/关系/POV 等引用自动重定向），成功后全量刷新 */
+  async function mergeEntities(fromId: string, intoId: string): Promise<boolean> {
+    if (!root.value) return false
+    const fromName = ws.value?.entities.find((x) => x.id === fromId)?.displayName ?? fromId
+    const intoName = ws.value?.entities.find((x) => x.id === intoId)?.displayName ?? intoId
+    try {
+      await ElMessageBox.confirm(
+        `将「${fromName}」并入「${intoName}」：前者的档案名与别名转入后者的别名，锚点/关系/POV/出场表等引用自动重定向，随后删除「${fromName}」。确定合并？`,
+        '合并设定',
+        { type: 'warning', confirmButtonText: '合并', cancelButtonText: '取消' },
+      )
+    } catch {
+      return false
+    }
+    try {
+      const summary = await api.mergeEntities(root.value, fromId, intoId)
+      ElMessage.success(summary)
+      await refresh()
+      scheduleCompile()
+      return true
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+      return false
+    }
+  }
+
+  /** 处置一条未锚定指代（建档 / 归拢 / 忽略），成功后刷新台账 */
+  async function resolveUnresolved(
+    fragmentId: string,
+    quote: string,
+    action: 'create' | 'merge' | 'ignore',
+    opts?: { targetEntityId?: string; name?: string; kind?: EntityKind },
+  ): Promise<boolean> {
+    if (!root.value) return false
+    try {
+      const summary = await api.resolveUnresolved(root.value, fragmentId, quote, action, opts)
+      ElMessage.success(summary)
+      // 台账与实体列表都可能变化（create 建档），全量刷新最稳
+      await refresh()
+      scheduleCompile()
+      return true
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+      return false
+    }
+  }
+
   async function addRelation(from: string, to: string, relation: string): Promise<void> {
     if (!root.value) return
     try {
@@ -406,10 +453,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   // ── 叙事线索 ──────────────────────────────────────────
-  async function createThread(title: string, description: string, priority: string): Promise<void> {
+  async function createThread(
+    title: string,
+    description: string,
+    priority: string,
+    dueVolume?: number | null,
+  ): Promise<void> {
     if (!root.value) return
     try {
-      const t = await api.createThread(root.value, title, description, priority)
+      const t = await api.createThread(root.value, title, description, priority, dueVolume ?? null)
       ws.value?.threads.push(t)
     } catch (err) {
       ElMessage.error((err as Error).message)
@@ -418,13 +470,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function updateThread(
     threadId: string,
-    patch: { title?: string; description?: string; goal?: string; priority?: string },
+    patch: {
+      title?: string
+      description?: string
+      goal?: string
+      priority?: string
+      /** 0 = 清除（恢复全书长线） */
+      dueVolume?: number
+    },
   ): Promise<void> {
     if (!root.value) return
     try {
       await api.updateThread(root.value, threadId, patch)
       const t = ws.value?.threads.find((x) => x.id === threadId)
-      if (t) Object.assign(t, patch)
+      if (t) {
+        Object.assign(t, patch)
+        if (patch.dueVolume !== undefined) t.dueVolume = patch.dueVolume || null
+      }
     } catch (err) {
       ElMessage.error((err as Error).message)
     }
@@ -603,6 +665,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     createEntity,
     saveEntity,
     deleteEntity,
+    mergeEntities,
+    resolveUnresolved,
     addRelation,
     removeRelation,
     createThread,
