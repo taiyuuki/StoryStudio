@@ -44,6 +44,7 @@ declare module 'vue' {
     StructureTree: typeof import('./components/workbench/StructureTree.vue')['default']
     ThreadPanel: typeof import('./components/workbench/ThreadPanel.vue')['default']
     WorldForm: typeof import('./components/start/aiBook/WorldForm.vue')['default']
+    WorldviewPanel: typeof import('./components/workbench/WorldviewPanel.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

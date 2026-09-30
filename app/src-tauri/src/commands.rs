@@ -341,6 +341,20 @@ fn load_thread(root: &str, thread_id: &str) -> R<ThreadDto> {
 }
 
 // ============================================================================
+// 世界观（概念 / 体系 / 历法）
+// ============================================================================
+
+#[tauri::command]
+pub fn get_worldview(root: String) -> R<WorldviewDto> {
+    build_worldview(Path::new(&root))
+}
+
+#[tauri::command]
+pub fn save_worldview(root: String, worldview: WorldviewDto) -> R<()> {
+    crate::dto::save_worldview(Path::new(&root), &worldview)
+}
+
+// ============================================================================
 // 编译诊断 / 导出
 // ============================================================================
 

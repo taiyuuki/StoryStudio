@@ -9,7 +9,11 @@ use story_project_format::fragment_file::AnchorEntry;
 use story_project_format::relation_file::ValidityDef;
 use story_project_format::structure_toml::StoryTimeDef;
 use story_project_format::threads_file::ThreadDef;
-use story_project_format::{ChapterDef, EntityFile, FragmentFile, RelationsFile, ThreadsFile};
+use story_project_format::worldview_file::{ConceptDef, SystemDef};
+use story_project_format::{
+    ChapterDef, ConceptsFile, EntityFile, FragmentFile, RelationsFile, SystemsFile, ThreadsFile,
+    TimelineFile,
+};
 
 // ============================================================================
 // Workspace — 打开项目后的全量快照
@@ -601,6 +605,135 @@ pub fn save_entity_file(root: &Path, dto: &EntityDto) -> Result<(), String> {
         .map_err(|e| format!("写入实体文件失败: {e}"))
 }
 
+// ============================================================================
+// 世界观（设计层）：概念 / 体系 / 历法。地理与势力是实体，不在此列。
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorldviewDto {
+    pub concepts: Vec<ConceptDto>,
+    pub systems: Vec<SystemDto>,
+    pub eras: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConceptDto {
+    pub name: String,
+    pub category: Option<String>,
+    pub summary: Option<String>,
+    pub details: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemDto {
+    pub name: String,
+    pub kind: Option<String>,
+    pub levels: Option<String>,
+    pub rules: Option<String>,
+    pub summary: Option<String>,
+}
+
+/// 读取世界观（worldview/ 目录，文件缺失按空处理）
+pub fn build_worldview(root: &Path) -> Result<WorldviewDto, String> {
+    let paths = story_project_format::ProjectPaths::new(root);
+    let concepts: Vec<ConceptDto> = load_toml::<ConceptsFile>(&paths.worldview_concepts_toml())?
+        .concepts
+        .iter()
+        .map(|c| ConceptDto {
+            name: c.name.clone(),
+            category: c.category.clone(),
+            summary: c.summary.clone(),
+            details: c.details.clone(),
+        })
+        .collect();
+    let systems: Vec<SystemDto> = load_toml::<SystemsFile>(&paths.worldview_systems_toml())?
+        .systems
+        .iter()
+        .map(|s| SystemDto {
+            name: s.name.clone(),
+            kind: s.kind.clone(),
+            levels: s.levels.clone(),
+            rules: s.rules.clone(),
+            summary: s.summary.clone(),
+        })
+        .collect();
+    let eras = load_toml::<TimelineFile>(&paths.worldview_timeline_toml())?.eras;
+    Ok(WorldviewDto { concepts, systems, eras })
+}
+
+/// 保存世界观（整体写回 worldview/ 目录三个文件）
+pub fn save_worldview(root: &Path, dto: &WorldviewDto) -> Result<(), String> {
+    use story_project_format::WorldviewSectionFile;
+
+    let paths = story_project_format::ProjectPaths::new(root);
+    std::fs::create_dir_all(paths.worldview_dir())
+        .map_err(|e| format!("创建 worldview/ 目录失败: {e}"))?;
+
+    let concepts = ConceptsFile {
+        concepts: dto
+            .concepts
+            .iter()
+            .filter(|c| !c.name.trim().is_empty())
+            .map(|c| ConceptDef {
+                name: c.name.trim().to_string(),
+                category: c.category.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+                summary: c.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+                details: c.details.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+            })
+            .collect(),
+    };
+    let systems = SystemsFile {
+        systems: dto
+            .systems
+            .iter()
+            .filter(|s| !s.name.trim().is_empty())
+            .map(|s| SystemDef {
+                name: s.name.trim().to_string(),
+                kind: s.kind.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+                levels: s.levels.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+                rules: s.rules.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+                summary: s.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+            })
+            .collect(),
+    };
+    let timeline = TimelineFile {
+        eras: dto
+            .eras
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    };
+
+    let files: [(std::path::PathBuf, String); 3] = [
+        (
+            paths.worldview_concepts_toml(),
+            concepts
+                .to_toml_string()
+                .map_err(|e| format!("序列化 concepts.toml 失败: {e}"))?,
+        ),
+        (
+            paths.worldview_systems_toml(),
+            systems
+                .to_toml_string()
+                .map_err(|e| format!("序列化 systems.toml 失败: {e}"))?,
+        ),
+        (
+            paths.worldview_timeline_toml(),
+            timeline
+                .to_toml_string()
+                .map_err(|e| format!("序列化 timeline.toml 失败: {e}"))?,
+        ),
+    ];
+    for (path, content) in files {
+        std::fs::write(&path, content).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// 汇总项目全量工作区数据
 pub fn build_workspace(root: &Path, info: &story_studio_lib::ProjectInfo) -> Result<WorkspaceDto, String> {
     let paths = story_project_format::ProjectPaths::new(root);
@@ -714,4 +847,72 @@ pub fn load_chapter_dtos(root: &Path) -> Result<Vec<ChapterDto>, String> {
         });
     }
     Ok(chapters)
+}
+
+#[cfg(test)]
+mod worldview_tests {
+    use super::*;
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "worldview-dto-test-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn worldview_roundtrip() {
+        let root = temp_root("roundtrip");
+        let dto = WorldviewDto {
+            concepts: vec![ConceptDto {
+                name: "灵气".into(),
+                category: Some("世界规则".into()),
+                summary: Some("天地间的基础能量".into()),
+                details: Some("  ".into()), // 纯空白应被清为 None
+            }],
+            systems: vec![SystemDto {
+                name: "守灯术".into(),
+                kind: Some("magic".into()),
+                levels: Some("照夜→引星→续日".into()),
+                rules: None,
+                summary: Some("点灯折寿".into()),
+            }],
+            eras: vec!["创世".into(), "灯历".into()],
+        };
+
+        save_worldview(&root, &dto).unwrap();
+        let loaded = build_worldview(&root).unwrap();
+
+        assert_eq!(loaded.concepts.len(), 1);
+        assert_eq!(loaded.concepts[0].name, "灵气");
+        assert_eq!(loaded.concepts[0].details, None, "空白详情应被清理");
+        assert_eq!(loaded.systems.len(), 1);
+        assert_eq!(loaded.systems[0].levels.as_deref(), Some("照夜→引星→续日"));
+        assert_eq!(loaded.eras, vec!["创世", "灯历"]);
+
+        // 空概念名在保存时被过滤
+        let mut with_empty = loaded.clone();
+        with_empty.concepts.push(ConceptDto {
+            name: "   ".into(),
+            category: None,
+            summary: None,
+            details: None,
+        });
+        save_worldview(&root, &with_empty).unwrap();
+        assert_eq!(build_worldview(&root).unwrap().concepts.len(), 1);
+    }
+
+    #[test]
+    fn worldview_missing_files_yield_default() {
+        let root = temp_root("missing");
+        let loaded = build_worldview(&root).unwrap();
+        assert!(loaded.concepts.is_empty());
+        assert!(loaded.systems.is_empty());
+        assert!(loaded.eras.is_empty());
+    }
 }

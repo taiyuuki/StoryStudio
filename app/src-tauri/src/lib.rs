@@ -76,6 +76,9 @@ pub fn run() {
             commands::create_thread,
             commands::update_thread,
             commands::delete_thread,
+            // 世界观
+            commands::get_worldview,
+            commands::save_worldview,
             // 编译 / 导出
             commands::compile_project,
             commands::export_markdown,

@@ -76,6 +76,29 @@ export interface ThreadDto {
   abandoned: boolean
 }
 
+// ── 世界观（概念 / 体系 / 历法；地理与势力走实体） ──────────
+
+export interface ConceptDto {
+  name: string
+  category: string | null
+  summary: string | null
+  details: string | null
+}
+
+export interface SystemDto {
+  name: string
+  kind: string | null
+  levels: string | null
+  rules: string | null
+  summary: string | null
+}
+
+export interface WorldviewDto {
+  concepts: ConceptDto[]
+  systems: SystemDto[]
+  eras: string[]
+}
+
 export interface SceneDto {
   id: string
   chapterId: string
@@ -617,6 +640,14 @@ export const api = {
   },
   deleteThread(root: string, threadId: string) {
     return call<void>('delete_thread', { root, threadId })
+  },
+
+  // ── 世界观 ────────────────────────────────────────────
+  getWorldview(root: string) {
+    return call<WorldviewDto>('get_worldview', { root })
+  },
+  saveWorldview(root: string, worldview: WorldviewDto) {
+    return call<void>('save_worldview', { root, worldview })
   },
 
   // ── 编译 / 导出 ───────────────────────────────────────
