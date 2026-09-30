@@ -252,6 +252,10 @@ export interface AiProfileDto {
   thinking: string | null
   /** 单次生成请求超时（秒）；null = 默认 300 */
   timeoutSecs: number | null
+  /** 单次生成的输出 token 上限（含思考型模型的思考配额）；null = 各功能默认值 */
+  maxTokens: number | null
+  /** 模型是否支持 100 万 token 长上下文；null = 跟随默认预算（影响妙笔对话的记忆压缩时机） */
+  longContext: boolean | null
   /** OpenAI 接口模式：chat = Chat Completions（兼容最广）| responses = OpenAI 原生（GPT-5/o 系列）；仅 openai 档案有效 */
   apiMode: 'chat' | 'responses' | null
   /** 私有参数（深合并进请求体，支持 provider 私有字段） */

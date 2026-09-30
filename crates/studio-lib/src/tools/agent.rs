@@ -236,6 +236,7 @@ fn default_agent_config() -> AgentConfig {
         // 65536 是 GLM-5.2 官方示例值，覆盖绝大多数思考场景。
         max_tokens: 65536,
         max_tool_turns: 40,
+        max_context_tokens: profile_context_budget(),
         ..AgentConfig::default()
     }
 }
@@ -246,7 +247,27 @@ fn global_agent_config() -> AgentConfig {
         temperature: 0.7,
         max_tokens: 65536,
         max_tool_turns: 1,
+        max_context_tokens: profile_context_budget(),
         ..AgentConfig::default()
+    }
+}
+
+/// 按妙笔档案声明的「长上下文」调整上下文预算（压缩阈值 = 预算 × 0.7）：
+/// - Some(true)：模型支持 100 万 token → 90 万，用满大窗口、减少过早压缩；
+/// - Some(false)：明确不支持 → 12 万（128K 窗口模型的保守值，避免超出窗口报错）；
+/// - None：未声明 → 默认 50 万（与 AgentConfig::default 一致）。
+fn profile_context_budget() -> usize {
+    const DEFAULT_BUDGET: usize = 500_000;
+    let Ok(config) = crate::ai::read_global_ai_config() else {
+        return DEFAULT_BUDGET;
+    };
+    match config
+        .profile_for_purpose(crate::ai::purpose::AGENT)
+        .and_then(|p| p.long_context)
+    {
+        Some(true) => 900_000,
+        Some(false) => 120_000,
+        None => DEFAULT_BUDGET,
     }
 }
 

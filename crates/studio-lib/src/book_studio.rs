@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
-use story_ai_runtime::provider::{GenerateRequest, Message};
+use story_ai_runtime::provider::{GenerateRequest, Message, StopReason};
 use story_ai_runtime::stream_generate_with_cancel;
 use story_ai_runtime::CancelToken;
 use story_project_format::{OutlineFile, ProjectPaths};
@@ -1129,8 +1129,10 @@ fn llm_json(
         messages: vec![Message::user(prompt)],
         model: String::new(),
         temperature: 0.7,
-        // 思考模式下需要预算余量，否则 JSON 会被截断
-        max_tokens: 16384,
+        // 思考型模型的 reasoning token 计入 max_tokens（GLM 平均 30k+），
+        // 配额不足时正文为空或被截断。与 AgentConfig 默认值保持一致；
+        // 档案级「输出上限」配置可整体覆盖此值。
+        max_tokens: 65536,
         tools: Vec::new(),
     };
 
@@ -1161,6 +1163,15 @@ fn llm_json(
     }
 
     let response = result.map_err(|e| StudioError::Ai(format!("AI 调用失败: {e}")))?;
+    // 截断与格式问题分开报：思考型模型耗尽配额时正文为空/残缺，
+    // 引导用户调大配置而非"换更稳定的模型"
+    if response.stop_reason == StopReason::MaxTokens {
+        return Err(StudioError::Ai(
+            "输出达到 token 上限被截断，未得到完整 JSON。\
+             可在设置 → AI 配置中调大该档案的「输出上限」后重试"
+                .to_string(),
+        ));
+    }
     parse_json_object_lenient(&response.text).map_err(|e| {
         StudioError::Ai(format!(
             "输出无法解析为 JSON（{e}）。请重试，或换一个更稳定的模型"

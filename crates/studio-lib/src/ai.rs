@@ -405,6 +405,7 @@ pub fn write_fragment_streaming(
 /// thinking: 思考强度（跨 Provider 抽象映射）
 /// api_mode: OpenAI 的 API 模式（Chat / Responses），仅对 openai 生效，默认 Chat
 /// timeout_secs: 单次生成请求超时（秒）；None = 默认 300，深度思考模型可调大
+/// max_tokens: 单次生成的输出上限（含思考 token）；None = 各调用点默认值
 #[allow(clippy::too_many_arguments)]
 pub fn create_provider(
     provider_name: &str,
@@ -417,6 +418,7 @@ pub fn create_provider(
     thinking: Option<ThinkingConfig>,
     timeout_secs: Option<u64>,
     api_mode: Option<ApiMode>,
+    max_tokens: Option<u64>,
 ) -> Result<Box<dyn AiProvider>, StudioError> {
     let model_name = model_name.unwrap_or(match provider_name {
         "anthropic" => "claude-sonnet-4-5",
@@ -433,6 +435,8 @@ pub fn create_provider(
     let thinking_owned = thinking;
     let timeout_owned = timeout_secs;
     let api_mode_owned = api_mode.unwrap_or_default();
+    // 0 视为未配置（前端空输入归一化为 null）
+    let max_tokens_owned = max_tokens.filter(|n| *n > 0).map(|n| n as usize);
 
     match provider_name {
         "anthropic" => Ok(Box::new(AnthropicProvider::new(
@@ -444,6 +448,7 @@ pub fn create_provider(
             extra_headers_owned,
             thinking_owned,
             timeout_owned,
+            max_tokens_owned,
         ))),
         "openai" => Ok(Box::new(OpenAiProvider::new(
             model_name,
@@ -455,6 +460,7 @@ pub fn create_provider(
             thinking_owned,
             api_mode_owned,
             timeout_owned,
+            max_tokens_owned,
         ))),
         other => Err(StudioError::Config(format!(
             "未知 Provider: {other}（支持: anthropic, openai）"
@@ -516,6 +522,19 @@ pub struct ProviderProfile {
     /// None = 默认 300 秒；深度思考或长文生成较慢的模型可调大。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// 单次生成的输出 token 上限（含思考型模型的 reasoning 配额）
+    ///
+    /// None = 各调用点自己的默认值；思考型模型（GLM/DeepSeek-R1 等）
+    /// 的思考 token 计入配额，默认值不够时正文会被截断为空，应在此调大。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    /// 模型是否支持 100 万 token 长上下文
+    ///
+    /// Some(true) → Agent 上下文预算放大到 90 万（用满大窗口，减少过早压缩）；
+    /// Some(false) → 收缩到 12 万（128K 窗口模型的保守值，避免超出窗口报错）；
+    /// None = 未声明，用默认预算 50 万。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_context: Option<bool>,
     /// OpenAI 的 API 模式：Chat Completions 或 Responses（仅对 provider="openai" 生效）
     ///
     /// 留空则默认 Chat（`/v1/chat/completions`），最大兼容性；
@@ -541,6 +560,8 @@ impl ProviderProfile {
             extra_headers: None,
             thinking: None,
             timeout_secs: None,
+            max_tokens: None,
+            long_context: None,
             api_mode: None,
         }
     }
@@ -672,6 +693,8 @@ pub fn read_global_ai_config() -> Result<GlobalAiConfig, StudioError> {
             extra_headers: None,
             thinking: None,
             timeout_secs: None,
+            max_tokens: None,
+            long_context: None,
             api_mode: None,
         };
         config.profiles = Some(vec![profile]);
@@ -735,6 +758,7 @@ fn provider_from_config(
         thinking,
         timeout_secs,
         api_mode,
+        max_tokens,
         resolved_provider,
     ) = match profile {
         Some(p) => (
@@ -747,6 +771,7 @@ fn provider_from_config(
             p.thinking.clone(),
             p.timeout_secs,
             p.api_mode.clone(),
+            p.max_tokens,
             p.provider.as_deref().unwrap_or(provider_name),
         ),
         None => (
@@ -754,6 +779,7 @@ fn provider_from_config(
             config.api_url.as_deref(),
             config.api_url_full.unwrap_or(false),
             config.default_model.as_deref(),
+            None,
             None,
             None,
             None,
@@ -775,6 +801,7 @@ fn provider_from_config(
         thinking,
         timeout_secs,
         api_mode,
+        max_tokens,
     )
 }
 
@@ -899,6 +926,8 @@ pub fn test_profile(profile: &ProviderProfile) -> ProfileTestRecord {
         profile.thinking.clone(),
         profile.timeout_secs,
         profile.api_mode.clone(),
+        // 连通性测试只要两个字，不套用档案的输出上限（大配额反而拖长思考）
+        None,
     ) {
         Ok(p) => p,
         Err(e) => return fail(format!("配置无法使用: {e}")),
@@ -979,6 +1008,8 @@ mod purpose_tests {
             extra_headers: None,
             thinking: None,
             timeout_secs: None,
+            max_tokens: None,
+            long_context: None,
             api_mode: None,
         }
     }
@@ -1043,6 +1074,34 @@ mod purpose_tests {
         let config: GlobalAiConfig = serde_json::from_str(json).unwrap();
         assert!(config.purpose_profiles.is_none());
         assert_eq!(config.profile_for_purpose(purpose::WRITE).unwrap().id, "a");
+    }
+
+    #[test]
+    fn profile_max_tokens_parses_and_defaults_to_none() {
+        // 旧配置没有 max_tokens 字段 → None（各调用点默认值生效）
+        let old = r#"{"profiles": [{"id": "a", "name": "默认"}], "active_profile": "a"}"#;
+        let config: GlobalAiConfig = serde_json::from_str(old).unwrap();
+        assert!(config.active_profile().unwrap().max_tokens.is_none());
+
+        // 新配置带 max_tokens → 透传
+        let new = r#"{
+            "profiles": [{"id": "a", "name": "GLM", "max_tokens": 65536}],
+            "active_profile": "a"
+        }"#;
+        let config: GlobalAiConfig = serde_json::from_str(new).unwrap();
+        assert_eq!(config.active_profile().unwrap().max_tokens, Some(65536));
+
+        // 序列化时 None 跳过、Some 保留
+        let json = serde_json::to_string(config.active_profile().unwrap()).unwrap();
+        assert!(json.contains("\"max_tokens\":65536"));
+
+        // long_context 同样三态：缺省 None / true / false 透传
+        let lc = r#"{
+            "profiles": [{"id": "a", "name": "长上下文", "long_context": true}],
+            "active_profile": "a"
+        }"#;
+        let config: GlobalAiConfig = serde_json::from_str(lc).unwrap();
+        assert_eq!(config.active_profile().unwrap().long_context, Some(true));
     }
 
     #[test]

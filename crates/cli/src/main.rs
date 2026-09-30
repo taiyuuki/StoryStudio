@@ -448,6 +448,7 @@ fn cmd_write(
         None,
         None,
         None,
+        None,
     )?;
 
     println!("正在生成...");
@@ -523,6 +524,7 @@ fn cmd_extract(
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -665,6 +667,7 @@ fn cmd_workflow_action(
                 None,
                 None,
                 false,
+                None,
                 None,
                 None,
                 None,

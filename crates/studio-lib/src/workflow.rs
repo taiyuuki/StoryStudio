@@ -1085,8 +1085,9 @@ fn generate_beats(
         messages: vec![Message::user(user)],
         model: String::new(),
         temperature: 0.4,
-        // 需覆盖思考模式的预算（浅思考 ~2048），否则思考耗尽配额后正文为空
-        max_tokens: 6144,
+        // 需覆盖思考模式的预算，否则思考耗尽配额后正文为空
+        //（与 AgentConfig 默认一致；档案级「输出上限」可整体覆盖）
+        max_tokens: 65536,
         tools: Vec::new(),
     };
 

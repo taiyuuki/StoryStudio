@@ -54,7 +54,9 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             temperature: 0.7,
-            max_tokens: 4096,
+            // 思考型模型的 reasoning token 计入 max_tokens（GLM 平均 30k+），
+            // 配额不足会直接导致空输出截断；与 AgentConfig 默认值保持一致
+            max_tokens: 65536,
         }
     }
 }
@@ -63,14 +65,14 @@ impl ModelConfig {
     pub fn creative() -> Self {
         Self {
             temperature: 0.8,
-            max_tokens: 4096,
+            max_tokens: 65536,
         }
     }
 
     pub fn extraction() -> Self {
         Self {
             temperature: 0.3,
-            max_tokens: 4096,
+            max_tokens: 65536,
         }
     }
 }
@@ -322,12 +324,12 @@ impl Task for WriteChapterTask {
         TaskContext {
             system,
             user,
-            // 整章生成需要足够的输出空间：目标字数 × 2（中文一字约 1~2 token），
-            // 下限 16384 — 思考模式会占用输出配额且兼容端点不严格受 budget 约束，
-            // 配额不足时思考耗尽 max_tokens 而正文为空
+            // 整章生成需要足够的输出空间：目标字数 × 8（中文一字约 1~2 token，
+            // 留头部 echo 与格式余量），下限 65536 — 思考型模型的 reasoning
+            // 计入输出配额，配额不足时思考耗尽 max_tokens 而正文为空
             model: ModelConfig {
                 temperature: 0.8,
-                max_tokens: 16384usize.max(m.target_words as usize * 8),
+                max_tokens: 65536usize.max(m.target_words as usize * 8),
             },
         }
     }
@@ -602,20 +604,21 @@ mod tests {
             assert!(ctx.user.contains(section), "缺少分段: {section}");
         }
         assert!(ctx.user.contains("2000"));
-        // max_tokens = max(16384, target×8)
-        assert_eq!(ctx.model.max_tokens, 16384);
+        // max_tokens = max(65536, target×8)
+        assert_eq!(ctx.model.max_tokens, 65536);
     }
 
     #[test]
     fn write_chapter_max_tokens_scales_with_target() {
         let task = WriteChapterTask {
             materials: ChapterMaterials {
-                target_words: 4000,
+                target_words: 10000,
                 ..ChapterMaterials::default()
             },
         };
         let ctx = task.build_context(&StoryIR::new());
-        assert_eq!(ctx.model.max_tokens, 32000);
+        // 目标字数超出下限时按 target×8 伸缩
+        assert_eq!(ctx.model.max_tokens, 80000);
         // 空材料时 user 仍应有【本章设定】与【任务】段
         assert!(ctx.user.contains("【任务】"));
     }

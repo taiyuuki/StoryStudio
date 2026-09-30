@@ -32,6 +32,8 @@ function emptyProfile(): AiProfileDto {
     apiUrlFull: false,
     thinking: 'low',
     timeoutSecs: null,
+    maxTokens: null,
+    longContext: null,
     apiMode: 'chat',
     extraBody: null,
     extraHeaders: null,
@@ -217,6 +219,16 @@ function normTimeout(): number | null {
   return Math.min(Math.max(Math.round(n), 10), 7200)
 }
 
+/** 输出上限归一化：空/非法 → null（各功能默认值），并夹到 256–262144 token */
+function normMaxTokens(): number | null {
+  const n = Number(draft.maxTokens)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return Math.min(Math.max(Math.round(n), 256), 262144)
+}
+
+/** 输出上限常用档位（token）；65536 覆盖思考模型的 reasoning 配额 */
+const MAX_TOKEN_PRESETS = [8192, 16384, 32768, 65536, 131072, 262144]
+
 async function persist(successMsg: string) {
   saving.value = true
   try {
@@ -248,6 +260,7 @@ async function saveProfile() {
     return
   }
   draft.timeoutSecs = normTimeout()
+  draft.maxTokens = normMaxTokens()
   const idx = config.value.profiles.findIndex((p) => p.id === draft.id)
   if (idx >= 0) config.value.profiles[idx] = JSON.parse(JSON.stringify(draft))
   if (!config.value.activeProfile) config.value.activeProfile = draft.id
@@ -307,6 +320,7 @@ async function testProfile() {
       extraBody,
       extraHeaders,
       timeoutSecs: normTimeout(),
+      maxTokens: normMaxTokens(),
     }
     const record: ProfileTestRecordDto = await api.aiTestProfile(payload)
     draft.lastTest = record
@@ -524,55 +538,8 @@ function goBack() {
                 {{ currentPreset.note }}
               </p>
 
-              <div class="wz-row">
-                <div class="wz-field">
-                  <label>模型</label>
-                  <div class="sv-model-row">
-                    <input
-                      v-if="fetchedModels.length === 0"
-                      v-model="draft.model"
-                      placeholder="可点右侧「拉取」从服务获取列表"
-                      class="num"
-                    />
-                    <select v-else v-model="draft.model">
-                      <option v-if="draft.model && !fetchedModels.includes(draft.model)" :value="draft.model">{{ draft.model }}</option>
-                      <option v-for="m in fetchedModels" :key="m" :value="m">{{ m }}</option>
-                    </select>
-                    <button
-                      class="ink-btn ink-btn--sm"
-                      :disabled="fetchingModels"
-                      title="从服务商拉取可用模型列表"
-                      @click="fetchModels"
-                    >
-                      <i :class="fetchingModels ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-cloud-arrow-down'" />
-                      {{ fetchingModels ? '拉取中' : '拉取' }}
-                    </button>
-                  </div>
-                  <label v-if="fetchedModels.length > 0" class="sv-mini num">拉到 {{ fetchedModels.length }} 个模型</label>
-                </div>
-                <div class="wz-field">
-                  <label>思考模式</label>
-                  <select v-model="draft.thinking">
-                    <option value="auto">自动</option>
-                    <option value="off">不思考</option>
-                    <option value="low">浅思考</option>
-                    <option value="medium">适中</option>
-                    <option value="high">深度</option>
-                  </select>
-                </div>
-                <div class="wz-field sv-timeout-field">
-                  <label>超时（秒）</label>
-                  <input
-                    v-model.number="draft.timeoutSecs"
-                    type="number"
-                    min="30"
-                    max="3600"
-                    placeholder="300"
-                    title="单次生成请求的超时时间；深度思考或长文生成较慢时可调大"
-                    class="num"
-                  />
-                </div>
-              </div>
+              <!-- ── 连接 ───────────────────────────────── -->
+              <div class="sv-group-title">连接</div>
 
               <div class="wz-field">
                 <label>API Key</label>
@@ -615,6 +582,91 @@ function goBack() {
                   </button>
                 </div>
                 <label class="sv-mini">绝大多数兼容服务只支持 Chat；Responses 是 OpenAI 原生接口（GPT-5 / o 系列），请求地址与格式都不同</label>
+              </div>
+
+              <!-- ── 模型与生成 ──────────────────────────── -->
+              <div class="sv-group-title">模型与生成</div>
+
+              <div class="wz-row">
+                <div class="wz-field">
+                  <label>模型</label>
+                  <div class="sv-model-row">
+                    <input
+                      v-if="fetchedModels.length === 0"
+                      v-model="draft.model"
+                      placeholder="可点右侧「拉取」从服务获取列表"
+                      class="num"
+                    />
+                    <select v-else v-model="draft.model">
+                      <option v-if="draft.model && !fetchedModels.includes(draft.model)" :value="draft.model">{{ draft.model }}</option>
+                      <option v-for="m in fetchedModels" :key="m" :value="m">{{ m }}</option>
+                    </select>
+                    <button
+                      class="ink-btn ink-btn--sm"
+                      :disabled="fetchingModels"
+                      title="从服务商拉取可用模型列表"
+                      @click="fetchModels"
+                    >
+                      <i :class="fetchingModels ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-cloud-arrow-down'" />
+                      {{ fetchingModels ? '拉取中' : '拉取' }}
+                    </button>
+                  </div>
+                  <label v-if="fetchedModels.length > 0" class="sv-mini num">拉到 {{ fetchedModels.length }} 个模型</label>
+                </div>
+                <div class="wz-field sv-thinking-field">
+                  <label>思考模式</label>
+                  <select v-model="draft.thinking">
+                    <option value="auto">自动</option>
+                    <option value="off">不思考</option>
+                    <option value="low">浅思考</option>
+                    <option value="medium">适中</option>
+                    <option value="high">深度</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="wz-row">
+                <div class="wz-field sv-gen-field">
+                  <label>输出上限</label>
+                  <select
+                    v-model="draft.maxTokens"
+                    title="单次生成的输出 token 上限（思考型模型的思考也算在内）；留空用各功能默认值，思考模型输出被截断或为空时调大（如 65536）"
+                  >
+                    <option :value="null">默认（各功能自定）</option>
+                    <option
+                      v-if="draft.maxTokens != null && !MAX_TOKEN_PRESETS.includes(draft.maxTokens)"
+                      :value="draft.maxTokens"
+                    >
+                      {{ draft.maxTokens }}（自定义）
+                    </option>
+                    <option v-for="v in MAX_TOKEN_PRESETS" :key="v" :value="v">
+                      {{ v === 65536 ? '65536（思考推荐）' : v }}
+                    </option>
+                  </select>
+                </div>
+                <div class="wz-field sv-gen-field">
+                  <label>长上下文</label>
+                  <select
+                    v-model="draft.longContext"
+                    title="模型是否支持 100 万 token 上下文窗口；影响妙笔对话的记忆压缩时机：支持 → 预算 90 万（用满大窗口），不支持 → 12 万（128K 窗口保守值），默认 → 50 万"
+                  >
+                    <option :value="null">跟随默认</option>
+                    <option :value="true">支持（100 万）</option>
+                    <option :value="false">不支持（保守）</option>
+                  </select>
+                </div>
+                <div class="wz-field sv-gen-field">
+                  <label>超时（秒）</label>
+                  <input
+                    v-model.number="draft.timeoutSecs"
+                    type="number"
+                    min="30"
+                    max="3600"
+                    placeholder="300"
+                    title="单次生成请求的超时时间；深度思考或长文生成较慢时可调大"
+                    class="num"
+                  />
+                </div>
               </div>
 
               <!-- 私有参数 -->
@@ -961,6 +1013,26 @@ function goBack() {
   }
 }
 
+// ── 分组标题：小字 + 右侧延展分隔线 ─────────────────────
+.sv-group-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--ink-disabled);
+  user-select: none;
+
+  &::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--divider);
+  }
+}
+
 .sv-mini {
   margin-top: 5px;
   font-size: 10.5px;
@@ -976,12 +1048,17 @@ function goBack() {
   }
 }
 
-.sv-timeout-field {
-  max-width: 130px;
-
-  input {
+// 生成参数三联字段：均分整行
+.sv-gen-field {
+  input,
+  select {
     text-align: center;
   }
+}
+
+// 思考模式占三分之一，与下方参数三联的列线对齐（模型占其余三分之二）
+.sv-thinking-field {
+  flex: 0 0 calc((100% - 20px) / 3);
 }
 
 // ── 服务商卡片网格 ────────────────────────────────────────

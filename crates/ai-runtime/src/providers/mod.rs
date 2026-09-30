@@ -115,6 +115,24 @@ pub(crate) fn normalize_timeout_secs(secs: Option<u64>) -> u64 {
         .clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS)
 }
 
+/// 档案级输出上限覆盖：配置 Some 时替换请求的 max_tokens。
+///
+/// 思考型模型的 reasoning token 计入输出配额，调用点各自的默认值
+/// 常不够用（配额耗尽 → 正文为空或截断）；档案配置后统一接管，
+/// 未配置（None）时保持各调用点自己的值。
+pub(crate) fn with_profile_max_tokens<'a>(
+    max_tokens: Option<usize>,
+    request: &'a GenerateRequest,
+) -> std::borrow::Cow<'a, GenerateRequest> {
+    match max_tokens {
+        Some(n) if n != request.max_tokens => std::borrow::Cow::Owned(GenerateRequest {
+            max_tokens: n,
+            ..request.clone()
+        }),
+        _ => std::borrow::Cow::Borrowed(request),
+    }
+}
+
 // ============================================================================
 // 共享工具
 // ============================================================================
@@ -800,8 +818,11 @@ pub fn api_key_from_env(var_name: &str) -> Result<String, AiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_overrides, floor_utf8_boundary, round_temperature, ThinkingConfig};
-    use crate::provider::{AiError, GenerateResponse};
+    use super::{
+        apply_overrides, floor_utf8_boundary, round_temperature, with_profile_max_tokens,
+        ThinkingConfig,
+    };
+    use crate::provider::{AiError, GenerateRequest, GenerateResponse};
 
     /// 测试用的最小 ProviderAdapter 实现
     struct MockAdapter {
@@ -845,6 +866,22 @@ mod tests {
         fn parse_stream_chunk(&self, _line: &str) -> Option<crate::provider::StreamEvent> {
             None
         }
+    }
+
+    #[test]
+    fn with_profile_max_tokens_overrides_request() {
+        // 档案配置 Some 时替换请求的 max_tokens（其余字段原样保留）
+        let req = GenerateRequest::new("s", "u"); // 默认 4096
+        let overridden = with_profile_max_tokens(Some(65536), &req);
+        assert_eq!(overridden.max_tokens, 65536);
+        assert_eq!(overridden.system, "s");
+        assert_eq!(overridden.messages.len(), 1);
+        // 与请求值相同或未配置时零拷贝借用，不产生克隆
+        let same = with_profile_max_tokens(Some(4096), &req);
+        assert!(matches!(same, std::borrow::Cow::Borrowed(_)));
+        let none = with_profile_max_tokens(None, &req);
+        assert!(matches!(none, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(none.max_tokens, 4096);
     }
 
     #[test]

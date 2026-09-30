@@ -34,6 +34,8 @@ pub struct AnthropicProvider {
     thinking: Option<ThinkingConfig>,
     /// 单次请求超时（秒）
     timeout_secs: u64,
+    /// 档案级输出上限（含思考 token）；None = 用请求自带值
+    max_tokens: Option<usize>,
 }
 
 impl AnthropicProvider {
@@ -47,6 +49,7 @@ impl AnthropicProvider {
         extra_headers: Vec<(String, String)>,
         thinking: Option<ThinkingConfig>,
         timeout_secs: Option<u64>,
+        max_tokens: Option<usize>,
     ) -> Self {
         Self {
             client: HttpClient::new(),
@@ -58,6 +61,7 @@ impl AnthropicProvider {
             extra_headers,
             thinking,
             timeout_secs: crate::providers::normalize_timeout_secs(timeout_secs),
+            max_tokens,
         }
     }
 
@@ -86,8 +90,9 @@ impl AiProvider for AnthropicProvider {
     }
 
     fn generate(&self, request: &GenerateRequest) -> Result<GenerateResponse, AiError> {
-        let adapter = self.build_adapter(request);
-        self.client.send(&adapter, request)
+        let request = super::with_profile_max_tokens(self.max_tokens, request);
+        let adapter = self.build_adapter(&request);
+        self.client.send(&adapter, &request)
     }
 
     fn stream_generate(
@@ -95,7 +100,8 @@ impl AiProvider for AnthropicProvider {
         request: &GenerateRequest,
         on_event: &(dyn Fn(StreamEvent) + Send + Sync),
     ) -> Result<(), AiError> {
-        let adapter = self.build_adapter(request);
+        let request = super::with_profile_max_tokens(self.max_tokens, request);
+        let adapter = self.build_adapter(&request);
 
         let full_text = std::sync::Mutex::new(String::new());
         let final_usage = std::sync::Mutex::new(TokenUsage::default());
@@ -143,7 +149,8 @@ impl AiProvider for AnthropicProvider {
         // Avoid "Cannot start a runtime from within a runtime" panic:
         // - Inside a tokio runtime → use block_in_place before block_on
         // - Outside → create a fresh temporary runtime
-        let stream_fn = || async { HttpStreamClient::stream(&adapter, request, &local_on).await };
+        let stream_fn =
+            || async { HttpStreamClient::stream(&adapter, &request, &local_on).await };
 
         let result = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(stream_fn())),

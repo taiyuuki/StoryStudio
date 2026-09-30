@@ -138,7 +138,9 @@ role 取值：appears（指代对象在场有言行）/ mentioned（被谈起）
         messages: vec![Message::user(user)],
         model: String::new(),
         temperature: 0.1,
-        max_tokens: 16384,
+        // 思考型模型的 reasoning 计入配额；输出 JSON 本身不大，
+        // 上限只需容纳思考 + 完整 JSON（档案级「输出上限」可覆盖）
+        max_tokens: 65536,
         tools: Vec::new(),
     };
 
