@@ -424,6 +424,34 @@ export interface AgentTraceDto {
   toolCallCount: number
 }
 
+// ── Git 版本档案 ───────────────────────────────────────────
+
+export interface GitStatusDto {
+  /** 系统是否装有 git */
+  available: boolean
+  /** 项目目录本身是否已是 git 仓库 */
+  initialized: boolean
+  /** 是否嵌在别的 git 仓库里（不接管，仅提示） */
+  nested: boolean
+  /** 有无未存档变更 */
+  dirty: boolean
+}
+
+export interface GitCommitDto {
+  /** 短哈希 */
+  id: string
+  /** Unix 时间戳（秒） */
+  timestamp: number
+  message: string
+}
+
+export interface GitCommitResultDto {
+  /** 是否真的产生了新提交（无变更时 false） */
+  committed: boolean
+  id: string | null
+  detail: string
+}
+
 // ── 妙笔会话历史 ──────────────────────────────────────────
 
 export interface ChatMetaDto {
@@ -920,6 +948,23 @@ export const api = {
   },
   chatDelete(root: string, id: string) {
     return call<void>('chat_delete', { root, id })
+  },
+
+  // ── Git 版本档案 ────────────────────────────────────────
+  gitStatus(root: string) {
+    return call<GitStatusDto>('git_status', { root })
+  },
+  gitInit(root: string) {
+    return call<GitStatusDto>('git_init', { root })
+  },
+  gitCommit(root: string, message?: string) {
+    return call<GitCommitResultDto>('git_commit', { root, message: message ?? null })
+  },
+  gitLog(root: string, limit?: number) {
+    return call<GitCommitDto[]>('git_log', { root, limit: limit ?? 50 })
+  },
+  gitRestore(root: string, commitId: string) {
+    return call<GitCommitResultDto>('git_restore', { root, commitId })
   },
 
   // ── AI 建书（分步向导）──────────────────────────────────

@@ -36,6 +36,7 @@ declare module 'vue' {
     ExportPanel: typeof import('./components/workbench/ExportPanel.vue')['default']
     FragmentBlock: typeof import('./components/workbench/FragmentBlock.vue')['default']
     FragmentHistoryDialog: typeof import('./components/workbench/FragmentHistoryDialog.vue')['default']
+    GitPanel: typeof import('./components/workbench/GitPanel.vue')['default']
     NewProjectCard: typeof import('./components/start/NewProjectCard.vue')['default']
     OutlineBatchDialog: typeof import('./components/workbench/OutlineBatchDialog.vue')['default']
     OutlineForm: typeof import('./components/start/aiBook/OutlineForm.vue')['default']

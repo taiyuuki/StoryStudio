@@ -827,6 +827,39 @@ pub fn scene_of_fragment(root: String, fragment_id: String) -> R<String> {
     lib::scene_of_fragment(&paths(&root), &fragment_id).map_err(e)
 }
 
+// ── Git 版本档案 ─────────────────────────────────────────
+
+/// 仓库状态检测（git 可用性 / 已初始化 / 嵌套 / 未存档变更）
+#[tauri::command]
+pub fn git_status(root: String) -> R<lib::GitStatusDto> {
+    Ok(lib::git_status(Path::new(&root)))
+}
+
+/// 初始化版本仓库（幂等；嵌套仓库拒绝接管）
+#[tauri::command]
+pub fn git_init(root: String) -> R<lib::GitStatusDto> {
+    lib::git_init(Path::new(&root)).map_err(e)
+}
+
+/// 存档当前状态（无变更自动跳过）
+#[tauri::command]
+pub fn git_commit(root: String, message: Option<String>) -> R<lib::GitCommitResult> {
+    let msg = message.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| "手动存档".to_string());
+    lib::git_commit(Path::new(&root), &msg).map_err(e)
+}
+
+/// 存档历史（新 → 旧）
+#[tauri::command]
+pub fn git_log(root: String, limit: Option<u32>) -> R<Vec<lib::GitCommitDto>> {
+    lib::git_log(Path::new(&root), limit.unwrap_or(50)).map_err(e)
+}
+
+/// 恢复到指定存档（先自动备份当前状态，历史全程保留）
+#[tauri::command]
+pub fn git_restore(root: String, commit_id: String) -> R<lib::GitCommitResult> {
+    lib::git_restore(Path::new(&root), &commit_id).map_err(e)
+}
+
 // ── Agent 对话（妙笔） ───────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]

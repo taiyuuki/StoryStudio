@@ -325,6 +325,10 @@ export const useMiaoStore = defineStore('miao', () => {
       if (last?.type === 'ai') last.streaming = false
       pendingAskKey.value = null
       persist()
+      // AI 会话改动自动存为 git 快照（无变更 / 未启用版本档案时静默跳过）
+      void api
+        .gitCommit(store.root, `妙笔改动：${text.slice(0, 30)}`)
+        .catch(() => {})
     }
   }
 

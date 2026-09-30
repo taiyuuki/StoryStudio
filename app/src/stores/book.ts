@@ -133,6 +133,8 @@ export const useBookStore = defineStore('book', () => {
         break
       case 'chapterCompleted':
         syncChapter(ev.index ?? 0, 'completed')
+        // 每章完成自动存为 git 快照（未启用版本档案时静默跳过）
+        scheduleAutoArchive(ev.index ?? 0, ev.title ?? '')
         break
       case 'paused':
         thinking.value = false
@@ -154,6 +156,23 @@ export const useBookStore = defineStore('book', () => {
   function syncChapter(index: number, status: string) {
     const ch = chapters.value.find((c) => c.index === index)
     if (ch) ch.status = status
+  }
+
+  // ── 每章自动存档（防抖合并短时间内的多次完成事件） ────────
+  let archiveTimer: ReturnType<typeof setTimeout> | null = null
+  let archivePending: { index: number; title: string } | null = null
+  function scheduleAutoArchive(index: number, title: string) {
+    archivePending = { index, title }
+    if (archiveTimer) clearTimeout(archiveTimer)
+    archiveTimer = setTimeout(() => {
+      archiveTimer = null
+      const job = archivePending
+      archivePending = null
+      if (!job || !store.root) return
+      void api
+        .gitCommit(store.root, `逐章成书：第 ${job.index} 章《${job.title}》完成`)
+        .catch(() => {})
+    }, 1500)
   }
 
   // ── 工作台同步（落盘后随写随现） ────────────────────────

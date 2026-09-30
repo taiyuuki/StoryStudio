@@ -12,6 +12,7 @@ import EntityPanel from './EntityPanel.vue'
 import ThreadPanel from './ThreadPanel.vue'
 import DiagnosticsPanel from './DiagnosticsPanel.vue'
 import ExportPanel from './ExportPanel.vue'
+import GitPanel from './GitPanel.vue'
 import StatsPanel from './StatsPanel.vue'
 import WorldviewPanel from './WorldviewPanel.vue'
 import ChaptersPanel from './ChaptersPanel.vue'
@@ -56,6 +57,7 @@ const panels = computed(
         },
       ],
       ['export', { label: '导出成书', icon: 'fa-solid fa-file-export', comp: ExportPanel }],
+      ['git', { label: '版本', icon: 'fa-solid fa-code-branch', comp: GitPanel }],
     ]),
 )
 
