@@ -25,7 +25,7 @@ function backToStart() {
 <template>
   <div class="app-shell">
     <div class="paper-texture" />
-    <AppTitleBar :title="projectTitle" @title-click="backToStart" />
+    <AppTitleBar :title="projectTitle" @back-home="backToStart" />
     <div class="app-body">
       <RouterView />
     </div>

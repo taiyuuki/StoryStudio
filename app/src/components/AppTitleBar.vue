@@ -7,7 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useUiStore } from '@/stores/ui'
 
 defineProps<{ title?: string }>()
-const emit = defineEmits<{ titleClick: [] }>()
+const emit = defineEmits<{ backHome: [] }>()
 
 const ui = useUiStore()
 const isMac = shallowRef(true)
@@ -45,16 +45,20 @@ async function close() {
   <header class="title-bar" :class="{ 'title-bar--mac': isMac }" data-tauri-drag-region>
     <div class="tb-left">
       <span class="tb-logo seal-font" data-tauri-drag-region>书</span>
+      <!-- 显式返回主页入口（与设置 / AI 开书页头的返回按钮同模式）；
+           书名只作展示 + 拖拽区，不再承担返回职责 -->
       <button
         v-if="title"
-        class="tb-title"
-        data-tauri-drag-region
-        title="返回项目选择"
-        @click="emit('titleClick')"
+        class="ink-icon-btn tb-back"
+        title="返回主页"
+        @click="emit('backHome')"
       >
+        <i class="fa-solid fa-arrow-left" />
+      </button>
+      <span v-if="title" class="tb-title" data-tauri-drag-region>
         <i class="fa-solid fa-book-open" />
         {{ title }}
-      </button>
+      </span>
     </div>
 
     <div class="tb-right">
@@ -108,6 +112,12 @@ async function close() {
   min-width: 0;
 }
 
+.tb-back {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
 .tb-logo {
   display: inline-flex;
   align-items: center;
@@ -127,25 +137,18 @@ async function close() {
   gap: 7px;
   max-width: 40vw;
   padding: 5px 12px;
-  border: none;
   border-radius: 8px;
-  background: transparent;
   color: var(--ink-main);
   font-family: inherit;
   font-size: 13px;
-  cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: background 0.2s;
-
-  &:hover {
-    background: var(--surface-2);
-  }
 
   i {
     color: var(--ink-accent);
     font-size: 12px;
+    flex-shrink: 0;
   }
 }
 
