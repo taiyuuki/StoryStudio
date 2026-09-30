@@ -41,6 +41,7 @@ const draft = reactive<EntityDto>({
   profile: null,
   geography: null,
   item: null,
+  org: null,
   attributes: {},
 })
 
@@ -48,6 +49,13 @@ function edit(e: EntityDto | null) {
   selectedId.value = e?.id ?? null
   if (!e) return
   Object.assign(draft, JSON.parse(JSON.stringify(e)) as EntityDto)
+  // 老文件可能缺专属段，补上空段让表单可编辑
+  if (draft.kind === 'location' && !draft.geography) {
+    draft.geography = { parent: null, kind: null, position: null, features: null, summary: null }
+  }
+  if (draft.kind === 'organization' && !draft.org) {
+    draft.org = { kind: null, leader: null, territory: null, ideology: null, summary: null, location: null }
+  }
 }
 
 const aliasText = computed({
@@ -289,11 +297,42 @@ function label(r: string): string {
       <template v-if="activeTab === 'location' && draft.geography">
         <div class="d-row">
           <label>类型</label>
-          <input v-model="draft.geography.kind" placeholder="城市 / 山川 / 建筑…" />
+          <input v-model="draft.geography.kind" placeholder="大陆 / 国家 / 城市 / 秘境…" />
         </div>
         <div class="d-row d-row--col">
           <label>方位描述</label>
           <textarea v-model="draft.geography.position" rows="2" />
+        </div>
+        <div class="d-row d-row--col">
+          <label>特征</label>
+          <textarea v-model="draft.geography.features" rows="2" placeholder="风貌、遗迹、气候等" />
+        </div>
+        <div class="d-row d-row--col">
+          <label>简介</label>
+          <input v-model="draft.geography.summary" />
+        </div>
+      </template>
+
+      <template v-if="activeTab === 'organization' && draft.org">
+        <div class="d-row">
+          <label>类型</label>
+          <input v-model="draft.org.kind" placeholder="宗门 / 国家 / 家族 / 公会…" />
+        </div>
+        <div class="d-row">
+          <label>首领</label>
+          <input v-model="draft.org.leader" />
+        </div>
+        <div class="d-row">
+          <label>势力范围</label>
+          <input v-model="draft.org.territory" />
+        </div>
+        <div class="d-row d-row--col">
+          <label>理念</label>
+          <input v-model="draft.org.ideology" />
+        </div>
+        <div class="d-row d-row--col">
+          <label>简介</label>
+          <textarea v-model="draft.org.summary" rows="2" />
         </div>
       </template>
 

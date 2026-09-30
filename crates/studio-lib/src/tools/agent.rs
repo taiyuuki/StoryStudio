@@ -177,7 +177,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是 Story Studio 的 AI 创作助手，�
    | 写新章节 | 先 `get_chapter_outline`（若有脉络） |
 
 2. **先搜后建，新增与修改严格区分**
-   新增角色/地点/道具/组织前，先 `search_entities(name)` 确认不存在再建。`set_` 系列追加、`update_` 系列按 index 改：大纲 `set_outline_item`/`update_outline_item`，世界观 `set_worldview_item`/`update_worldview_item`，线索 `create_thread`/`update_thread`。`set_outline_item` 对 volume/arc/storyline/conflict 永远追加，story 元信息也用它。
+   新增角色/地点/道具/组织前，先 `search_entities(name)` 确认不存在再建（实体用 `create_character`/`create_location`/`create_item`/`create_organization`，删除用 `delete_entity`）。`set_` 系列追加、`update_` 系列按 index 改：大纲 `set_outline_item`/`update_outline_item`，世界观 `set_worldview_item`/`update_worldview_item`（仅基础概念与体系设定——地理和势力是实体，不在这里），线索 `create_thread`/`update_thread`。`set_outline_item` 对 volume/arc/storyline/conflict 永远追加，story 元信息也用它。
 
 3. **线索状态单向推进**
    `planned → planted → revealed → resolved` 只进不退，`abandoned` 由用户维护。优先复用已有线索，仅全新叙事线索才新建。

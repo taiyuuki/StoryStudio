@@ -346,7 +346,7 @@ impl Tool for UpdateSceneTool {
                     "story_time",
                     "string",
                     "故事时间锚：数字（1023-9-15 / 1023）或历法标签（灵历3217年、某个雨夜）。\
-                    标签按项目历法（worldview [timeline].eras）比较，解析不了仅作展示。传空字符串清除",
+                    标签按项目历法（worldview/timeline.toml 的 eras）比较，解析不了仅作展示。传空字符串清除",
                     false,
                 ),
                 (
@@ -496,7 +496,7 @@ fn parse_story_time(s: &str) -> Result<Option<StoryTimeDef>, String> {
         }));
     }
     // 历法标签锚：任意文本（如 灵历3217年 / 某个雨夜），存 anchor 字段；
-    // 可比较性由项目历法（worldview [timeline].eras）决定，解析不了仅展示
+    // 可比较性由项目历法（worldview/timeline.toml 的 eras）决定，解析不了仅展示
     Ok(Some(StoryTimeDef {
         year: None,
         month: None,

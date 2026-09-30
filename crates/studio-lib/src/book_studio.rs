@@ -96,16 +96,18 @@ pub struct BookConcept {
 }
 
 /// 世界观 / 人物设定草稿（第 3 步编辑对象）
+///
+/// 地理与势力直接以实体（Location / Organization）形式编辑，
+/// 保存时逐个建档；世界观文件只落概念、体系与纪元。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WorldDraft {
     pub concepts: Vec<ConceptItem>,
     pub systems: Vec<SystemItem>,
-    pub places: Vec<PlaceItem>,
-    pub factions: Vec<FactionItem>,
     pub eras: Vec<String>,
     pub characters: Vec<CharacterItem>,
     pub locations: Vec<LocationItem>,
+    pub organizations: Vec<OrganizationItem>,
     pub relations: Vec<RelationItem>,
     pub threads: Vec<ThreadItem>,
 }
@@ -132,26 +134,6 @@ pub struct SystemItem {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct PlaceItem {
-    pub name: String,
-    pub kind: String,
-    pub parent: String,
-    pub features: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct FactionItem {
-    pub name: String,
-    pub kind: String,
-    pub leader: String,
-    pub territory: String,
-    pub ideology: String,
-    pub summary: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
 pub struct CharacterItem {
     pub name: String,
     /// protagonist / love_interest / antagonist / mentor / support
@@ -167,7 +149,24 @@ pub struct CharacterItem {
 #[serde(rename_all = "camelCase", default)]
 pub struct LocationItem {
     pub name: String,
+    /// continent / nation / city / realm / landform
     pub kind: String,
+    /// 上级地点名（保存时解析为已建档的 Location ID）
+    pub parent: String,
+    /// 特征描述（世界设定）
+    pub features: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OrganizationItem {
+    pub name: String,
+    /// sect / nation / clan / guild / organization
+    pub kind: String,
+    pub leader: String,
+    pub territory: String,
+    pub ideology: String,
     pub summary: String,
 }
 
@@ -224,6 +223,7 @@ pub struct ChapterItem {
 pub struct WorldSaveReport {
     pub characters: usize,
     pub locations: usize,
+    pub organizations: usize,
     pub relations: usize,
     pub threads: usize,
 }
@@ -446,11 +446,10 @@ fn world_prompt(concept: &BookConcept, o: &BookCreationOptions, n_chars: u32) ->
         \n只输出一个 JSON 对象（字符串内的引号用「」），字段：\n\
         - concepts：[{{name, category, summary}}] 3-6 项基础概念（世界规则/纪元/种族等）\n\
         - systems：[{{name, kind, levels, rules, summary}}] 0-3 项力量体系（kind 取 cultivation/magic/technology/power；levels 写等级链；rules 写规则与代价）\n\
-        - places：[{{name, kind, parent, features}}] 2-5 个地理设定（kind 取 continent/nation/city/realm/landform）\n\
-        - factions：[{{name, kind, leader, territory, ideology, summary}}] 0-4 个势力（kind 取 sect/nation/clan/guild/organization）\n\
+        - locations：[{{name, kind, parent, features, summary}}] 3-8 个地点，覆盖世界地理与剧情发生地（kind 取 continent/nation/city/realm/landform；大区域在前、具体地点在后；parent 填上级地点名）\n\
+        - organizations：[{{name, kind, leader, territory, ideology, summary}}] 0-4 个组织势力（kind 取 sect/nation/clan/guild/organization）\n\
         - eras：[纪元名] 0-3 个（故事内历法）\n\
         - characters：[{{name, role, gender, occupation, personality, background, aliases:[别名]}}] 恰好 {n_chars} 个主要角色（role 取 protagonist/love_interest/antagonist/mentor/support；必须含 1 名主角与 1 名主要反派）\n\
-        - locations：[{{name, kind, summary}}] 1-4 个关键地点（剧情发生地，与 places 不重复）\n\
         - relations：[{{from, to, relation}}] 角色间关系（from/to 用角色名；relation 如 师徒/宿敌/兄妹）\n\
         - threads：[{{title, description, priority}}] 2-5 条叙事线索（伏笔/悬念；priority 取 main/minor）",
         concept.title, concept.premise, concept.theme
@@ -491,28 +490,6 @@ fn parse_world_draft(v: &serde_json::Value, max_chars: u32) -> WorldDraft {
                 summary: s(x, "summary"),
             })
             .collect(),
-        places: arr("places")
-            .iter()
-            .take(8)
-            .map(|x| PlaceItem {
-                name: s(x, "name"),
-                kind: s(x, "kind"),
-                parent: s(x, "parent"),
-                features: s(x, "features"),
-            })
-            .collect(),
-        factions: arr("factions")
-            .iter()
-            .take(6)
-            .map(|x| FactionItem {
-                name: s(x, "name"),
-                kind: s(x, "kind"),
-                leader: s(x, "leader"),
-                territory: s(x, "territory"),
-                ideology: s(x, "ideology"),
-                summary: s(x, "summary"),
-            })
-            .collect(),
         eras: wv
             .get("eras")
             .and_then(|x| x.as_array())
@@ -529,10 +506,24 @@ fn parse_world_draft(v: &serde_json::Value, max_chars: u32) -> WorldDraft {
         characters: Vec::new(),
         locations: arr("locations")
             .iter()
-            .take(8)
+            .take(10)
             .map(|x| LocationItem {
                 name: s(x, "name"),
                 kind: s(x, "kind"),
+                parent: s(x, "parent"),
+                features: s(x, "features"),
+                summary: s(x, "summary"),
+            })
+            .collect(),
+        organizations: arr("organizations")
+            .iter()
+            .take(6)
+            .map(|x| OrganizationItem {
+                name: s(x, "name"),
+                kind: s(x, "kind"),
+                leader: s(x, "leader"),
+                territory: s(x, "territory"),
+                ideology: s(x, "ideology"),
                 summary: s(x, "summary"),
             })
             .collect(),
@@ -590,9 +581,8 @@ fn parse_world_draft(v: &serde_json::Value, max_chars: u32) -> WorldDraft {
     // 无名条目清理
     draft.concepts.retain(|x| !x.name.is_empty());
     draft.systems.retain(|x| !x.name.is_empty());
-    draft.places.retain(|x| !x.name.is_empty());
-    draft.factions.retain(|x| !x.name.is_empty());
     draft.locations.retain(|x| !x.name.is_empty());
+    draft.organizations.retain(|x| !x.name.is_empty());
     draft
         .relations
         .retain(|x| !x.from.is_empty() && !x.to.is_empty() && !x.relation.is_empty());
@@ -607,58 +597,49 @@ fn parse_world_draft(v: &serde_json::Value, max_chars: u32) -> WorldDraft {
 pub fn save_book_world(root: &Path, draft: &WorldDraft) -> Result<WorldSaveReport, StudioError> {
     let paths = ProjectPaths::new(root);
 
-    // worldview.toml
-    let mut wv = story_project_format::WorldviewFile::default();
-    wv.concepts = draft
-        .concepts
-        .iter()
-        .map(|c| story_project_format::ConceptDef {
-            name: c.name.clone(),
-            category: non_empty(&c.category),
-            summary: non_empty(&c.summary),
-            details: None,
-        })
-        .collect();
-    wv.systems = draft
-        .systems
-        .iter()
-        .map(|x| story_project_format::SystemDef {
-            name: x.name.clone(),
-            kind: non_empty(&x.kind),
-            levels: non_empty(&x.levels),
-            rules: non_empty(&x.rules),
-            summary: non_empty(&x.summary),
-        })
-        .collect();
-    wv.places = draft
-        .places
-        .iter()
-        .map(|x| story_project_format::PlaceDef {
-            name: x.name.clone(),
-            kind: non_empty(&x.kind),
-            parent: non_empty(&x.parent),
-            features: non_empty(&x.features),
-            summary: None,
-        })
-        .collect();
-    wv.factions = draft
-        .factions
-        .iter()
-        .map(|x| story_project_format::FactionDef {
-            name: x.name.clone(),
-            kind: non_empty(&x.kind),
-            leader: non_empty(&x.leader),
-            territory: non_empty(&x.territory),
-            ideology: non_empty(&x.ideology),
-            summary: non_empty(&x.summary),
-        })
-        .collect();
-    wv.timeline.eras = draft.eras.clone();
+    // worldview/ 目录（每部分一个文件）
     write_toml(
         &paths,
-        "worldview",
-        &paths.root().join("worldview.toml"),
-        &wv,
+        "worldview/concepts",
+        &paths.worldview_concepts_toml(),
+        &story_project_format::ConceptsFile {
+            concepts: draft
+                .concepts
+                .iter()
+                .map(|c| story_project_format::ConceptDef {
+                    name: c.name.clone(),
+                    category: non_empty(&c.category),
+                    summary: non_empty(&c.summary),
+                    details: None,
+                })
+                .collect(),
+        },
+    )?;
+    write_toml(
+        &paths,
+        "worldview/systems",
+        &paths.worldview_systems_toml(),
+        &story_project_format::SystemsFile {
+            systems: draft
+                .systems
+                .iter()
+                .map(|x| story_project_format::SystemDef {
+                    name: x.name.clone(),
+                    kind: non_empty(&x.kind),
+                    levels: non_empty(&x.levels),
+                    rules: non_empty(&x.rules),
+                    summary: non_empty(&x.summary),
+                })
+                .collect(),
+        },
+    )?;
+    write_toml(
+        &paths,
+        "worldview/timeline",
+        &paths.worldview_timeline_toml(),
+        &story_project_format::TimelineFile {
+            eras: draft.eras.clone(),
+        },
     )?;
 
     // 角色实体（含档案 + 别名）
@@ -688,22 +669,62 @@ pub fn save_book_world(root: &Path, draft: &WorldDraft) -> Result<WorldSaveRepor
         char_ids.push((c.name.trim().to_string(), id));
     }
 
-    // 地点实体
+    // 地点实体（世界地理与剧情地点统一建档；parent 为地点名，二遍解析为 ID）
     let mut locations = 0usize;
+    let mut loc_ids: Vec<(String, String)> = Vec::new();
     for l in &draft.locations {
         if l.name.trim().is_empty() {
             continue;
         }
-        let id = mutations::create_entity(&paths, EntityKind::Location, l.name.trim())?;
-        if !l.summary.is_empty() {
-            if let Some(mut entity) = load_entity(&paths, &id) {
-                entity
-                    .attributes
-                    .insert("summary".into(), l.summary.trim().to_string());
+        let name = l.name.trim().to_string();
+        let id = mutations::create_entity(&paths, EntityKind::Location, &name)?;
+        if let Some(mut entity) = load_entity(&paths, &id) {
+            let geo = entity.geography.get_or_insert_with(Default::default);
+            geo.kind = non_empty(&l.kind);
+            geo.features = non_empty(&l.features);
+            geo.summary = non_empty(&l.summary);
+            let _ = write_entity(&paths, &entity);
+        }
+        loc_ids.push((name, id));
+        locations += 1;
+    }
+    // 第二遍：上级地名 → Location ID（解析不到的忽略）
+    for l in &draft.locations {
+        let parent = l.parent.trim();
+        if parent.is_empty() {
+            continue;
+        }
+        let Some((_, child_id)) = loc_ids.iter().find(|(n, _)| n == l.name.trim()) else {
+            continue;
+        };
+        let Some((_, parent_id)) = loc_ids.iter().find(|(n, _)| n == parent) else {
+            continue;
+        };
+        if let Some(mut entity) = load_entity(&paths, child_id) {
+            if let Some(geo) = entity.geography.as_mut() {
+                geo.parent = Some(parent_id.clone());
                 let _ = write_entity(&paths, &entity);
             }
         }
-        locations += 1;
+    }
+
+    // 组织实体（世界观势力统一建档）
+    let mut organizations = 0usize;
+    for o in &draft.organizations {
+        if o.name.trim().is_empty() {
+            continue;
+        }
+        let id = mutations::create_entity(&paths, EntityKind::Organization, o.name.trim())?;
+        if let Some(mut entity) = load_entity(&paths, &id) {
+            let org = entity.org.get_or_insert_with(Default::default);
+            org.kind = non_empty(&o.kind);
+            org.leader = non_empty(&o.leader);
+            org.territory = non_empty(&o.territory);
+            org.ideology = non_empty(&o.ideology);
+            org.summary = non_empty(&o.summary);
+            let _ = write_entity(&paths, &entity);
+        }
+        organizations += 1;
     }
 
     // 关系（名字 → id；端点不存在的边丢弃）
@@ -735,6 +756,7 @@ pub fn save_book_world(root: &Path, draft: &WorldDraft) -> Result<WorldSaveRepor
     Ok(WorldSaveReport {
         characters: char_ids.len(),
         locations,
+        organizations,
         relations,
         threads,
     })
@@ -1286,9 +1308,10 @@ mod tests {
         {"title":"烬火行","tagline":"从灰烬里重新点火","blurb":"王朝焚书后，点灯人造反。","premise":"焚书王朝与点灯人组织的暗战。","theme":"自由","setting":"王朝末年"}
     ]}"#;
 
-    const WORLD_JSON: &str = r#"{"worldview":{"concepts":[{"name":"灵灯","category":"世界规则","summary":"以灯载魂"}],"systems":[{"name":"守灯术","kind":"magic","levels":"照夜→引星→续日","rules":"点灯折寿"}],"places":[{"name":"云隐洲","kind":"continent","features":"多雨多灯"}],"factions":[{"name":"守灯阁","kind":"sect","leader":"祖师","summary":"守灯人宗门"}],"eras":["灯历"]},
+    const WORLD_JSON: &str = r#"{"worldview":{"concepts":[{"name":"灵灯","category":"世界规则","summary":"以灯载魂"}],"systems":[{"name":"守灯术","kind":"magic","levels":"照夜→引星→续日","rules":"点灯折寿"}],"eras":["灯历"]},
       "characters":[{"name":"阿澈","role":"protagonist","gender":"男","occupation":"守灯学徒","personality":"执拗","background":"孤儿入山门","aliases":["小澈"]},{"name":"沈青梧","role":"love_interest","gender":"女","occupation":"游方医","personality":"冷静","background":"医毒双修"},{"name":"老瞎子","role":"antagonist","gender":"男","occupation":"祖师","personality":"阴鸷","background":"假装失明"}],
-      "locations":[{"name":"长明镇","kind":"city","summary":"故事起点"}],
+      "locations":[{"name":"云隐洲","kind":"continent","features":"多雨多灯","summary":"故事所在大陆"},{"name":"长明镇","kind":"city","parent":"云隐洲","summary":"故事起点"}],
+      "organizations":[{"name":"守灯阁","kind":"sect","leader":"祖师","territory":"云隐洲","summary":"守灯人宗门"}],
       "relations":[{"from":"阿澈","to":"沈青梧","relation":"同行"},{"from":"阿澈","to":"不存在的人","relation":"无效"}],
       "threads":[{"title":"祖师熄灯之谜","description":"灯为何一盏盏熄灭","priority":"main"},{"title":"阿澈的寿数","description":"点灯折寿的代价","priority":"minor"}]}"#;
 
@@ -1391,15 +1414,27 @@ mod tests {
         // 保存落盘
         let report = save_book_world(Path::new(&root), &draft).unwrap();
         assert_eq!(report.characters, 3);
-        assert_eq!(report.locations, 1);
+        assert_eq!(report.locations, 2);
+        assert_eq!(report.organizations, 1);
         assert_eq!(report.relations, 1);
         assert_eq!(report.threads, 2);
 
         let paths = ProjectPaths::new(Path::new(&root));
         let che = std::fs::read_to_string(paths.characters_dir().join("c_0001.toml")).unwrap();
         assert!(che.contains("阿澈") && che.contains("小澈") && che.contains("执拗"));
-        let wv = std::fs::read_to_string(paths.root().join("worldview.toml")).unwrap();
-        assert!(wv.contains("灵灯") && wv.contains("守灯术") && wv.contains("灯历"));
+        let concepts = std::fs::read_to_string(paths.worldview_concepts_toml()).unwrap();
+        assert!(concepts.contains("灵灯"));
+        let systems = std::fs::read_to_string(paths.worldview_systems_toml()).unwrap();
+        assert!(systems.contains("守灯术"));
+        let timeline = std::fs::read_to_string(paths.worldview_timeline_toml()).unwrap();
+        assert!(timeline.contains("灯历"));
+        // 地理与势力统一为实体：云隐洲（大陆）→ l_0001，长明镇（上级云隐洲）→ l_0002
+        let loc1 = std::fs::read_to_string(paths.locations_dir().join("l_0001.toml")).unwrap();
+        assert!(loc1.contains("云隐洲") && loc1.contains("continent") && loc1.contains("多雨多灯"));
+        let loc2 = std::fs::read_to_string(paths.locations_dir().join("l_0002.toml")).unwrap();
+        assert!(loc2.contains("长明镇") && loc2.contains("parent = \"l_0001\""));
+        let org1 = std::fs::read_to_string(paths.organizations_dir().join("o_0001.toml")).unwrap();
+        assert!(org1.contains("守灯阁") && org1.contains("祖师") && org1.contains("sect"));
         let relations = std::fs::read_to_string(paths.relations_toml()).unwrap();
         assert!(relations.contains("c_0001") && relations.contains("c_0002"));
         let threads = std::fs::read_to_string(paths.threads_toml()).unwrap();

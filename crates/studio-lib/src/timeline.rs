@@ -2,21 +2,21 @@
 //!
 //! 设计要点：检查靠拓扑序与间隔，历法只管比较与展示。
 //! - 纯数字锚（1023 / 1023-9-15）视为单一纪元（era 0）
-//! - 历法标签锚（"灵历3217年"）按 worldview [timeline].eras 的位置折算序数
+//! - 历法标签锚（"灵历3217年"）按 worldview/timeline.toml 的 eras 位置折算序数
 //! - 解析不了的标签是合法数据（只展示不比较），返回 None 而非报错
 
-use story_project_format::ProjectPaths;
+use story_project_format::{ProjectPaths, WorldviewSectionFile};
 
 /// 纪元跨度基数：只要年份数值 < 10_000_000，跨纪元比较恒正确
 const ERA_SPAN: i64 = 100_000_000;
 
-/// 从 worldview.toml 读取有序纪元表（文件缺失/解析失败返回空表）
+/// 从 worldview/timeline.toml 读取有序纪元表（文件缺失/解析失败返回空表）
 pub fn load_eras(paths: &ProjectPaths) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(paths.worldview_toml()) else {
+    let Ok(content) = std::fs::read_to_string(paths.worldview_timeline_toml()) else {
         return Vec::new();
     };
-    story_project_format::WorldviewFile::from_toml_str(&content)
-        .map(|w| w.timeline.eras)
+    story_project_format::TimelineFile::from_toml_str(&content)
+        .map(|t| t.eras)
         .unwrap_or_default()
 }
 

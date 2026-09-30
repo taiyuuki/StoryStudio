@@ -20,6 +20,17 @@ export interface GeographyDto {
   parent: string | null
   kind: string | null
   position: string | null
+  features: string | null
+  summary: string | null
+}
+
+export interface OrgDto {
+  kind: string | null
+  leader: string | null
+  territory: string | null
+  ideology: string | null
+  summary: string | null
+  location: string | null
 }
 
 export interface ItemDto {
@@ -41,6 +52,7 @@ export interface EntityDto {
   profile: ProfileDto | null
   geography: GeographyDto | null
   item: ItemDto | null
+  org: OrgDto | null
   attributes: Record<string, string>
 }
 
@@ -359,22 +371,6 @@ export interface SystemItemDto {
   summary: string
 }
 
-export interface PlaceItemDto {
-  name: string
-  kind: string
-  parent: string
-  features: string
-}
-
-export interface FactionItemDto {
-  name: string
-  kind: string
-  leader: string
-  territory: string
-  ideology: string
-  summary: string
-}
-
 export interface CharacterItemDto {
   name: string
   role: string
@@ -388,6 +384,18 @@ export interface CharacterItemDto {
 export interface LocationItemDto {
   name: string
   kind: string
+  /** 上级地点名（保存时解析为 Location 实体 ID） */
+  parent: string
+  features: string
+  summary: string
+}
+
+export interface OrganizationItemDto {
+  name: string
+  kind: string
+  leader: string
+  territory: string
+  ideology: string
   summary: string
 }
 
@@ -406,11 +414,10 @@ export interface ThreadItemDto {
 export interface WorldDraftDto {
   concepts: ConceptItemDto[]
   systems: SystemItemDto[]
-  places: PlaceItemDto[]
-  factions: FactionItemDto[]
   eras: string[]
   characters: CharacterItemDto[]
   locations: LocationItemDto[]
+  organizations: OrganizationItemDto[]
   relations: RelationItemDto[]
   threads: ThreadItemDto[]
 }
@@ -418,6 +425,7 @@ export interface WorldDraftDto {
 export interface WorldSaveReportDto {
   characters: number
   locations: number
+  organizations: number
   relations: number
   threads: number
 }

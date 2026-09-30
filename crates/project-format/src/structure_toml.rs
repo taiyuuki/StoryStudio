@@ -86,7 +86,7 @@ pub struct SceneDef {
 /// 三种表达（可组合 anchor+gap）：
 /// - 数值锚：year（可带 month/day），如 1023-9-15
 /// - 历法标签锚：anchor 自由文本（如"灵历3217年秋"），经项目历法
-///   （worldview.toml [timeline].eras）解析为可比较序数，解析不了仍可展示
+///   （worldview/timeline.toml 的 eras）解析为可比较序数，解析不了仍可展示
 /// - gap：与阅读序前一场景的时间间隔（如"3天""十年"），模糊描述合法
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoryTimeDef {

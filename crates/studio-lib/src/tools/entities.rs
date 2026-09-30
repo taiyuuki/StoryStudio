@@ -165,7 +165,9 @@ impl Tool for CreateLocationTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "create_location".into(),
-            description: "创建新地点。生成地点 ID 并写入 entities/locations/ 目录。".into(),
+            description: "创建新地点（含世界观层面的地理设定：大陆/国家/城市/秘境等）。\
+            生成地点 ID 并写入 entities/locations/ 目录。"
+                .into(),
             parameters: object_schema(vec![
                 ("name", "string", "地点名称（如：青云城）", true),
                 ("aliases", "string", "别名，逗号分隔", false),
@@ -173,10 +175,12 @@ impl Tool for CreateLocationTool {
                 (
                     "geo_kind",
                     "string",
-                    "地理类型（如：settlement/city/region/landmark）",
+                    "地理类型（如：continent/nation/city/realm/landform）",
                     false,
                 ),
                 ("position", "string", "地理位置描述", false),
+                ("features", "string", "特征描述（风貌、遗迹、气候等世界设定）", false),
+                ("summary", "string", "一句话简介", false),
             ]),
         }
     }
@@ -192,7 +196,15 @@ impl Tool for CreateLocationTool {
         let parent = get_str_opt(arguments, "parent");
         let geo_kind = get_str_opt(arguments, "geo_kind");
         let position = get_str_opt(arguments, "position");
-        if aliases.is_some() || parent.is_some() || geo_kind.is_some() || position.is_some() {
+        let features = get_str_opt(arguments, "features");
+        let summary = get_str_opt(arguments, "summary");
+        if aliases.is_some()
+            || parent.is_some()
+            || geo_kind.is_some()
+            || position.is_some()
+            || features.is_some()
+            || summary.is_some()
+        {
             let entity_dir = paths.locations_dir();
             let entity_path = entity_dir.join(format!("{new_id}.toml"));
             let content =
@@ -211,6 +223,12 @@ impl Tool for CreateLocationTool {
             }
             if let Some(v) = position {
                 geo.position = Some(v);
+            }
+            if let Some(v) = features {
+                geo.features = Some(v);
+            }
+            if let Some(v) = summary {
+                geo.summary = Some(v);
             }
             let toml_content = entity
                 .to_toml_string()
@@ -330,17 +348,22 @@ impl Tool for CreateOrganizationTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "create_organization".into(),
-            description: "创建新组织/势力。生成组织 ID 并写入 entities/organizations/ 目录。"
+            description: "创建新组织/势力（宗门、国家、家族、公会等，含世界观层面的设定）。\
+            生成组织 ID 并写入 entities/organizations/ 目录。"
                 .into(),
             parameters: object_schema(vec![
                 ("name", "string", "组织名称（如：天机阁）", true),
                 ("aliases", "string", "别名，逗号分隔", false),
                 (
-                    "description",
+                    "org_kind",
                     "string",
-                    "组织描述（性质、宗旨、规模等）",
+                    "组织类型（如：sect/nation/clan/guild/organization）",
                     false,
                 ),
+                ("leader", "string", "首领/代表人物", false),
+                ("territory", "string", "势力范围", false),
+                ("ideology", "string", "理念/宗旨", false),
+                ("summary", "string", "简介（性质、宗旨、规模等）", false),
             ]),
         }
     }
@@ -351,10 +374,20 @@ impl Tool for CreateOrganizationTool {
         let new_id = crate::mutations::create_entity(&paths, EntityKind::Organization, &name)
             .map_err(|e| e.to_string())?;
 
-        // 追加可选字段（组织无专属段，description 存入 attributes）
+        // 追加可选字段（存入 [org] 段）
         let aliases = get_str_opt(arguments, "aliases");
-        let description = get_str_opt(arguments, "description");
-        if aliases.is_some() || description.is_some() {
+        let org_kind = get_str_opt(arguments, "org_kind");
+        let leader = get_str_opt(arguments, "leader");
+        let territory = get_str_opt(arguments, "territory");
+        let ideology = get_str_opt(arguments, "ideology");
+        let summary = get_str_opt(arguments, "summary");
+        if aliases.is_some()
+            || org_kind.is_some()
+            || leader.is_some()
+            || territory.is_some()
+            || ideology.is_some()
+            || summary.is_some()
+        {
             let entity_dir = paths.organizations_dir();
             let entity_path = entity_dir.join(format!("{new_id}.toml"));
             let content =
@@ -364,8 +397,21 @@ impl Tool for CreateOrganizationTool {
             if let Some(v) = aliases {
                 entity.aliases = v.split(',').map(|s| s.trim().to_string()).collect();
             }
-            if let Some(d) = description {
-                entity.attributes.insert("description".into(), d);
+            let org = entity.org.get_or_insert_with(Default::default);
+            if let Some(v) = org_kind {
+                org.kind = Some(v);
+            }
+            if let Some(v) = leader {
+                org.leader = Some(v);
+            }
+            if let Some(v) = territory {
+                org.territory = Some(v);
+            }
+            if let Some(v) = ideology {
+                org.ideology = Some(v);
+            }
+            if let Some(v) = summary {
+                org.summary = Some(v);
             }
             let toml_content = entity
                 .to_toml_string()
@@ -715,6 +761,12 @@ fn push_geography(out: &mut String, g: &story_project_format::entity_file::Geogr
     if let Some(ref v) = g.position {
         lines.push(format!("位置: {v}"));
     }
+    if let Some(ref v) = g.features {
+        lines.push(format!("特征: {v}"));
+    }
+    if let Some(ref v) = g.summary {
+        lines.push(format!("简介: {v}"));
+    }
     if !lines.is_empty() {
         out.push_str("  地理信息:\n");
         for l in lines {
@@ -751,9 +803,30 @@ fn push_item(out: &mut String, it: &story_project_format::entity_file::ItemSecti
 
 /// 渲染组织信息 [org] 段
 fn push_org(out: &mut String, o: &story_project_format::entity_file::OrgSection) {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(ref v) = o.kind {
+        lines.push(format!("类型: {v}"));
+    }
+    if let Some(ref v) = o.leader {
+        lines.push(format!("首领: {v}"));
+    }
+    if let Some(ref v) = o.territory {
+        lines.push(format!("范围: {v}"));
+    }
+    if let Some(ref v) = o.ideology {
+        lines.push(format!("理念: {v}"));
+    }
+    if let Some(ref v) = o.summary {
+        lines.push(format!("简介: {v}"));
+    }
     if let Some(ref v) = o.location {
+        lines.push(format!("所在地: {v}"));
+    }
+    if !lines.is_empty() {
         out.push_str("  组织信息:\n");
-        out.push_str(&format!("    所在地: {v}\n"));
+        for l in lines {
+            out.push_str(&format!("    {l}\n"));
+        }
     }
 }
 

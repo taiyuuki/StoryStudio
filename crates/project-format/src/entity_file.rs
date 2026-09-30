@@ -68,17 +68,26 @@ pub struct ProfileSection {
 }
 
 /// [geography] 段 — Location 专属 (RFC-0014)
+///
+/// 世界观地理与剧情地点统一为 Location 实体：
+/// 世界观层面的设定（类型/上级/特征/简介）也存这里。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GeographySection {
-    /// 父地点（构成地理层级树）
+    /// 父地点（构成地理层级树，引用 Location 的 StableId）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    /// 地理类型
+    /// 地理类型：continent（大陆）/ nation（国家）/ city（城市）/ realm（秘境）/ landform（地形）等
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     /// 位置描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<String>,
+    /// 特征描述（世界设定层面的风貌、遗迹、气候等）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<String>,
+    /// 简介（一句话概括）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// [item] 段 — Item 专属 (RFC-0014)
@@ -98,8 +107,26 @@ pub struct ItemSection {
 }
 
 /// [org] 段 — Organization 专属
+///
+/// 世界观势力与故事组织统一为 Organization 实体：
+/// 世界观层面的设定（类型/首领/范围/理念）也存这里。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OrgSection {
+    /// 组织类型：sect（宗门）/ nation（国家）/ clan（家族）/ guild（公会）/ organization（组织）等
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// 首领/代表人物
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leader: Option<String>,
+    /// 势力范围
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub territory: Option<String>,
+    /// 理念/宗旨
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ideology: Option<String>,
+    /// 简介（性质、宗旨、规模等）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// 所在地（引用 Location 的 StableId）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
@@ -268,12 +295,16 @@ aliases = ["渡口"]
 parent = "l_1A2B3C"
 kind = "settlement"
 position = "青江下游"
+features = "终年多雨，有上古遗迹"
+summary = "云隐洲最大的渡口"
 "#;
         let entity = EntityFile::from_toml_str(toml_str).unwrap();
         assert_eq!(entity.id, "l_3F2B1C");
         let geo = entity.geography.unwrap();
         assert_eq!(geo.parent.as_deref(), Some("l_1A2B3C"));
         assert_eq!(geo.kind.as_deref(), Some("settlement"));
+        assert_eq!(geo.features.as_deref(), Some("终年多雨，有上古遗迹"));
+        assert_eq!(geo.summary.as_deref(), Some("云隐洲最大的渡口"));
     }
 
     #[test]
@@ -330,20 +361,30 @@ display_name = "江南走私团"
 aliases = ["水路帮"]
 
 [org]
+kind = "guild"
+leader = "水老大"
+territory = "江南水路"
+ideology = "利字当头"
+summary = "盘踞水路的走私网络"
 location = "l_3F2B1C"
 "#;
         let entity = EntityFile::from_toml_str(toml_str).unwrap();
         assert_eq!(entity.id, "o_4D5E6F");
         assert_eq!(entity.display_name, "江南走私团");
-        assert_eq!(
-            entity.org.as_ref().unwrap().location.as_deref(),
-            Some("l_3F2B1C")
-        );
+        let org = entity.org.as_ref().unwrap();
+        assert_eq!(org.kind.as_deref(), Some("guild"));
+        assert_eq!(org.leader.as_deref(), Some("水老大"));
+        assert_eq!(org.territory.as_deref(), Some("江南水路"));
+        assert_eq!(org.ideology.as_deref(), Some("利字当头"));
+        assert_eq!(org.summary.as_deref(), Some("盘踞水路的走私网络"));
+        assert_eq!(org.location.as_deref(), Some("l_3F2B1C"));
 
         // Roundtrip
         let serialized = entity.to_toml_string().unwrap();
         let reparsed = EntityFile::from_toml_str(&serialized).unwrap();
-        assert_eq!(reparsed.org.unwrap().location.as_deref(), Some("l_3F2B1C"));
+        let org = reparsed.org.unwrap();
+        assert_eq!(org.location.as_deref(), Some("l_3F2B1C"));
+        assert_eq!(org.leader.as_deref(), Some("水老大"));
     }
 
     #[test]

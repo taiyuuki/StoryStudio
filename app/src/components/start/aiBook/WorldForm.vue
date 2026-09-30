@@ -2,9 +2,8 @@
 import { computed } from 'vue'
 import type {
   ConceptItemDto,
-  FactionItemDto,
   LocationItemDto,
-  PlaceItemDto,
+  OrganizationItemDto,
   SystemItemDto,
   WorldDraftDto,
 } from '@/api/backend'
@@ -19,10 +18,11 @@ const ROLES: [string, string][] = [
   ['support', '配角'],
 ]
 const SYSTEM_KINDS = ['cultivation', 'magic', 'technology', 'power']
-const PLACE_KINDS = ['continent', 'nation', 'city', 'realm', 'landform']
-const FACTION_KINDS = ['sect', 'nation', 'clan', 'guild', 'organization']
+const LOCATION_KINDS = ['continent', 'nation', 'city', 'realm', 'landform']
+const ORG_KINDS = ['sect', 'nation', 'clan', 'guild', 'organization']
 
 const charNames = computed(() => draft.value.characters.map((c) => c.name).filter(Boolean))
+const locationNames = computed(() => draft.value.locations.map((l) => l.name).filter(Boolean))
 
 function addCharacter() {
   draft.value.characters.push({
@@ -41,14 +41,11 @@ function addConcept() {
 function addSystem() {
   draft.value.systems.push({ name: '', kind: 'magic', levels: '', rules: '', summary: '' })
 }
-function addPlace() {
-  draft.value.places.push({ name: '', kind: 'city', parent: '', features: '' })
-}
-function addFaction() {
-  draft.value.factions.push({ name: '', kind: 'sect', leader: '', territory: '', ideology: '', summary: '' })
-}
 function addLocation() {
-  draft.value.locations.push({ name: '', kind: 'city', summary: '' })
+  draft.value.locations.push({ name: '', kind: 'city', parent: '', features: '', summary: '' })
+}
+function addOrganization() {
+  draft.value.organizations.push({ name: '', kind: 'sect', leader: '', territory: '', ideology: '', summary: '' })
 }
 function addRelation() {
   draft.value.relations.push({ from: '', to: '', relation: '' })
@@ -160,32 +157,10 @@ function addThread() {
           <button class="wz-add" @click="addSystem"><i class="fa-solid fa-plus" /> 加体系</button>
         </ElCollapseItem>
 
-        <ElCollapseItem :title="`地理（${draft.places.length}）`" name="places">
+        <ElCollapseItem :title="`组织与势力（${draft.organizations.length}）`" name="organizations">
           <div class="wz-cards">
-            <div v-for="(p, i) in draft.places" :key="i" class="wz-card">
-              <button class="wz-card-del" @click="draft.places.splice(i, 1)">
-                <i class="fa-regular fa-trash-can" />
-              </button>
-              <div class="wz-row">
-                <div class="wz-field"><label>名称</label><input v-model="p.name" /></div>
-                <div class="wz-field">
-                  <label>类型</label>
-                  <select v-model="p.kind">
-                    <option v-for="k in PLACE_KINDS" :key="k" :value="k">{{ k }}</option>
-                  </select>
-                </div>
-                <div class="wz-field"><label>上级</label><input v-model="p.parent" placeholder="可留空" /></div>
-              </div>
-              <div class="wz-field"><label>特征</label><textarea v-model="p.features" rows="2" /></div>
-            </div>
-          </div>
-          <button class="wz-add" @click="addPlace"><i class="fa-solid fa-plus" /> 加地理</button>
-        </ElCollapseItem>
-
-        <ElCollapseItem :title="`势力（${draft.factions.length}）`" name="factions">
-          <div class="wz-cards">
-            <div v-for="(f, i) in draft.factions" :key="i" class="wz-card">
-              <button class="wz-card-del" @click="draft.factions.splice(i, 1)">
+            <div v-for="(f, i) in draft.organizations" :key="i" class="wz-card">
+              <button class="wz-card-del" @click="draft.organizations.splice(i, 1)">
                 <i class="fa-regular fa-trash-can" />
               </button>
               <div class="wz-row">
@@ -193,15 +168,19 @@ function addThread() {
                 <div class="wz-field">
                   <label>类型</label>
                   <select v-model="f.kind">
-                    <option v-for="k in FACTION_KINDS" :key="k" :value="k">{{ k }}</option>
+                    <option v-for="k in ORG_KINDS" :key="k" :value="k">{{ k }}</option>
                   </select>
                 </div>
                 <div class="wz-field"><label>首领</label><input v-model="f.leader" /></div>
               </div>
-              <div class="wz-field"><label>理念 / 简介</label><textarea v-model="f.summary" rows="2" /></div>
+              <div class="wz-row">
+                <div class="wz-field"><label>势力范围</label><input v-model="f.territory" /></div>
+                <div class="wz-field"><label>理念</label><input v-model="f.ideology" /></div>
+              </div>
+              <div class="wz-field"><label>简介</label><textarea v-model="f.summary" rows="2" /></div>
             </div>
           </div>
-          <button class="wz-add" @click="addFaction"><i class="fa-solid fa-plus" /> 加势力</button>
+          <button class="wz-add" @click="addOrganization"><i class="fa-solid fa-plus" /> 加组织</button>
         </ElCollapseItem>
 
         <ElCollapseItem title="纪元（故事内历法）" name="eras">
@@ -217,11 +196,11 @@ function addThread() {
       </ElCollapse>
     </section>
 
-    <!-- 关键地点 -->
+    <!-- 地点（世界地理 + 剧情发生地，统一为 Location 实体） -->
     <section>
       <h4 class="wz-sec">
         <i class="fa-solid fa-map-location-dot" />
-        关键地点（剧情发生地）
+        地点（世界地理与剧情发生地）
       </h4>
       <div class="wz-cards">
         <div v-for="(l, i) in draft.locations" :key="i" class="wz-card">
@@ -233,10 +212,18 @@ function addThread() {
             <div class="wz-field">
               <label>类型</label>
               <select v-model="l.kind">
-                <option v-for="k in PLACE_KINDS" :key="k" :value="k">{{ k }}</option>
+                <option v-for="k in LOCATION_KINDS" :key="k" :value="k">{{ k }}</option>
+              </select>
+            </div>
+            <div class="wz-field">
+              <label>上级</label>
+              <select v-model="l.parent">
+                <option value="">无</option>
+                <option v-for="n in locationNames.filter((x) => x !== l.name)" :key="n" :value="n">{{ n }}</option>
               </select>
             </div>
           </div>
+          <div class="wz-field"><label>特征</label><textarea v-model="l.features" rows="2" placeholder="风貌、遗迹、气候等" /></div>
           <div class="wz-field"><label>说明</label><input v-model="l.summary" /></div>
         </div>
       </div>

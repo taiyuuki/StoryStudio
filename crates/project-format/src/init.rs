@@ -38,6 +38,7 @@ pub fn init_project(root: &Path, project_name: &str) -> Result<ProjectPaths, Ini
     // 创建目录
     let dirs = [
         paths.fragments_dir(),
+        paths.worldview_dir(),
         paths.characters_dir(),
         paths.locations_dir(),
         paths.items_dir(),

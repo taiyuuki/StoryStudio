@@ -67,6 +67,8 @@ pub struct EntityDto {
     pub geography: Option<GeographyDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item: Option<ItemDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org: Option<OrgDto>,
     pub attributes: BTreeMap<String, String>,
 }
 
@@ -89,6 +91,19 @@ pub struct GeographyDto {
     pub parent: Option<String>,
     pub kind: Option<String>,
     pub position: Option<String>,
+    pub features: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgDto {
+    pub kind: Option<String>,
+    pub leader: Option<String>,
+    pub territory: Option<String>,
+    pub ideology: Option<String>,
+    pub summary: Option<String>,
+    pub location: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -386,6 +401,16 @@ pub fn to_entity_dto(kind: &str, ef: &EntityFile) -> EntityDto {
             parent: g.parent.clone(),
             kind: g.kind.clone(),
             position: g.position.clone(),
+            features: g.features.clone(),
+            summary: g.summary.clone(),
+        }),
+        org: ef.org.as_ref().map(|o| OrgDto {
+            kind: o.kind.clone(),
+            leader: o.leader.clone(),
+            territory: o.territory.clone(),
+            ideology: o.ideology.clone(),
+            summary: o.summary.clone(),
+            location: o.location.clone(),
         }),
         item: ef.item.as_ref().map(|i| ItemDto {
             kind: i.kind.clone(),
@@ -541,10 +566,27 @@ pub fn save_entity_file(root: &Path, dto: &EntityDto) -> Result<(), String> {
                 parent: g.parent,
                 kind: g.kind,
                 position: g.position,
+                features: g.features,
+                summary: g.summary,
             }
         });
     } else {
         ef.geography = None;
+    }
+    if kind == EntityKind::Organization {
+        ef.org = Some(match dto.org.clone() {
+            Some(o) => story_project_format::entity_file::OrgSection {
+                kind: o.kind,
+                leader: o.leader,
+                territory: o.territory,
+                ideology: o.ideology,
+                summary: o.summary,
+                location: o.location,
+            },
+            None => Default::default(),
+        });
+    } else {
+        ef.org = None;
     }
     if kind == EntityKind::Item {
         ef.item = Some(item_from_dto(dto.item.as_ref().unwrap_or(&ItemDto::default())));

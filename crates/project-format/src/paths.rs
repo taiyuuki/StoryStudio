@@ -45,8 +45,22 @@ impl ProjectPaths {
         self.root.join("chapters.toml")
     }
 
-    pub fn worldview_toml(&self) -> PathBuf {
-        self.root.join("worldview.toml")
+    /// 世界观目录（一节一文件：concepts / systems / timeline；
+    /// 地理与势力统一存 entities/locations、entities/organizations）
+    pub fn worldview_dir(&self) -> PathBuf {
+        self.root.join("worldview")
+    }
+
+    pub fn worldview_concepts_toml(&self) -> PathBuf {
+        self.worldview_dir().join("concepts.toml")
+    }
+
+    pub fn worldview_systems_toml(&self) -> PathBuf {
+        self.worldview_dir().join("systems.toml")
+    }
+
+    pub fn worldview_timeline_toml(&self) -> PathBuf {
+        self.worldview_dir().join("timeline.toml")
     }
 
     pub fn relations_toml(&self) -> PathBuf {
