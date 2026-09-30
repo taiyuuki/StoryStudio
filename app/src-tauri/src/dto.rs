@@ -11,8 +11,8 @@ use story_project_format::structure_toml::StoryTimeDef;
 use story_project_format::threads_file::ThreadDef;
 use story_project_format::worldview_file::{ConceptDef, SystemDef};
 use story_project_format::{
-    ChapterDef, ConceptsFile, EntityFile, FragmentFile, RelationsFile, SystemsFile, ThreadsFile,
-    TimelineFile,
+    ChapterDef, ChapterOutlineDef, ChaptersFile, ConceptsFile, EntityFile, FragmentFile,
+    RelationsFile, SystemsFile, ThreadsFile, TimelineFile, VolumeGroupDef,
 };
 
 // ============================================================================
@@ -734,6 +734,157 @@ pub fn save_worldview(root: &Path, dto: &WorldviewDto) -> Result<(), String> {
     Ok(())
 }
 
+// ============================================================================
+// 章节脉络（chapters.toml：卷分组 + 逐章脉络）
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChaptersOutlineDto {
+    pub volumes: Vec<VolumeGroupDto>,
+    pub chapters: Vec<ChapterOutlineItemDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeGroupDto {
+    pub name: String,
+    pub order: u32,
+    pub theme: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterOutlineItemDto {
+    /// 对齐 structure.toml 的章节 ID；设计阶段（虚拟章）为 null
+    pub chapter_id: Option<String>,
+    pub title: String,
+    /// 所属卷序号（1-based）；0 = 未分卷
+    pub volume_order: u32,
+    pub summary: Option<String>,
+    pub goal: Option<String>,
+    pub beats: Vec<String>,
+    /// 涉及角色 ID
+    pub characters: Vec<String>,
+    /// 涉及线索 ID
+    pub threads: Vec<String>,
+    /// 场景规划（由流水线在落实场景时回填，前端只读透传）
+    pub scenes: Vec<String>,
+    pub hook: Option<String>,
+    pub notes: Option<String>,
+    /// planned / writing / completed
+    pub status: String,
+}
+
+/// 读取章节脉络（chapters.toml，文件缺失按空处理）
+pub fn build_chapters_outline(root: &Path) -> Result<ChaptersOutlineDto, String> {
+    let paths = story_project_format::ProjectPaths::new(root);
+    let file = load_toml::<ChaptersFile>(&paths.chapters_toml())?;
+    Ok(ChaptersOutlineDto {
+        volumes: file
+            .volumes
+            .iter()
+            .map(|v| VolumeGroupDto {
+                name: v.name.clone(),
+                order: v.order,
+                theme: v.theme.clone(),
+                summary: v.summary.clone(),
+            })
+            .collect(),
+        chapters: file
+            .chapters
+            .iter()
+            .map(|c| ChapterOutlineItemDto {
+                chapter_id: c.chapter_id.clone(),
+                title: c.title.clone(),
+                volume_order: c.volume_order,
+                summary: c.summary.clone(),
+                goal: c.goal.clone(),
+                beats: c.beats.clone(),
+                characters: c.characters.clone(),
+                threads: c.threads.clone(),
+                scenes: c.scenes.clone(),
+                hook: c.hook.clone(),
+                notes: c.notes.clone(),
+                status: c.status.clone(),
+            })
+            .collect(),
+    })
+}
+
+/// 保存章节脉络（整体写回 chapters.toml，带防御清理）。
+///
+/// 清理规则：空名卷/空标题章丢弃、卷 order 冲突丢弃、章节引用不存在的卷时归入未分卷、
+/// 非法 status 归为 planned、字符串去空白。chapter_id / scenes / threads 原样保留
+///（scenes 由流水线回填，丢了会破坏逐章成书）。
+pub fn save_chapters_outline(root: &Path, dto: &ChaptersOutlineDto) -> Result<(), String> {
+    let clean = |s: &Option<String>| -> Option<String> {
+        s.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let clean_list = |v: &[String]| -> Vec<String> {
+        v.iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+
+    let mut volumes: Vec<VolumeGroupDef> = Vec::new();
+    for v in &dto.volumes {
+        let name = v.name.trim();
+        if name.is_empty() || volumes.iter().any(|x| x.order == v.order) {
+            continue;
+        }
+        volumes.push(VolumeGroupDef {
+            name: name.to_string(),
+            order: v.order,
+            theme: clean(&v.theme),
+            summary: clean(&v.summary),
+        });
+    }
+    let valid_orders: Vec<u32> = volumes.iter().map(|v| v.order).collect();
+
+    let mut chapters: Vec<ChapterOutlineDef> = Vec::new();
+    for c in &dto.chapters {
+        let title = c.title.trim();
+        if title.is_empty() {
+            continue;
+        }
+        chapters.push(ChapterOutlineDef {
+            chapter_id: clean(&c.chapter_id),
+            title: title.to_string(),
+            volume_order: if valid_orders.contains(&c.volume_order) {
+                c.volume_order
+            } else {
+                0
+            },
+            summary: clean(&c.summary),
+            goal: clean(&c.goal),
+            beats: clean_list(&c.beats),
+            characters: clean_list(&c.characters),
+            threads: clean_list(&c.threads),
+            scenes: clean_list(&c.scenes),
+            hook: clean(&c.hook),
+            notes: clean(&c.notes),
+            status: if story_project_format::is_valid_status(&c.status) {
+                c.status.trim().to_string()
+            } else {
+                "planned".to_string()
+            },
+        });
+    }
+
+    let file = ChaptersFile { volumes, chapters };
+    let content = file
+        .to_toml_string()
+        .map_err(|e| format!("序列化 chapters.toml 失败: {e}"))?;
+    let path = story_project_format::ProjectPaths::new(root).chapters_toml();
+    std::fs::write(&path, content).map_err(|e| format!("写入 chapters.toml 失败: {e}"))
+}
+
 /// 汇总项目全量工作区数据
 pub fn build_workspace(root: &Path, info: &story_studio_lib::ProjectInfo) -> Result<WorkspaceDto, String> {
     let paths = story_project_format::ProjectPaths::new(root);
@@ -914,5 +1065,122 @@ mod worldview_tests {
         assert!(loaded.concepts.is_empty());
         assert!(loaded.systems.is_empty());
         assert!(loaded.eras.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod chapters_outline_tests {
+    use super::*;
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "chapters-outline-test-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn chapters_outline_roundtrip_with_cleanup() {
+        let root = temp_root("roundtrip");
+        let dto = ChaptersOutlineDto {
+            volumes: vec![
+                VolumeGroupDto {
+                    name: "第一卷 灯下".into(),
+                    order: 1,
+                    theme: Some("启程".into()),
+                    summary: Some("离乡".into()),
+                },
+                VolumeGroupDto {
+                    // order=1 重复 → 保存时丢弃
+                    name: "重复卷".into(),
+                    order: 1,
+                    theme: None,
+                    summary: None,
+                },
+            ],
+            chapters: vec![
+                ChapterOutlineItemDto {
+                    chapter_id: Some("ch_01".into()),
+                    title: "灯灭之夜".into(),
+                    volume_order: 1,
+                    summary: Some("山门最后一盏灯熄".into()),
+                    goal: Some("引出主线".into()),
+                    beats: vec!["灯灭".into(), "下山".into()],
+                    characters: vec!["c_0001".into()],
+                    threads: vec!["t_0001".into()],
+                    scenes: vec!["sc_01_01".into()],
+                    hook: Some("来客身份".into()),
+                    notes: None,
+                    status: "completed".into(),
+                },
+                ChapterOutlineItemDto {
+                    chapter_id: None,
+                    title: "   ".into(), // 空标题 → 丢弃
+                    volume_order: 9,     // 引用不存在的卷 → 未分卷
+                    summary: None,
+                    goal: None,
+                    beats: vec![],
+                    characters: vec![],
+                    threads: vec![],
+                    scenes: vec![],
+                    hook: None,
+                    notes: None,
+                    status: "bogus".into(), // 非法状态 → planned
+                },
+            ],
+        };
+
+        save_chapters_outline(&root, &dto).unwrap();
+        let loaded = build_chapters_outline(&root).unwrap();
+
+        // 空 order 重复卷被丢弃
+        assert_eq!(loaded.volumes.len(), 1);
+        assert_eq!(loaded.volumes[0].name, "第一卷 灯下");
+        // 空标题章被丢弃
+        assert_eq!(loaded.chapters.len(), 1);
+        let ch = &loaded.chapters[0];
+        assert_eq!(ch.chapter_id.as_deref(), Some("ch_01"));
+        assert_eq!(ch.status, "completed");
+        // scenes/threads 原样保留（流水线回填数据不能丢）
+        assert_eq!(ch.scenes, vec!["sc_01_01"]);
+        assert_eq!(ch.threads, vec!["t_0001"]);
+    }
+
+    #[test]
+    fn chapters_outline_invalid_refs_sanitized() {
+        let root = temp_root("sanitize");
+        let dto = ChaptersOutlineDto {
+            volumes: vec![],
+            chapters: vec![ChapterOutlineItemDto {
+                chapter_id: None,
+                title: "孤章".into(),
+                volume_order: 3, // 无卷可引用
+                summary: None,
+                goal: None,
+                beats: vec![],
+                characters: vec![],
+                threads: vec![],
+                scenes: vec![],
+                hook: None,
+                notes: None,
+                status: "writing".into(),
+            }],
+        };
+        save_chapters_outline(&root, &dto).unwrap();
+        let loaded = build_chapters_outline(&root).unwrap();
+        assert_eq!(loaded.chapters[0].volume_order, 0, "无效卷引用归入未分卷");
+    }
+
+    #[test]
+    fn chapters_outline_missing_file_yields_default() {
+        let root = temp_root("missing");
+        let loaded = build_chapters_outline(&root).unwrap();
+        assert!(loaded.volumes.is_empty());
+        assert!(loaded.chapters.is_empty());
     }
 }

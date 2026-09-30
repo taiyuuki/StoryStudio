@@ -11,6 +11,7 @@ import DiagnosticsPanel from './DiagnosticsPanel.vue'
 import ExportPanel from './ExportPanel.vue'
 import StatsPanel from './StatsPanel.vue'
 import WorldviewPanel from './WorldviewPanel.vue'
+import ChaptersPanel from './ChaptersPanel.vue'
 
 const ui = useUiStore()
 const store = useWorkspaceStore()
@@ -21,6 +22,7 @@ const panels = computed(
       ['miao', { label: '妙笔', icon: 'fa-solid fa-feather-pointed', comp: AiPanel }],
       ['stats', { label: '码字统计', icon: 'fa-solid fa-chart-simple', comp: StatsPanel }],
       ['book', { label: '逐章成书', icon: 'fa-solid fa-book-open', comp: BookPanel }],
+      ['chapters', { label: '章节脉络', icon: 'fa-solid fa-list-ol', comp: ChaptersPanel }],
       ['entities', { label: '设定', icon: 'fa-solid fa-users', comp: EntityPanel }],
       ['worldview', { label: '世界观', icon: 'fa-solid fa-globe', comp: WorldviewPanel }],
       ['threads', { label: '叙事线索', icon: 'fa-solid fa-route', comp: ThreadPanel }],

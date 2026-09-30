@@ -99,6 +99,41 @@ export interface WorldviewDto {
   eras: string[]
 }
 
+// ── 章节脉络（chapters.toml：卷分组 + 逐章脉络） ─────────────
+
+export interface VolumeGroupDto {
+  name: string
+  order: number
+  theme: string | null
+  summary: string | null
+}
+
+export interface ChapterOutlineItemDto {
+  /** 对齐 structure.toml 的章节 ID；设计阶段（虚拟章）为 null */
+  chapterId: string | null
+  title: string
+  /** 所属卷序号（1-based）；0 = 未分卷 */
+  volumeOrder: number
+  summary: string | null
+  goal: string | null
+  beats: string[]
+  /** 涉及角色 ID */
+  characters: string[]
+  /** 涉及线索 ID */
+  threads: string[]
+  /** 场景规划（流水线回填，前端只读透传） */
+  scenes: string[]
+  hook: string | null
+  notes: string | null
+  /** planned / writing / completed */
+  status: string
+}
+
+export interface ChaptersOutlineDto {
+  volumes: VolumeGroupDto[]
+  chapters: ChapterOutlineItemDto[]
+}
+
 export interface SceneDto {
   id: string
   chapterId: string
@@ -648,6 +683,14 @@ export const api = {
   },
   saveWorldview(root: string, worldview: WorldviewDto) {
     return call<void>('save_worldview', { root, worldview })
+  },
+
+  // ── 章节脉络 ──────────────────────────────────────────
+  getChapterOutline(root: string) {
+    return call<ChaptersOutlineDto>('get_chapter_outline', { root })
+  },
+  saveChapterOutline(root: string, outline: ChaptersOutlineDto) {
+    return call<void>('save_chapter_outline', { root, outline })
   },
 
   // ── 编译 / 导出 ───────────────────────────────────────

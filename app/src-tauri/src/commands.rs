@@ -355,6 +355,20 @@ pub fn save_worldview(root: String, worldview: WorldviewDto) -> R<()> {
 }
 
 // ============================================================================
+// 章节脉络（chapters.toml：卷分组 + 逐章脉络）
+// ============================================================================
+
+#[tauri::command]
+pub fn get_chapter_outline(root: String) -> R<ChaptersOutlineDto> {
+    build_chapters_outline(Path::new(&root))
+}
+
+#[tauri::command]
+pub fn save_chapter_outline(root: String, outline: ChaptersOutlineDto) -> R<()> {
+    crate::dto::save_chapters_outline(Path::new(&root), &outline)
+}
+
+// ============================================================================
 // 编译诊断 / 导出
 // ============================================================================
 

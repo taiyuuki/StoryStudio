@@ -2,9 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { api, type ChapterProgressDto, type WorkflowEventDto, type WorkflowIssueDto } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useUiStore } from '@/stores/ui'
 import OutlineBatchDialog from './OutlineBatchDialog.vue'
 
 const store = useWorkspaceStore()
+const ui = useUiStore()
 
 // ── 状态 ──────────────────────────────────────────────────
 const phase = ref<'idle' | 'paused' | 'done'>('idle')
@@ -315,6 +317,14 @@ const ISSUE_ICON: Record<string, string> = {
         <span class="num text-ink-muted">
           {{ chapters.length - pendingCount }}/{{ chapters.length }}
         </span>
+        <button
+          class="ink-btn ink-btn--sm bk-outline-edit"
+          title="查看与手动编辑卷结构和章节脉络"
+          @click="ui.activePanel = 'chapters'"
+        >
+          <i class="fa-solid fa-pen" />
+          编辑
+        </button>
         <button
           v-if="!running"
           class="ink-btn ink-btn--sm bk-outline-add"
@@ -689,8 +699,13 @@ const ISSUE_ICON: Record<string, string> = {
 }
 
 // 空状态
-.bk-outline-add {
+.bk-outline-edit {
   margin-left: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.bk-outline-add {
   padding: 2px 8px;
   font-size: 11px;
 }

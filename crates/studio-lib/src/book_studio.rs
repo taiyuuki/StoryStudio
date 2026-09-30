@@ -1085,6 +1085,9 @@ pub fn save_book_outline_batch(root: &Path, draft: &OutlineBatchDraft) -> Result
     }
 
     let valid_orders: Vec<u32> = file.volumes.iter().map(|v| v.order).collect();
+    // 向导表单收集的是角色名；workflow 按 StableId 解析 POV 与角色卡，这里统一映射为实体 ID
+    //（名字或别名匹配，匹配不到的丢弃——避免写入悬空名字导致 POV 失效）
+    let char_ids = character_id_map(&paths);
     for c in &draft.chapters {
         let volume_order = if valid_orders.contains(&c.volume_order) {
             c.volume_order
@@ -1098,7 +1101,12 @@ pub fn save_book_outline_batch(root: &Path, draft: &OutlineBatchDraft) -> Result
             summary: non_empty(&c.summary),
             goal: non_empty(&c.goal),
             beats: c.beats.clone(),
-            characters: c.characters.clone(),
+            characters: c
+                .characters
+                .iter()
+                .filter_map(|n| char_ids.get(n.trim()))
+                .cloned()
+                .collect(),
             threads: Vec::new(),
             scenes: Vec::new(),
             hook: non_empty(&c.hook),
@@ -1214,6 +1222,31 @@ fn non_empty(s: &str) -> Option<String> {
     } else {
         Some(s.trim().to_string())
     }
+}
+
+/// 角色名 / 别名 → StableId 映射（含别名，供名字形态的草稿字段落盘为 ID）
+fn character_id_map(paths: &ProjectPaths) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(entries) = std::fs::read_dir(paths.characters_dir()) else {
+        return map;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("toml") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(entity) = story_project_format::EntityFile::from_toml_str(&content) else {
+            continue;
+        };
+        map.entry(entity.display_name).or_insert_with(|| entity.id.clone());
+        for alias in entity.aliases {
+            map.entry(alias).or_insert_with(|| entity.id.clone());
+        }
+    }
+    map
 }
 
 /// 按字符数截断（中文安全）
@@ -1497,6 +1530,9 @@ mod tests {
         assert_eq!(file.volumes.len(), 2);
         assert_eq!(file.chapters[3].volume_order, 2);
         assert_eq!(file.chapters[3].status, "planned");
+        // 角色名已映射为实体 ID（workflow 按 ID 解析 POV 与角色卡）
+        assert_eq!(file.chapters[0].characters, vec!["c_0001"]);
+        assert_eq!(file.chapters[1].characters, vec!["c_0001", "c_0002"]);
     }
 
     #[test]

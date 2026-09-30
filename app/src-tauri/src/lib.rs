@@ -79,6 +79,9 @@ pub fn run() {
             // 世界观
             commands::get_worldview,
             commands::save_worldview,
+            // 章节脉络
+            commands::get_chapter_outline,
+            commands::save_chapter_outline,
             // 编译 / 导出
             commands::compile_project,
             commands::export_markdown,
