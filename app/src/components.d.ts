@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AiCheckReportDialog: typeof import('./components/workbench/AiCheckReportDialog.vue')['default']
     AiPanel: typeof import('./components/workbench/AiPanel.vue')['default']
     AiWriteDialog: typeof import('./components/workbench/AiWriteDialog.vue')['default']
     AnchoringReviewPanel: typeof import('./components/workbench/AnchoringReviewPanel.vue')['default']

@@ -359,6 +359,7 @@ function timeAgo(ts: number): string {
 // ── 用途分配 ────────────────────────────────────────────
 const PURPOSES = [
   { key: 'write', label: '续写正文', hint: '生成接下来的情节文字' },
+  { key: 'check', label: 'AI 检测', hint: '编辑器「AI 审校」按钮的 AI 味检测；输出结构化报告，宜配便宜快的模型' },
   { key: 'complete', label: '行内补全', hint: '编辑时幽灵预测下文，Tab 采纳（宜配快而便宜的模型）' },
   { key: 'agent', label: '妙笔对话', hint: '右栏助手：改稿、查设定、管大纲' },
   { key: 'workflow', label: '逐章成书', hint: '按大纲自动写整章' },

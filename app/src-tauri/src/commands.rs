@@ -727,6 +727,105 @@ pub fn ai_complete_cancel() -> bool {
     had
 }
 
+// ── AI 味检测（手动触发，结果交妙笔改进） ─────────────────
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiCheckItemDto {
+    /// 命中处原文引用
+    pub quote: String,
+    /// 特征编号（如 "A"、"14"）
+    pub feature_id: String,
+    /// 特征名称
+    pub feature_name: String,
+    /// Strong | Medium | Weak
+    pub severity: String,
+    /// 一两句话说明问题
+    pub explanation: String,
+    /// 命中所在片段（fragment 范围检测时回填为被检片段）
+    pub fragment_id: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiCheckResultDto {
+    /// "fragment" | "scene" | "chapter"
+    pub scope: String,
+    pub scope_id: String,
+    /// 一两句话概括最突出的问题
+    pub summary: String,
+    pub tokens_used: usize,
+    pub items: Vec<AiCheckItemDto>,
+}
+
+/// AI 味检测（单片段 / 整场景 / 整章）
+///
+/// 前端手动触发：结果回传格式化后填入妙笔输入框，让 Agent 逐条改进。
+#[tauri::command]
+pub async fn ai_check(root: String, scope: String, id: String) -> R<AiCheckResultDto> {
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let provider = active_provider(lib::purpose::CHECK)?;
+
+        let map_items = |items: &[lib::AiCheckItem],
+                         fallback_fid: Option<&str>| {
+            items
+                .iter()
+                .map(|it| AiCheckItemDto {
+                    quote: it.quote.clone(),
+                    feature_id: it.feature_id.clone(),
+                    feature_name: it.feature_name.clone(),
+                    severity: format!("{:?}", it.severity),
+                    explanation: it.explanation.clone(),
+                    fragment_id: it.fragment_id.clone().or_else(|| fallback_fid.map(str::to_string)),
+                })
+                .collect()
+        };
+
+        match scope.as_str() {
+            "fragment" => {
+                let r = lib::check_fragment(Path::new(&root), &id, &provider).map_err(e)?;
+                let items = map_items(&r.items, Some(&id));
+                Ok(AiCheckResultDto {
+                    scope,
+                    scope_id: id,
+                    summary: r.summary,
+                    tokens_used: r.tokens_used,
+                    items,
+                })
+            }
+            "scene" | "chapter" => {
+                let cs = if scope == "scene" {
+                    lib::CheckScope::Scene
+                } else {
+                    lib::CheckScope::Chapter
+                };
+                let r = lib::check_scope(Path::new(&root), cs, &id, &provider).map_err(e)?;
+                Ok(AiCheckResultDto {
+                    scope: r.scope,
+                    scope_id: r.scope_id,
+                    summary: r.summary,
+                    tokens_used: r.tokens_used,
+                    items: map_items(&r.items, None),
+                })
+            }
+            other => Err(format!(
+                "未知检测范围: {other}（支持 fragment / scene / chapter）"
+            )),
+        }
+    });
+
+    match tokio::time::timeout(std::time::Duration::from_secs(300), task).await {
+        Ok(res) => res.map_err(|err| format!("任务执行失败: {err}"))?,
+        Err(_) => Err("AI 检测长时间没有响应，请稍后重试".to_string()),
+    }
+}
+
+/// 定位片段所属场景（审校报告精确跳转用）
+#[tauri::command]
+pub fn scene_of_fragment(root: String, fragment_id: String) -> R<String> {
+    lib::scene_of_fragment(&paths(&root), &fragment_id).map_err(e)
+}
+
 // ── Agent 对话（妙笔） ───────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -98,6 +98,8 @@ pub fn run() {
             commands::ai_write_scene,
             commands::ai_complete_fragment,
             commands::ai_complete_cancel,
+            commands::ai_check,
+            commands::scene_of_fragment,
             commands::agent_chat,
             commands::agent_respond,
             commands::agent_cancel,

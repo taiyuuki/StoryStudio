@@ -5,6 +5,7 @@ import { EditorState } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
 import { aiGhostCompletion, type AiGhostCompletionConfig } from './aiGhostCompletion'
+import { hitFlash } from './useFragmentReveal'
 
 /** 水墨纸面主题 — 衬线、大行距、段距、暖纸底 */
 const inkTheme = EditorView.theme({
@@ -72,6 +73,7 @@ export function useCodeMirror(options: UseCodeMirrorOptions) {
         // 幽灵补全键位（Tab 采纳 / Esc 关闭）先于默认键位生效；
         // 未命中时照常落入缩进等默认行为
         ...(options.aiComplete ? [aiGhostCompletion(options.aiComplete)] : []),
+        hitFlash,
         keymap.of([...defaultKeymap, ...historyKeymap]),
         markdown(),
         inkTheme,

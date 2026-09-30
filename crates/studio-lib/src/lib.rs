@@ -48,7 +48,7 @@ pub use ai_check::{
 pub use compile::{compile_project, compile_project_full, CompileResult, CompileStats};
 pub use error::StudioError;
 pub use export::{export_chapters_markdown, export_markdown};
-pub use fragment::save_drafts;
+pub use fragment::{save_drafts, scene_of_fragment};
 pub use mutations::EntityKind;
 pub use mutations::{repair_project, RepairReport};
 pub use project::{

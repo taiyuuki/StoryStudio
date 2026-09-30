@@ -317,6 +317,32 @@ export interface AiCompleteResultDto {
   tokensUsed: number
 }
 
+// ── AI 味检测（手动触发） ─────────────────────────────────
+
+export interface AiCheckItemDto {
+  /** 命中处原文引用 */
+  quote: string
+  /** 特征编号（如 "A"、"14"） */
+  featureId: string
+  /** 特征名称 */
+  featureName: string
+  /** Strong | Medium | Weak */
+  severity: 'Strong' | 'Medium' | 'Weak' | string
+  /** 一两句话说明问题 */
+  explanation: string
+  /** 命中所在片段（单片段检测时为被检片段） */
+  fragmentId?: string
+}
+
+export interface AiCheckResultDto {
+  /** "fragment" | "scene" | "chapter" */
+  scope: string
+  scopeId: string
+  summary: string
+  tokensUsed: number
+  items: AiCheckItemDto[]
+}
+
 // ── 片段版本历史 / 码字统计 / AI 账本 ─────────────────────
 
 export interface FragmentVersionDto {
@@ -852,6 +878,14 @@ export const api = {
   /** 取消进行中的行内补全（继续打字 / 关闭幽灵时） */
   aiCompleteCancel() {
     return call<boolean>('ai_complete_cancel')
+  },
+  /** AI 味检测（单片段 / 整场景 / 整章），结果结构化回传 */
+  aiCheck(root: string, scope: 'fragment' | 'scene' | 'chapter', id: string) {
+    return call<AiCheckResultDto>('ai_check', { root, scope, id })
+  },
+  /** 定位片段所属场景（审校报告精确跳转用） */
+  sceneOfFragment(root: string, fragmentId: string) {
+    return call<string>('scene_of_fragment', { root, fragmentId })
   },
   /** Agent 对话：步骤经回调实时推送 */
   agentChat(

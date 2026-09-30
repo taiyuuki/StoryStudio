@@ -50,8 +50,7 @@ pub fn update_structure_add_fragments(
     paths: &ProjectPaths,
     scene_id: &str,
     new_frag_ids: &[String],
-) -> Result<(), StudioError> {
-    let structure_path = paths.structure_toml();
+) -> Result<(), StudioError> {    let structure_path = paths.structure_toml();
     let content = std::fs::read_to_string(&structure_path)?;
 
     let mut structure = StructureFile::from_toml_str(&content)
@@ -74,6 +73,23 @@ pub fn update_structure_add_fragments(
     std::fs::write(&structure_path, new_content)?;
 
     Ok(())
+}
+
+/// 定位片段所属的场景 ID（审校报告精确跳转用）——扫 structure.toml 各场景的片段表
+pub fn scene_of_fragment(paths: &ProjectPaths, fragment_id: &str) -> Result<String, StudioError> {
+    let structure_path = paths.structure_toml();
+    let content = std::fs::read_to_string(&structure_path)?;
+    let structure = StructureFile::from_toml_str(&content)
+        .map_err(|e| StudioError::Config(format!("解析 structure.toml 失败: {e}")))?;
+
+    for (scene_id, scene) in structure.scene.iter() {
+        if scene.fragments.iter().any(|f| f == fragment_id) {
+            return Ok(scene_id.clone());
+        }
+    }
+    Err(StudioError::NotFound(format!(
+        "Fragment '{fragment_id}' 不属于任何场景"
+    )))
 }
 
 // ============================================================================

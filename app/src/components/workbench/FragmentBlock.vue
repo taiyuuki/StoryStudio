@@ -4,7 +4,9 @@ import type { FragmentDto } from '@/api/backend'
 import { api } from '@/api/backend'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useCodeMirror } from '@/composables/useCodeMirror'
+import { useCodeMirror, EditorView } from '@/composables/useCodeMirror'
+import { useAiCheck } from '@/composables/useAiCheck'
+import { revealQuote, useFragmentReveal } from '@/composables/useFragmentReveal'
 import FragmentHistoryDialog from './FragmentHistoryDialog.vue'
 
 const props = defineProps<{
@@ -19,7 +21,7 @@ const ui = useUiStore()
 // 编辑中的文本（延迟同步到 store，避免每键触发全树刷新）
 const doc = ref(props.fragment.text)
 
-const { container, create } = useCodeMirror({
+const { container, view, create } = useCodeMirror({
   doc,
   onChange: (text) => {
     doc.value = text
@@ -35,6 +37,18 @@ const { container, create } = useCodeMirror({
         .then((r) => r.text),
     onCancel: () => void api.aiCompleteCancel(),
   },
+})
+
+// 审校报告的精确定位：命中本段时滚动到引文处并高亮
+const { pending: revealPending } = useFragmentReveal()
+watch(revealPending, (req) => {
+  if (!req || req.fragmentId !== props.fragment.id) return
+  const v = view.value
+  if (!v) return
+  if (!revealQuote(v, req.quote)) {
+    // 引文已改写匹配不上：退回段首定位
+    v.dispatch({ selection: { anchor: 0 }, effects: EditorView.scrollIntoView(0, { y: 'center' }) })
+  }
 })
 
 onMounted(() => {
@@ -80,6 +94,15 @@ const anchors = computed(() =>
 
 const historyOpen = ref(false)
 
+// AI 审校本段：先冲刷未落盘编辑（检测读磁盘），结果填入妙笔改进
+const { run: runAiCheck } = useAiCheck()
+
+async function checkFragment() {
+  await store.saveFragment(props.fragment.id, doc.value)
+  const head = doc.value.trim().slice(0, 10)
+  void runAiCheck('fragment', props.fragment.id, `片段 ${head ? `「${head}…」` : props.fragment.id}`)
+}
+
 async function insertAfter() {
   await store.insertFragment(props.fragment.id)
 }
@@ -94,7 +117,8 @@ async function moveDown() {
 </script>
 
 <template>
-  <article class="frag-block" :class="{ 'is-dirty': saveState === 'dirty' }">
+  <!-- id 供审校报告「跳到该片段」定位滚动 -->
+  <article :id="`frag-${fragment.id}`" class="frag-block" :class="{ 'is-dirty': saveState === 'dirty' }">
     <div class="frag-gutter" :class="{ 'is-visible': false }">
       <span class="frag-no num">{{ String(index + 1).padStart(2, '0') }}</span>
       <div class="gutter-actions">
@@ -109,6 +133,9 @@ async function moveDown() {
         </button>
         <button title="历史版本" @click="historyOpen = true">
           <i class="fa-solid fa-clock-rotate-left" />
+        </button>
+        <button title="AI 审校本段（结果送妙笔改进）" @click="checkFragment">
+          <i class="fa-solid fa-magnifying-glass" />
         </button>
         <button class="danger" title="删除段落" @click="store.removeFragment(fragment.id)">
           <i class="fa-regular fa-trash-can" />
@@ -237,6 +264,25 @@ async function moveDown() {
 
 .frag-editor :deep(.cm-scroller) {
   overflow: hidden;
+}
+
+// 审校报告定位的命中高亮：亮起 → 保持 → 渐隐（周期与清除定时同步）
+.frag-editor :deep(.cm-hit-flash) {
+  border-radius: 3px;
+  animation: hit-flash-cycle 2.4s ease-out;
+}
+
+@keyframes hit-flash-cycle {
+  0% {
+    background: color-mix(in srgb, var(--state-danger) 45%, transparent);
+  }
+  12%,
+  70% {
+    background: color-mix(in srgb, var(--state-warning) 30%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
 }
 
 .frag-anchors {

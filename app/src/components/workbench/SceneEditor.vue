@@ -3,9 +3,11 @@ import { computed, nextTick, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useAiCheck } from '@/composables/useAiCheck'
 import FragmentBlock from './FragmentBlock.vue'
 import SceneMetaPopover from './SceneMetaPopover.vue'
 import AiWriteDialog from './AiWriteDialog.vue'
+import AiCheckReportDialog from './AiCheckReportDialog.vue'
 
 const store = useWorkspaceStore()
 const ui = useUiStore()
@@ -13,6 +15,15 @@ const ui = useUiStore()
 const scene = computed(() => store.scene)
 const aiDialogOpen = ref(false)
 const metaOpen = ref(false)
+
+// AI 审校：整场景检测，结果填入妙笔让 Agent 改进
+const { checking, run: runAiCheck, report: checkReport, openReport } = useAiCheck()
+
+function checkScene() {
+  if (!scene.value) return
+  const label = `${scene.value.chapterTitle} · ${scene.value.title || '未命名场景'}`
+  void runAiCheck('scene', scene.value.id, label)
+}
 
 const povName = computed(() =>
   scene.value?.pov ? store.entityName(scene.value.pov) : '',
@@ -68,6 +79,27 @@ async function saveSummary() {
           >
             <i class="fa-solid fa-ghost" />
             {{ ui.aiGhost ? '补全开' : '补全关' }}
+          </button>
+
+          <button
+            class="ink-btn ink-btn--sm"
+            :disabled="checking"
+            title="AI 味检测本场景，结果自动填入妙笔由它逐条改进"
+            @click="checkScene"
+          >
+            <i :class="checking ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-magnifying-glass'" />
+            {{ checking ? '检测中…' : 'AI 审校' }}
+          </button>
+
+          <button
+            v-if="checkReport"
+            class="ink-btn ink-btn--sm ai-report-btn"
+            title="查看最近一次 AI 审校报告（关闭对话框不会丢）"
+            @click="openReport"
+          >
+            <i class="fa-solid fa-clipboard-list" />
+            审校报告
+            <span class="ai-report-badge num">{{ checkReport.result.items.length }}</span>
           </button>
 
           <ElPopover v-model:visible="metaOpen" placement="bottom-end" :width="380" trigger="click">
@@ -216,6 +248,8 @@ async function saveSummary() {
       </footer>
 
       <AiWriteDialog v-model="aiDialogOpen" />
+      <!-- 审校报告（状态在 useAiCheck 单例，全应用单实例挂载） -->
+      <AiCheckReportDialog />
     </template>
 
     <div v-else class="editor-blank">
@@ -266,6 +300,20 @@ async function saveSummary() {
   color: var(--ink-accent);
   border-color: var(--ink-accent);
   background: var(--ink-accent-soft);
+}
+
+// 审校报告重开入口：有报告时出现，徽标为命中数
+.ai-report-btn {
+  position: relative;
+
+  .ai-report-badge {
+    padding: 0 5px;
+    border-radius: 8px;
+    background: var(--ink-accent);
+    color: var(--btn-primary-color);
+    font-size: 10px;
+    line-height: 14px;
+  }
 }
 
 // ── 纸面 ────────────────────────────────────────────────
