@@ -3,7 +3,6 @@
 use story_ai_runtime::provider::{GenerateRequest, Message};
 use story_ai_runtime::{Tool, ToolDef};
 use story_ir::StableId;
-use story_parser::parse_project;
 use story_project_format::FragmentFile;
 
 use super::{get_str, get_str_opt, get_u32_opt, object_schema, ToolContext};
@@ -1623,7 +1622,7 @@ impl Tool for SplitFragmentTool {
         }
 
         // 从 IR 反查 scene_id
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let sid = StableId::new_unchecked(&fragment_id);
         let scene_id = parse_output
             .ir
@@ -1746,7 +1745,7 @@ impl Tool for MoveFragmentTool {
         let fragment_id = get_str(arguments, "fragment_id")?;
         let direction = get_str(arguments, "direction")?;
 
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let sid = StableId::new_unchecked(&fragment_id);
 
         // 反查 scene_id 和当前位置

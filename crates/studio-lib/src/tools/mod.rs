@@ -7,9 +7,10 @@
 //! calling 直接操作项目文件。
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use story_ai_runtime::AiProvider;
+use story_parser::{detect_dirty, parse_incremental, parse_project, ParseCache, ParseOutput};
 use story_project_format::ProjectPaths;
 
 pub struct ToolContext {
@@ -20,6 +21,33 @@ pub struct ToolContext {
     /// `None` 表示无 provider 可用；依赖 provider 的工具需自行降级处理。
     /// 绝大多数工具不使用此字段，`Option` 保证它们零影响。
     pub provider: Option<Arc<dyn AiProvider>>,
+    /// 项目解析缓存（Arc 共享：同一工具注册表内的所有 ctx.clone() 复用一份）。
+    /// 长篇下妙笔一轮对话几十次工具调用，每次全量重读全书文件是主要耗时。
+    parse_state: Arc<Mutex<ParseState>>,
+}
+
+/// 解析缓存状态：上次解析结果 + 文件 hash 缓存
+struct ParseState {
+    cache: ParseCache,
+    output: Option<Arc<ParseOutput>>,
+    /// 增量机制不追踪、但影响解析结果的文件 hash（threads.toml /
+    /// relations.toml）——变化即强制全量重解析，避免读到旧数据
+    extra_hashes: [Option<u64>; 2],
+}
+
+/// 文件快速 hash（mtime + 大小；不存在 → None），口径与 parser 的 dirty
+/// 检测一致：只判断「变没变」，不校验内容
+fn quick_hash(path: &std::path::Path) -> Option<u64> {
+    let metadata = std::fs::metadata(path).ok()?;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(modified) = metadata.modified() {
+        if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+            duration.as_nanos().hash(&mut hasher);
+        }
+    }
+    metadata.len().hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 impl Clone for ToolContext {
@@ -27,6 +55,7 @@ impl Clone for ToolContext {
         Self {
             project_dir: self.project_dir.clone(),
             provider: self.provider.clone(),
+            parse_state: Arc::clone(&self.parse_state),
         }
     }
 }
@@ -36,6 +65,11 @@ impl ToolContext {
         Self {
             project_dir: dir.into(),
             provider: None,
+            parse_state: Arc::new(Mutex::new(ParseState {
+                cache: ParseCache::default(),
+                output: None,
+                extra_hashes: [None; 2],
+            })),
         }
     }
 
@@ -44,11 +78,82 @@ impl ToolContext {
         Self {
             project_dir: dir.into(),
             provider: Some(provider),
+            parse_state: Arc::new(Mutex::new(ParseState {
+                cache: ParseCache::default(),
+                output: None,
+                extra_hashes: [None; 2],
+            })),
         }
     }
 
     pub(super) fn paths(&self) -> ProjectPaths {
         ProjectPaths::new(&self.project_dir)
+    }
+
+    /// 解析项目（工具统一入口，带增量缓存）。
+    ///
+    /// - 首次：全量解析；
+    /// - 无文件变化：直接复用上次结果（Arc 零拷贝）；
+    /// - Fragment / Entity 变化：增量重解析；
+    /// - structure.toml / threads.toml / relations.toml 变化：全量重建
+    ///   （关系结构的 SoT，且增量机制不追踪后两者）；
+    /// - 增量失败：回退全量，绝不让工具因缓存问题挂掉。
+    ///
+    /// 返回 Arc 而非所有权值：无变化路径不产生任何克隆。
+    pub(crate) fn parse(&self) -> Result<Arc<ParseOutput>, String> {
+        let mut state = self
+            .parse_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = &self.project_dir;
+
+        // 增量机制不追踪 threads.toml / relations.toml：单独盯住，变了强制全量
+        let paths = ProjectPaths::new(dir);
+        let extras = [
+            quick_hash(&paths.threads_toml()),
+            quick_hash(&paths.relations_toml()),
+        ];
+        let extras_changed = state.output.is_some() && state.extra_hashes != extras;
+
+        let (dirty, _new_cache) = detect_dirty(dir, &state.cache);
+        if dirty.is_empty() && !extras_changed {
+            if let Some(output) = &state.output {
+                return Ok(Arc::clone(output));
+            }
+        }
+
+        let incremental = if extras_changed {
+            None
+        } else {
+            state.output.as_deref().and_then(|old| {
+                // 有脏文件时走增量；structure.toml 变化时 parse_incremental
+                // 内部自动切换为全量重建
+                parse_incremental(dir, old, &state.cache).ok().map(|res| {
+                    Arc::new(ParseOutput {
+                        ir: res.ir,
+                        location_index: res.location_index,
+                        threads: old.threads.clone(),
+                        warnings: res.warnings,
+                    })
+                })
+            })
+        };
+
+        let output = match incremental {
+            Some(output) => output,
+            None => {
+                // 首次 / 增量失败 / threads·relations 变化 → 全量
+                let out = parse_project(dir).map_err(|e| format!("{e:?}"))?;
+                Arc::new(out)
+            }
+        };
+
+        // 以刚解析完的状态刷新 hash 缓存，保留结果供下次复用
+        let (_, settled) = detect_dirty(dir, &ParseCache::default());
+        state.cache = settled;
+        state.extra_hashes = extras;
+        state.output = Some(Arc::clone(&output));
+        Ok(output)
     }
 }
 
@@ -273,3 +378,55 @@ pub use ai_check::*;
 
 mod agent;
 pub use agent::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 工具解析缓存：复用 / 脏检测 / 增量可见性
+    #[test]
+    fn tool_context_parse_reuses_and_sees_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "parse-cache-test").unwrap();
+        let dir = tmp.path();
+
+        let ch = crate::mutations::create_chapter(&crate::tools::ToolContext::new(dir.to_path_buf()).paths(), "第一章");
+        let _ = ch;
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+
+        // 首次：全量解析
+        let first = ctx.parse().unwrap();
+        assert!(ctx.parse().is_ok());
+
+        // 无变化：零拷贝复用（同一份 Arc）
+        let second = ctx.parse().unwrap();
+        assert!(Arc::ptr_eq(&first, &second), "无变化时应复用同一份结果");
+
+        // 写入新片段（磁盘变化）→ 下次解析能看到
+        let paths = ProjectPaths::new(dir);
+        let ch2 = crate::mutations::create_chapter(&paths, "第二章").unwrap();
+        let sc2 = crate::mutations::create_scene(&paths, &ch2, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc2, "缓存检测的新段落。").unwrap();
+
+        let third = ctx.parse().unwrap();
+        assert!(!Arc::ptr_eq(&first, &third));
+        assert!(
+            third.ir.document.get_fragment(&story_ir::StableId::new_unchecked(&fid)).is_some(),
+            "磁盘新增片段应被增量解析看到"
+        );
+
+        // clone 的 ctx 共享同一份缓存：同样能看到
+        let cloned = ctx.clone();
+        let fourth = cloned.parse().unwrap();
+        assert!(Arc::ptr_eq(&third, &fourth), "ctx.clone() 应共享缓存");
+
+        // threads.toml 变化（增量机制不追踪）→ 强制全量，能读到新线索
+        crate::mutations::create_thread(&paths, "新线索", "描述", "main", None, None).unwrap();
+        let fifth = ctx.parse().unwrap();
+        assert!(
+            fifth.threads.all().count() >= 1,
+            "threads.toml 变化后应重读线索"
+        );
+    }
+}

@@ -2,7 +2,6 @@
 
 use story_ai_runtime::{Tool, ToolDef};
 use story_ir::StableId;
-use story_parser::parse_project;
 use story_project_format::structure_toml::StoryTimeDef;
 
 use super::{get_str, get_str_opt, object_schema, ToolContext};
@@ -103,7 +102,7 @@ impl Tool for GetStructureTool {
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let doc = &parse_output.ir.document;
 
         let (book_id, book_title) = doc

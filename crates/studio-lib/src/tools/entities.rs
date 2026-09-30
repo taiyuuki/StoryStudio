@@ -2,7 +2,6 @@
 
 use story_ai_runtime::{Tool, ToolDef};
 use story_ir::{SemanticGraph, StableId};
-use story_parser::parse_project;
 use story_project_format::EntityFile;
 
 use crate::mutations::EntityKind;
@@ -624,7 +623,7 @@ impl Tool for GetEntityDetailTool {
         };
 
         // IR 用于出场记录扫描；即使原始文件不存在也尝试走 IR 兜底
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let node = parse_output
             .ir
             .semantic
@@ -801,7 +800,7 @@ impl Tool for ProfileCheckTool {
 
         // 出场取证：片段摘要（上限 12 条，60 字摘要 + 次数）
         const APPEARANCE_CAP: usize = 12;
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let grouped = collect_appearances(&parse_output, &entity_id);
         if grouped.is_empty() {
             return Ok(format!(
@@ -1199,7 +1198,7 @@ impl Tool for GetSceneContextTool {
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let scene_id = get_str(arguments, "scene_id")?;
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let sid = StableId::new_unchecked(&scene_id);
         let scene = parse_output
             .ir
@@ -1960,10 +1959,7 @@ status = "writing"
     fn create_same_name_entity_warns() {
         // 先建地点「山影城」，再建同名组织 → 应返回重名警告
         let tmp = setup_test_project();
-        let ctx = ToolContext {
-            project_dir: tmp.path().to_path_buf(),
-            provider: None,
-        };
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
 
         let location = CreateLocationTool::new(ctx.clone());
         let res = location
@@ -1992,10 +1988,7 @@ status = "writing"
     fn get_entity_detail_counts_implicit_mentions() {
         // 正文隐式提及角色名（无显式锚点）→ 出场记录应有计数
         let tmp = setup_test_project();
-        let ctx = ToolContext {
-            project_dir: tmp.path().to_path_buf(),
-            provider: None,
-        };
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
 
         let create = CreateCharacterTool::new(ctx.clone());
         let res = create.execute(&serde_json::json!({"name": "林七"})).unwrap();

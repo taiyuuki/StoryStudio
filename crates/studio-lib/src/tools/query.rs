@@ -18,7 +18,6 @@ use story_ai_runtime::provider::{GenerateRequest, Message};
 use story_ai_runtime::{AiProvider, Tool, ToolDef};
 use story_exporter::collect_manuscript;
 use story_ir::StableId;
-use story_parser::parse_project;
 use story_project_format::knowledge_file::AssertionDef;
 use story_project_format::{AssertionsFile, ChaptersFile, RelationDef, RelationsFile};
 
@@ -91,7 +90,7 @@ impl Tool for GetStoryRecapTool {
         let scope = get_str_opt(arguments, "scope").unwrap_or_else(|| "all".to_string());
         let detail = Detail::parse(get_str_opt(arguments, "detail").as_deref());
 
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let ir = &parse_output.ir;
 
         // 解析 scope：all 或 chapter:<id>
@@ -445,7 +444,7 @@ impl Tool for GetRelationsTool {
         };
 
         // 可选：解析 IR 以便把实体 ID 翻译成名称
-        let parse_output = parse_project(&self.ctx.project_dir).ok();
+        let parse_output = self.ctx.parse().ok();
         let display_name = |id: &str| -> String {
             parse_output
                 .as_ref()
@@ -557,7 +556,7 @@ impl Tool for QueryAssertionsTool {
         };
 
         // 可选：解析 IR 以把主体 ID 翻译成名称
-        let parse_output = parse_project(&self.ctx.project_dir).ok();
+        let parse_output = self.ctx.parse().ok();
         let display_name = |id: &str| -> String {
             parse_output
                 .as_ref()
@@ -648,7 +647,7 @@ impl Tool for FindMentionsTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let entity_id = get_str(arguments, "entity_id")?;
         let scope = get_str_opt(arguments, "scope");
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let sid = StableId::new_unchecked(&entity_id);
         let document = &parse_output.ir.document;
 
@@ -822,7 +821,7 @@ impl Tool for SearchTextTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let query = get_str(arguments, "query")?;
         let scope = get_str_opt(arguments, "scope");
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let document = &parse_output.ir.document;
 
         // 解析 scope
@@ -994,7 +993,7 @@ impl Tool for GetCharacterStateTool {
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let entity_id = get_str(arguments, "entity_id")?;
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let sid = StableId::new_unchecked(&entity_id);
 
         // 实体存在性校验
@@ -1199,7 +1198,7 @@ impl Tool for GetProjectStatsTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         // 参数 schema 为空，但仍调用以保持约定（防止 LLM 传参时静默忽略）
         let _ = arguments;
-        let parse_output = parse_project(&self.ctx.project_dir).map_err(|e| format!("{e:?}"))?;
+        let parse_output = self.ctx.parse()?;
         let ir = &parse_output.ir;
 
         // —— 字数统计（用 exporter，已剥锚点注释，比手算准）——
