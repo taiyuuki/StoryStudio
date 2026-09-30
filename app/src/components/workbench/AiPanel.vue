@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { nextTick, onActivated, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { ElMessage } from 'element-plus'
+import { api } from '@/api/backend'
 import type { ChatMetaDto } from '@/api/backend'
 import { useMiaoStore } from '@/stores/miao'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 // 显式命名：RightDock 的 <KeepAlive include="AiPanel"> 靠它缓存本面板
 defineOptions({ name: 'AiPanel' })
@@ -11,6 +14,7 @@ defineOptions({ name: 'AiPanel' })
 // AI 会话进行中切走面板甚至关闭右栏再打开，按钮态、时间线与会话绑定
 // 原样恢复，不会在旧会话还在后台跑时又发起新会话
 const miao = useMiaoStore()
+const store = useWorkspaceStore()
 const { items, running, input, sessionId, sessions, answerMode } = storeToRefs(miao)
 const { send, pickOption, stop, removeSession, loadSessions } = miao
 
@@ -28,6 +32,248 @@ async function scrollToBottom() {
 watch(
   () => items.value[items.value.length - 1]?.text,
   () => void scrollToBottom(),
+)
+
+// ── @ 引用（章节 / 场景 / 片段） ──────────────────────────
+
+interface MentionItem {
+  kind: 'chapter' | 'scene' | 'fragment'
+  id: string
+  /** 菜单展示 */
+  label: string
+  /** 分组标签 */
+  group: string
+  /** 插入输入框的引用串（带 ID，妙笔可用工具直接定位正文） */
+  token: string
+  /** scene 项可钻取其片段 */
+  sceneId?: string
+  sceneTitle?: string
+}
+
+const MENTION_KIND_ICON: Record<MentionItem['kind'], string> = {
+  chapter: 'fa-solid fa-book',
+  scene: 'fa-solid fa-clapperboard',
+  fragment: 'fa-solid fa-paragraph',
+}
+
+const mentionOpen = ref(false)
+const mentionQuery = ref('')
+const mentionIndex = ref(0)
+const inputEl = useTemplateRef<HTMLTextAreaElement>('inputEl')
+
+/** 二级页：钻取某场景的片段（懒加载 + 会话内缓存） */
+const drillScene = ref<{ id: string; title: string } | null>(null)
+const drillFragments = ref<{ id: string; text: string }[] | null>(null)
+const drillLoading = ref(false)
+const fragmentCache = new Map<string, { id: string; text: string }[]>()
+
+function fragmentHead(text: string): string {
+  return text.trim().slice(0, 16) || '（空段落）'
+}
+
+const mentionItems = computed<MentionItem[]>(() => {
+  const q = mentionQuery.value.trim().toLowerCase()
+  const hit = (s: string) => !q || s.toLowerCase().includes(q)
+  const items: MentionItem[] = []
+
+  const cur = store.scene
+  if (cur) {
+    items.push(
+      {
+        kind: 'chapter',
+        id: cur.chapterId,
+        label: `本章 · ${cur.chapterTitle}`,
+        group: '当前',
+        token: `@本章「${cur.chapterTitle}」(${cur.chapterId})`,
+      },
+      {
+        kind: 'scene',
+        id: cur.id,
+        label: `本场景 · ${cur.title || '未命名'}`,
+        group: '当前',
+        token: `@本场景「${cur.title || '未命名'}」(${cur.id})`,
+      },
+    )
+    cur.fragments.forEach((f, i) => {
+      items.push({
+        kind: 'fragment',
+        id: f.id,
+        label: `片段 ${i + 1} · ${fragmentHead(f.text)}`,
+        group: '当前',
+        token: `@片段${f.id}`,
+      })
+    })
+  }
+
+  for (const [ci, ch] of (store.ws?.chapters ?? []).entries()) {
+    const chapterNo = ci + 1
+    if (hit(`第${chapterNo}章 ${ch.title} ${ch.id}`)) {
+      items.push({
+        kind: 'chapter',
+        id: ch.id,
+        label: `第 ${chapterNo} 章 · ${ch.title}`,
+        group: '全书章节',
+        token: `@第${chapterNo}章《${ch.title}》(${ch.id})`,
+      })
+    }
+    for (const sc of ch.scenes) {
+      if (hit(`${ch.title} ${sc.title ?? ''} ${sc.id}`)) {
+        items.push({
+          kind: 'scene',
+          id: sc.id,
+          label: `${ch.title} · ${sc.title || '未命名'}`,
+          group: '全书场景',
+          token: `@场景「${sc.title || '未命名'}」(${sc.id})`,
+          sceneId: sc.id,
+          sceneTitle: sc.title || '未命名',
+        })
+      }
+    }
+  }
+
+  return items
+})
+
+/** 钻取页的片段列表（沿用当前过滤词） */
+const drillItems = computed<MentionItem[]>(() => {
+  const q = mentionQuery.value.trim().toLowerCase()
+  return (drillFragments.value ?? [])
+    .map((f, i) => ({
+      kind: 'fragment' as const,
+      id: f.id,
+      label: `片段 ${i + 1} · ${fragmentHead(f.text)}`,
+      group: drillScene.value?.title ?? '',
+      token: `@片段${f.id}`,
+    }))
+    .filter((it) => !q || it.label.toLowerCase().includes(q) || it.id.toLowerCase().includes(q))
+})
+
+const visibleItems = computed(() => (drillScene.value ? drillItems.value : mentionItems.value))
+
+watch(visibleItems, () => {
+  mentionIndex.value = 0
+})
+
+/** 输入变化时检测光标前是否有未闭合的 @（compositionend 也会走这里，IME 安全） */
+function detectMention() {
+  const el = inputEl.value
+  if (!el) return
+  const caret = el.selectionStart ?? 0
+  const before = miao.input.slice(0, caret)
+  const at = before.lastIndexOf('@')
+  if (at < 0) {
+    closeMention()
+    return
+  }
+  const query = before.slice(at + 1)
+  // 换行 / 过长视为已脱离引用上下文
+  if (/[\n\r]/.test(query) || [...query].length > 20) {
+    closeMention()
+    return
+  }
+  mentionQuery.value = query
+  if (!mentionOpen.value) {
+    mentionOpen.value = true
+    mentionIndex.value = 0
+  }
+}
+
+function closeMention() {
+  mentionOpen.value = false
+  drillScene.value = null
+  drillFragments.value = null
+  mentionQuery.value = ''
+}
+
+function insertMention(item: MentionItem) {
+  const el = inputEl.value
+  const token = `${item.token} `
+  if (!el) {
+    miao.input += token
+    closeMention()
+    return
+  }
+  const caret = el.selectionStart ?? miao.input.length
+  const before = miao.input.slice(0, caret)
+  const at = before.lastIndexOf('@')
+  if (at >= 0) {
+    miao.input = before.slice(0, at) + token + miao.input.slice(caret)
+    void nextTick(() => {
+      el.focus()
+      const p = at + token.length
+      el.setSelectionRange(p, p)
+    })
+  } else {
+    miao.input += token
+  }
+  closeMention()
+}
+
+async function drillIntoFragments(sceneId: string, title: string) {
+  drillScene.value = { id: sceneId, title }
+  drillLoading.value = true
+  try {
+    let frags = fragmentCache.get(sceneId)
+    if (!frags) {
+      const detail = await api.getScene(store.root, sceneId)
+      frags = detail.fragments.map((f) => ({ id: f.id, text: f.text }))
+      fragmentCache.set(sceneId, frags)
+    }
+    drillFragments.value = frags
+    mentionIndex.value = 0
+  } catch (err) {
+    drillScene.value = null
+    ElMessage.error(`读取场景片段失败：${(err as Error).message}`)
+  } finally {
+    drillLoading.value = false
+  }
+}
+
+/** 键盘调度：引用菜单开着时接管 ↑↓ / Enter / Tab / Esc；否则 Enter 发送 */
+function onKeydown(e: KeyboardEvent) {
+  if (mentionOpen.value) {
+    const count = visibleItems.value.length
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (count) mentionIndex.value = (mentionIndex.value + 1) % count
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (count) mentionIndex.value = (mentionIndex.value - 1 + count) % count
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      const item = visibleItems.value[Math.min(mentionIndex.value, Math.max(count - 1, 0))]
+      if (item) {
+        e.preventDefault()
+        if (e.key === 'Tab' && item.kind === 'scene' && item.sceneId) {
+          void drillIntoFragments(item.sceneId, item.sceneTitle ?? '')
+        } else {
+          insertMention(item)
+        }
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      if (drillScene.value) {
+        drillScene.value = null
+        drillFragments.value = null
+        mentionIndex.value = 0
+      } else {
+        closeMention()
+      }
+    }
+    return
+  }
+  // isComposing：中文输入法组词中的 Enter 不发送
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault()
+    void send()
+  }
+}
+
+// 发送清空输入后引用菜单一并关闭
+watch(
+  () => miao.input,
+  (v) => {
+    if (!v) closeMention()
+  },
 )
 
 // ── 工具名 → 用户可读标签（与 tools/agent.rs 注册的工具一一对应） ──
@@ -274,17 +520,71 @@ onActivated(() => void scrollToBottom())
     </Transition>
 
     <div class="miao-input">
+      <!-- @ 引用浮层（章节 / 场景 / 片段） -->
+      <Transition name="hist">
+        <div v-if="mentionOpen" class="mention-pop">
+          <div class="mention-head">
+            <template v-if="drillScene">
+              <button
+                class="mention-back"
+                title="返回"
+                @mousedown.prevent="((drillScene = null), (drillFragments = null), (mentionIndex = 0))"
+              >
+                <i class="fa-solid fa-angle-left" />
+              </button>
+              <span class="mention-title">{{ drillScene.title }} · 片段</span>
+            </template>
+            <span v-else class="mention-title">
+              @ 引用章节 / 场景 / 片段 — 输入即过滤，↑↓ 选择，Enter 插入；场景行按 Tab 列出其片段
+            </span>
+            <button class="ink-icon-btn mention-close" title="关闭" @mousedown.prevent="closeMention">
+              <i class="fa-solid fa-xmark" />
+            </button>
+          </div>
+          <div class="mention-list">
+            <div v-if="drillLoading" class="mention-empty">片段加载中…</div>
+            <template v-else>
+              <button
+                v-for="(it, i) in visibleItems"
+                :key="it.kind + it.id"
+                class="mention-item"
+                :class="{ 'is-active': i === mentionIndex }"
+                @mousedown.prevent="insertMention(it)"
+                @mousemove="mentionIndex = i"
+              >
+                <i :class="MENTION_KIND_ICON[it.kind]" />
+                <span class="mi-label">{{ it.label }}</span>
+                <span
+                  v-if="it.kind === 'scene' && it.sceneId"
+                  class="mi-drill"
+                  title="列出该场景的片段"
+                  @mousedown.stop.prevent="drillIntoFragments(it.sceneId!, it.sceneTitle ?? '')"
+                >
+                  片段 <i class="fa-solid fa-angle-right" />
+                </span>
+                <span v-else-if="it.group" class="mi-group">{{ it.group }}</span>
+              </button>
+              <div v-if="!visibleItems.length" class="mention-empty">没有匹配项</div>
+            </template>
+          </div>
+        </div>
+      </Transition>
+
       <div v-if="answerMode" class="input-hint">
         <i class="fa-regular fa-circle-question" />
         妙笔在等你回答，回复后它会继续
       </div>
       <div class="input-row">
         <textarea
+          ref="inputEl"
           v-model="input"
-          :placeholder="answerMode ? '输入你的回答…' : '让妙笔做什么？'"
+          :placeholder="answerMode ? '输入你的回答…' : '让妙笔做什么？@ 可引用章节 / 场景 / 片段'"
           rows="2"
           :disabled="running && !answerMode"
-          @keydown.enter.exact.prevent="send"
+          @input="detectMention"
+          @compositionend="detectMention"
+          @blur="closeMention"
+          @keydown="onKeydown"
         />
         <button v-if="running && !answerMode" class="ink-icon-btn miao-stop" title="停止" @click="stop">
           <i class="fa-solid fa-stop" />
@@ -816,9 +1116,147 @@ onActivated(() => void scrollToBottom())
 // ── 输入区 ──────────────────────────────────────────────
 .miao-input {
   flex-shrink: 0;
+  position: relative;
   border-top: 1px solid var(--divider);
   background: var(--surface-1);
   padding: 10px 12px 8px;
+}
+
+// ── @ 引用浮层 ──────────────────────────────────────────
+.mention-pop {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% + 6px);
+  max-height: 300px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  border: 1px solid var(--ui-border);
+  background: var(--popover-bg);
+  box-shadow: var(--ui-shadow-modal);
+  overflow: hidden;
+}
+
+.mention-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 10px;
+  border-bottom: 1px solid var(--divider);
+}
+
+.mention-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mention-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--surface-2);
+    color: var(--ink-main);
+  }
+}
+
+.mention-close {
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+}
+
+.mention-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-main);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+
+  > i {
+    font-size: 11px;
+    color: var(--ink-muted);
+    flex-shrink: 0;
+  }
+
+  &:hover,
+  &.is-active {
+    background: var(--ink-accent-soft);
+
+    > i {
+      color: var(--ink-accent);
+    }
+  }
+}
+
+.mi-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mi-group {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--ink-disabled);
+}
+
+.mi-drill {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  transition: all 0.15s;
+
+  i {
+    font-size: 9px;
+  }
+
+  &:hover {
+    color: var(--ink-accent);
+    background: color-mix(in srgb, var(--ink-accent) 14%, transparent);
+  }
+}
+
+.mention-empty {
+  padding: 18px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-disabled);
 }
 
 .input-hint {
