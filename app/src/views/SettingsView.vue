@@ -86,6 +86,8 @@ function applyProvider(value: string) {
   const preset = presets.value.find((p) => p.id === value)
   // 切换前的预设：用于判断名称/模型是不是它填的（是 → 跟着换；用户手改过 → 保留）
   const prev = presets.value.find((p) => p.id === draft.preset) ?? null
+  // 仅在真正换卡时清 Key：重复点击当前卡片不清，避免误删刚输入的值
+  const switching = value !== providerValue.value
   fetchedModels.value = []
   if (preset) {
     draft.preset = preset.id
@@ -106,6 +108,8 @@ function applyProvider(value: string) {
     draft.apiUrl = ''
     draft.apiUrlFull = false
   }
+  // 换服务商不继承旧 Key（不同服务的 Key 不通用，留着容易忘改导致鉴权失败）
+  if (switching) draft.apiKey = ''
   // Anthropic 档案不使用接口模式；切到 Anthropic 时归位
   if (draft.provider === 'anthropic') draft.apiMode = 'chat'
 }
