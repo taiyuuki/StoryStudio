@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust 库测试
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # 桌面壳（story-studio-app）需要前端产物与 WebView 环境，不在 CI 编译
+      - name: 运行库 crate 测试
+        run: >
+          cargo test -p story-ir -p story-project-format -p story-parser
+          -p story-compiler -p story-knowledge -p story-exporter
+          -p story-ai-runtime -p story-studio-lib
+
+  frontend:
+    name: 前端检查
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.5.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: npx vue-tsc --noEmit
+      - run: pnpm build

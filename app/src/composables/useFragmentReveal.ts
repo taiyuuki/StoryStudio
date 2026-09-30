@@ -85,8 +85,10 @@ export function revealQuote(view: EditorView, quote: string): boolean {
   return true
 }
 
-/** 引文 → 编辑器文本范围：先精确匹配，再空白容错匹配 */
-function quoteRange(text: string, quote: string): [number, number] | null {
+/** 引文 → 编辑器文本范围：先精确匹配，再空白容错匹配（导出供测试） */
+export function quoteRange(text: string, quote: string): [number, number] | null {
+  // 空/纯空白引文无意义（精确匹配 indexOf 会命中 0 位）
+  if (!quote.trim()) return null
   const exact = text.indexOf(quote)
   if (exact >= 0) return [exact, exact + quote.length]
 

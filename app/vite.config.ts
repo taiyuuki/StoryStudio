@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { fileURLToPath, URL } from 'node:url'
 
 import vue from '@vitejs/plugin-vue'
@@ -26,6 +27,11 @@ export default defineConfig(async () => ({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  // vitest：纯逻辑单测（无 DOM 依赖）
+  test: {
+    environment: 'node',
+    include: ['src/**/*.spec.ts'],
   },
   // Tauri 固定端口
   clearScreen: false,
