@@ -106,8 +106,40 @@ struct LlmItem {
 
 /// 检测指定 fragment 的 AI 写作特征
 ///
-/// 流程：读取 fragment（剥 frontmatter 取正文）→ 构造请求 → retry_generate → 解析 JSON
+/// 流程：读取 fragment（剥 frontmatter 取正文）→ 构造请求 → retry_generate → 解析 JSON。
+/// 结果（含失败）计入 AI 台账，与其他 AI 用途同口径。
 pub fn check_fragment(
+    dir: &Path,
+    fragment_id: &str,
+    provider: &Arc<dyn AiProvider>,
+) -> Result<AiCheckReport, StudioError> {
+    let started = std::time::Instant::now();
+    let provider_id = provider.id().to_string();
+    let result = check_fragment_inner(dir, fragment_id, provider);
+    match &result {
+        Ok(report) => crate::ai_ledger::record(
+            dir,
+            "AI 审校",
+            &provider_id,
+            report.tokens_used as u64,
+            started.elapsed().as_millis() as u64,
+            true,
+            None,
+        ),
+        Err(e) => crate::ai_ledger::record(
+            dir,
+            "AI 审校",
+            &provider_id,
+            0,
+            started.elapsed().as_millis() as u64,
+            false,
+            Some(&e.to_string()),
+        ),
+    }
+    result
+}
+
+fn check_fragment_inner(
     dir: &Path,
     fragment_id: &str,
     provider: &Arc<dyn AiProvider>,
@@ -220,7 +252,40 @@ fn scope_fragments(
 
 /// 场景/章节级批量检测：聚合正文按片段边界分块，逐块调 LLM，
 /// 命中项按 quote 回查片段归属（查不到时归到块内首片段）。
+/// 结果（含失败）计入 AI 台账，token 为各块之和。
 pub fn check_scope(
+    dir: &Path,
+    scope: CheckScope,
+    id: &str,
+    provider: &Arc<dyn AiProvider>,
+) -> Result<AiCheckBatchReport, StudioError> {
+    let started = std::time::Instant::now();
+    let provider_id = provider.id().to_string();
+    let result = check_scope_inner(dir, scope, id, provider);
+    match &result {
+        Ok(report) => crate::ai_ledger::record(
+            dir,
+            "AI 审校",
+            &provider_id,
+            report.tokens_used as u64,
+            started.elapsed().as_millis() as u64,
+            true,
+            None,
+        ),
+        Err(e) => crate::ai_ledger::record(
+            dir,
+            "AI 审校",
+            &provider_id,
+            0,
+            started.elapsed().as_millis() as u64,
+            false,
+            Some(&e.to_string()),
+        ),
+    }
+    result
+}
+
+fn check_scope_inner(
     dir: &Path,
     scope: CheckScope,
     id: &str,
@@ -859,5 +924,27 @@ mod tests {
         });
         assert!(check_scope(tmp.path(), CheckScope::Chapter, "ch_99", &provider).is_err());
         assert!(check_scope(tmp.path(), CheckScope::Scene, "sc_99", &provider).is_err());
+    }
+
+    #[test]
+    fn check_records_to_ai_ledger() {
+        let (tmp, _ch, _sc, fids) = setup_scope_project();
+        let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
+            response: "{\"items\": [], \"summary\": \"没有明显 AI 味\"}".to_string(),
+        });
+
+        // 单片段检测 → 台账记一条「AI 审校」成功记录
+        let report = check_fragment(tmp.path(), &fids[0], &provider).unwrap();
+        assert!(report.summary.contains("AI 味"));
+        let ledger = crate::ai_ledger::summary(tmp.path(), 10);
+        assert_eq!(ledger.total_calls, 1, "审校应计入 AI 台账");
+        assert_eq!(ledger.recent[0].scene, "AI 审校");
+        assert!(ledger.recent[0].ok, "{:?}", ledger.recent[0]);
+
+        // 失败（片段不存在）也记账
+        let _ = check_fragment(tmp.path(), "f_9999", &provider);
+        let ledger = crate::ai_ledger::summary(tmp.path(), 10);
+        assert_eq!(ledger.total_calls, 2);
+        assert!(!ledger.recent[0].ok, "失败记录在最前: {:?}", ledger.recent[0]);
     }
 }

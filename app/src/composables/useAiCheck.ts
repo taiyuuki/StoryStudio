@@ -30,8 +30,8 @@ const SEVERITY_LABEL: Record<string, string> = {
   Weak: '弱',
 }
 
-/** 勾选的命中项 → 妙笔输入框的改进指令文本 */
-function buildImprovePrompt(label: string, summary: string, items: AiCheckItemDto[]): string {
+/** 勾选的命中项 → 妙笔输入框的改进指令文本（导出供测试） */
+export function buildImprovePrompt(label: string, summary: string, items: AiCheckItemDto[]): string {
   const lines = items.map((it, i) => {
     const where = it.fragmentId ? `（片段 ${it.fragmentId}）` : ''
     const sev = SEVERITY_LABEL[it.severity] ?? it.severity
@@ -112,6 +112,8 @@ export function useAiCheck() {
   /** 报告里勾选的条目 → 填入妙笔输入框并切到妙笔面板（数据保留可回看） */
   function sendToMiao(view: AiCheckReportView, items: AiCheckItemDto[]) {
     if (!items.length) return
+    // 新会话用可读标题，而不是改进指令的前 24 个字
+    miao.presetSessionTitle(`AI 审校改进（${items.length} 处）`)
     miao.input = buildImprovePrompt(view.label, view.result.summary, items)
     ui.activePanel = 'miao'
     reportOpen.value = false

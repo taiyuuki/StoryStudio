@@ -100,6 +100,8 @@ export const useMiaoStore = defineStore('miao', () => {
   const sessions = ref<ChatMetaDto[]>([])
   const sessionId = ref('')
   let sessionTitle = ''
+  /** 会话标题预设：外部（如审校送改）在发起前设置，建会话时优先采用 */
+  let pendingTitle: string | null = null
   /** 后端是否保有本会话记忆（进程内）；从磁盘恢复的会话为 false，首条消息需带上下文重建 */
   let backendAlive = false
 
@@ -142,10 +144,19 @@ export const useMiaoStore = defineStore('miao', () => {
     }
   }
 
+  /** 预设下一个新会话的标题（如「AI 审校改进」），避免拿长指令前缀当标题 */
+  function presetSessionTitle(title: string) {
+    pendingTitle = title
+  }
+
   function ensureSession(firstMessage: string) {
-    if (sessionId.value) return
+    if (sessionId.value) {
+      pendingTitle = null // 已有会话：预设作废，避免泄漏到之后的会话
+      return
+    }
     sessionId.value = crypto.randomUUID()
-    sessionTitle = firstMessage.trim().slice(0, 24) || '新的话题'
+    sessionTitle = pendingTitle ?? (firstMessage.trim().slice(0, 24) || '新的话题')
+    pendingTitle = null
   }
 
   /** 恢复的会话首条消息：把之前的对话记录带给后端重建上下文 */
@@ -368,5 +379,6 @@ export const useMiaoStore = defineStore('miao', () => {
     removeSession,
     newChat,
     loadSessions,
+    presetSessionTitle,
   }
 })
