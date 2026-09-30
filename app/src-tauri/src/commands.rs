@@ -676,7 +676,9 @@ pub async fn ai_complete_fragment(
     on_event: tauri::ipc::Channel<WriteStreamMsg>,
 ) -> R<AiCompleteResultDto> {
     let task = tauri::async_runtime::spawn_blocking(move || {
-        let provider = active_provider(lib::purpose::COMPLETE)?;
+        // 快慢权衡在 complete_with_fallback 里：先按档案配置（缺省关思考）
+        // 小配额快跑，遇到强制思考模型（拒收参数 / 配额被吃空）自动
+        // 以 Auto + 大配额重试一次
         let token = begin_complete_slot();
 
         let done_channel = on_event.clone();
@@ -688,12 +690,11 @@ pub async fn ai_complete_fragment(
                 });
             });
 
-        let result = lib::complete_fragment_streaming(
+        let result = lib::complete_with_fallback(
             Path::new(&root),
             &fragment_id,
             &before,
             after.as_deref(),
-            provider,
             &token,
             &on_delta,
         )

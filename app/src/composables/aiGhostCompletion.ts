@@ -149,7 +149,9 @@ function isAuthorEdit(userEvent: string | undefined): boolean {
   if (!userEvent) return false // 外部程序写入（切场景同步、版本恢复等）
   if (userEvent === 'input.complete') return false // 采纳补全本身不再触发
   if (userEvent.includes('compose')) return false // IME 组词中间态
-  return userEvent.startsWith('input.') || userEvent.startsWith('delete.')
+  // "input"（回车 / 命令插入的裸标注）与 "input.*" 一视同仁——
+  // 按回车开新行、光标前没有文本时同样要在停顿后给补全
+  return userEvent === 'input' || userEvent.startsWith('input.') || userEvent.startsWith('delete.')
 }
 
 class GhostController {

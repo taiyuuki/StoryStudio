@@ -28,7 +28,8 @@ pub mod workflow;
 
 // 常用类型的便捷 re-export
 pub use ai::{
-    complete_fragment_streaming, create_provider, create_provider_for_purpose,
+    complete_fragment_streaming, complete_with_fallback, create_provider,
+    create_provider_for_purpose, create_provider_for_purpose_with_thinking,
     create_provider_from_global, extract_assertions, list_models, provider_presets,
     provider_preset, read_global_ai_config, save_write_result, test_profile, write_fragment,
     write_fragment_streaming, write_global_ai_config, CompleteResult, ExtractResult,

@@ -466,6 +466,7 @@ pub fn complete_fragment_streaming(
     provider: std::sync::Arc<dyn AiProvider>,
     cancel_token: &CancelToken,
     on_delta: &std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+    max_tokens: usize,
 ) -> Result<CompleteResult, StudioError> {
     // 1. 解析项目，定位片段所属场景
     let parse_output = parse_project(dir).map_err(StudioError::from)?;
@@ -503,7 +504,7 @@ pub fn complete_fragment_streaming(
         .collect();
     let prev = prev_texts_tail(&prev_fragments, 2, 600);
 
-    // 3. 请求（短输出；思考型模型的 reasoning 计入 max_tokens，留足头部）
+    // 3. 请求（短输出；思考型模型的 reasoning 计入 max_tokens，见 complete_with_fallback）
     let (system, user) = build_complete_prompt(
         pov.as_deref(),
         scene_title.as_deref(),
@@ -516,7 +517,7 @@ pub fn complete_fragment_streaming(
         messages: vec![Message::user(user)],
         model: String::new(),
         temperature: 0.6,
-        max_tokens: 2048,
+        max_tokens,
         tools: Vec::new(),
     };
 
@@ -560,6 +561,76 @@ pub fn complete_fragment_streaming(
         text: response.text,
         tokens_used: response.usage.total(),
     })
+}
+
+/// 行内补全的快慢权衡编排：
+///
+/// 补全要的是快，所以第一次按档案思考配置跑（缺省即关闭思考），配额
+/// 只给 2048——但有一类模型强制开启思考（GLM-5.3、DeepSeek-R1 等），
+/// 表现为两种信号：
+/// 1. 服务端拒收关闭参数（OpenAI 兼容路径的 minimal 被 400）；
+/// 2. Anthropic 兼容路径不发思考参数、服务端默认思考，把小配额吃光，
+///    返回成功但正文为空。
+/// 出现任一信号时，以 Auto（不发任何思考参数，跟随服务端）重建
+/// Provider、放大配额重试**一次**；取消不重试。两次尝试都如实记账。
+pub fn complete_with_fallback(
+    dir: &Path,
+    fragment_id: &str,
+    before: &str,
+    after: Option<&str>,
+    cancel_token: &CancelToken,
+    on_delta: &std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<CompleteResult, StudioError> {
+    const FAST_MAX_TOKENS: usize = 2048;
+    const THINKING_MAX_TOKENS: usize = 32768;
+
+    let provider: std::sync::Arc<dyn AiProvider> = std::sync::Arc::from(
+        create_provider_for_purpose(purpose::COMPLETE, "anthropic", None)?,
+    );
+    let first = complete_fragment_streaming(
+        dir,
+        fragment_id,
+        before,
+        after,
+        provider,
+        cancel_token,
+        on_delta,
+        FAST_MAX_TOKENS,
+    );
+
+    if !should_retry(&first) || cancel_token.is_cancelled() {
+        return first;
+    }
+
+    let provider: std::sync::Arc<dyn AiProvider> = std::sync::Arc::from(
+        create_provider_for_purpose_with_thinking(purpose::COMPLETE, ThinkingConfig::Auto, "anthropic")?,
+    );
+    complete_fragment_streaming(
+        dir,
+        fragment_id,
+        before,
+        after,
+        provider,
+        cancel_token,
+        on_delta,
+        THINKING_MAX_TOKENS,
+    )
+}
+
+/// 第一次尝试后是否需要按"强制思考模型"重试
+fn should_retry(first: &Result<CompleteResult, StudioError>) -> bool {
+    match first {
+        Ok(r) => r.text.trim().is_empty(),
+        Err(e) => is_thinking_rejection(e),
+    }
+}
+
+/// 错误信息是否指向"服务端拒绝关闭思考"
+fn is_thinking_rejection(err: &StudioError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    ["思考", "thinking", "reasoning", "effort", "minimal"]
+        .iter()
+        .any(|k| msg.contains(k))
 }
 
 /// 汇总前文片段：取最后 `count` 段，每段截尾 `max_chars` 字
@@ -921,6 +992,27 @@ pub fn create_provider_for_purpose(
     let config = read_global_ai_config().unwrap_or_default();
     let profile = config.profile_for_purpose(purpose);
     provider_from_config(&config, profile, provider_name, model_name)
+}
+
+/// 按用途构建 Provider，并强制覆盖该档案的思考配置。
+/// 用于行内补全的降级重试：Auto（不发思考参数，跟随服务端）以兼容
+/// 强制思考模型。档案缺省（无 profiles）时无覆盖对象，原样构造。
+pub fn create_provider_for_purpose_with_thinking(
+    purpose: &str,
+    thinking: ThinkingConfig,
+    provider_name: &str,
+) -> Result<Box<dyn AiProvider>, StudioError> {
+    let mut config = read_global_ai_config().unwrap_or_default();
+    let Some(profile_id) = config.profile_for_purpose(purpose).map(|p| p.id.clone()) else {
+        return create_provider_for_purpose(purpose, provider_name, None);
+    };
+    if let Some(profiles) = config.profiles.as_mut() {
+        if let Some(p) = profiles.iter_mut().find(|p| p.id == profile_id) {
+            p.thinking = Some(thinking);
+        }
+    }
+    let profile = config.profile_for_purpose(purpose);
+    provider_from_config(&config, profile, provider_name, None)
 }
 
 /// 共享的档案 → Provider 构造（档案缺失时走旧字段回退）
@@ -1360,6 +1452,36 @@ mod purpose_tests {
         // 空白 after 视为没有
         let (_, user) = build_complete_prompt(None, None, "", "开头", Some("   "));
         assert!(!user.contains("【光标后正文】"));
+    }
+
+    #[test]
+    fn thinking_rejection_detected_by_message() {
+        for msg in [
+            "API 错误 (400): 该模型不支持关闭 thinking",
+            "API 错误 (400): reasoning_effort 参数非法",
+            "API 错误 (400): 不支持 minimal effort",
+        ] {
+            assert!(is_thinking_rejection(&StudioError::Ai(msg.to_string())), "{msg}");
+        }
+        // 无关错误不触发重试
+        assert!(!is_thinking_rejection(&StudioError::Ai("网络错误: 连接超时".to_string())));
+        assert!(!is_thinking_rejection(&StudioError::NotFound("f_x 不存在".to_string())));
+    }
+
+    #[test]
+    fn should_retry_on_empty_text_or_thinking_rejection() {
+        // 空正文（思考吃光配额）→ 重试
+        let empty = Ok(CompleteResult { text: "  ".to_string(), tokens_used: 10 });
+        assert!(should_retry(&empty));
+        // 有正文 → 不重试
+        let ok = Ok(CompleteResult { text: "他抬起头。".to_string(), tokens_used: 10 });
+        assert!(!should_retry(&ok));
+        // 思考拒收错误 → 重试
+        let rejected = Err(StudioError::Ai("API 错误 (400): thinking 已禁用".to_string()));
+        assert!(should_retry(&rejected));
+        // 其他错误 → 不重试
+        let other = Err(StudioError::Ai("认证失败: 缺少 API Key".to_string()));
+        assert!(!should_retry(&other));
     }
 }
 
