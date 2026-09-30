@@ -24,6 +24,8 @@ const ROSTER_CAP: usize = 40;
 /// 实体名册条目
 struct RosterEntry {
     id: String,
+    /// display_name（供数字型指代的防误锚判定与提示）
+    name: String,
     line: String,
 }
 
@@ -51,6 +53,7 @@ fn build_roster(paths: &ProjectPaths) -> Vec<RosterEntry> {
                 continue;
             };
             let id = fname.trim_end_matches(".toml").to_string();
+            let name = entity.display_name.clone();
             let mut line = format!("{id} {}（", entity.display_name);
             let mut parts: Vec<String> = Vec::new();
             if !entity.aliases.is_empty() {
@@ -71,7 +74,7 @@ fn build_roster(paths: &ProjectPaths) -> Vec<RosterEntry> {
             }
             line.push_str(&parts.join("，"));
             line.push('）');
-            entries.push(RosterEntry { id, line });
+            entries.push(RosterEntry { id, name, line });
         }
     }
     entries.truncate(ROSTER_CAP);
@@ -128,8 +131,10 @@ pub fn comprehension_anchor(
 找出正文中**以指代方式**出现的实体——代词（他/她/那人）、称谓（馆长/判官）、\
 身份描述（那名佣兵/穿灰袍的女人）。\n\
 规则：\n1. 正文原样出现名册中的全名或别名的，不要标注（系统已自动识别）；\n\
-2. 只标注指代消解后能确定身份的；拿不准就不标；\n3. 指代对象在名册中找不到的，\
-放入 unresolved 并给一句提示（如\"疑似新角色\"）。\n\
+2. 只标注指代消解后能确定身份的；拿不准就不标；\n\
+3. 纯数字/编号型指代（如\"十七号\"\"三楼\"\"丙-17\"）极易与门牌、档案编号、\
+楼层等巧合撞名，一律放入 unresolved（hint 说明疑似指向），不要直接锚定；\n\
+4. 指代对象在名册中找不到的，放入 unresolved 并给一句提示（如\"疑似新角色\"）。\n\
 只输出 JSON，格式：\n\
 {\"anchors\": [{\"entity\": \"c_0008\", \"role\": \"referenced\", \"quote\": \"那名佣兵\"}],\
  \"unresolved\": [{\"quote\": \"高个子\", \"hint\": \"疑似新角色\"}]}\n\
@@ -152,7 +157,37 @@ role 取值：appears（指代对象在场有言行）/ mentioned（被谈起）
     let response = super::retry_generate(provider, &request)
         .map_err(|e| format!("锚定调用失败: {e}"))?;
 
-    parse_anchor_response(&response.text, &roster)
+    let mut outcome = parse_anchor_response(&response.text, &roster)?;
+    downgrade_numeric_anchors(&mut outcome, &roster);
+    Ok(outcome)
+}
+
+/// 数字型指代防误锚（程序化兜底，提示词之外的第二道闸）：
+/// 模型把「十七号」这类纯数字指代锚到名册实体——尤其当实体名称里恰好
+/// 含该数字串（门牌「槐安路十七号」）时——几乎总是上下文巧合而非确定
+/// 指代。这类锚一律降级为未锚定指代，进台账人工消歧确认，不直接落锚
+/// 污染出场记录；确认归拢后目标实体的锚点会自动并入（见 anchor_and_apply）。
+fn downgrade_numeric_anchors(outcome: &mut AnchorOutcome, roster: &[RosterEntry]) {
+    let mut downgraded: Vec<(String, String)> = Vec::new();
+    outcome.anchored.retain(|(id, _role, quote)| {
+        let q = quote.trim();
+        if q.is_empty() || !story_parser::is_number_like(q) {
+            return true;
+        }
+        let name = roster
+            .iter()
+            .find(|e| e.id == *id)
+            .map(|e| e.name.as_str())
+            .unwrap_or(id);
+        downgraded.push((
+            q.to_string(),
+            format!(
+                "数字/编号型指代，模型疑似锚到「{name}」——可能是门牌、档案编号等巧合撞名，请人工确认"
+            ),
+        ));
+        false
+    });
+    outcome.unresolved.extend(downgraded);
 }
 
 /// 宽松解析模型的锚定输出（复用 design_chapters 的容错思路）
@@ -718,6 +753,85 @@ mod tests {
             "{\"anchors\": [{\"entity\": \"c_9999\", \"role\": \"appears\", \"quote\": \"x\"}]}",
         );
         assert!(roster_outcome.anchored.is_empty());
+    }
+
+    #[test]
+    fn numeric_reference_anchor_downgraded_to_unresolved() {
+        // 场景：医生口中的红档编号"十七号"被模型锚到地点「槐安路十七号·档案楼」
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        std::fs::create_dir_all(dir.join("entities/locations")).unwrap();
+        std::fs::write(
+            dir.join("entities/locations/l_0003.toml"),
+            "id = \"l_0003\"\ndisplay_name = \"槐安路十七号·档案楼\"\n\n[geography]\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(
+            &paths,
+            &sc,
+            "医生说：什么十七号。他记了下来。",
+        )
+        .unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [{\"entity\": \"l_0003\", \"role\": \"appears\", \"quote\": \"十七号\"}]}".to_string(),
+        });
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
+
+        // 不直接落锚：数字型指代降级为待人工确认
+        assert!(outcome.anchored.is_empty(), "{:?}", outcome.anchored);
+        assert_eq!(outcome.unresolved.len(), 1);
+        assert_eq!(outcome.unresolved[0].0, "十七号");
+        assert!(
+            outcome.unresolved[0].1.contains("槐安路十七号·档案楼"),
+            "提示应点名疑似实体: {:?}",
+            outcome.unresolved[0].1
+        );
+
+        // 片段 frontmatter 未写入该锚点
+        let content = std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+        assert!(!content.contains("entity: l_0003"), "{content}");
+
+        // 台账已记为待处置（消歧确认走 resolve_unresolved_ref）
+        let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].quote, "十七号");
+        assert!(refs[0].is_pending());
+    }
+
+    #[test]
+    fn non_numeric_reference_anchor_unaffected() {
+        // 普通指代（身份描述）不受数字型降级影响
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"顾岩\"\n\n[profile]\noccupation = \"守夜人\"\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "那名守夜人点了点头。").unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [{\"entity\": \"c_0001\", \"role\": \"appears\", \"quote\": \"那名守夜人\"}]}".to_string(),
+        });
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
+        assert_eq!(outcome.anchored.len(), 1);
+        assert_eq!(outcome.anchored[0].0, "c_0001");
     }
 }
 

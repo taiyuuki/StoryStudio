@@ -14,7 +14,7 @@ pub mod error;
 pub mod incremental;
 pub mod pipeline;
 
-pub use entity_linking::{EntityDictionary, Mention};
+pub use entity_linking::{is_number_like, EntityDictionary, Mention};
 pub use error::{ParseError, ParseErrorKind};
 pub use incremental::{detect_dirty, parse_incremental, IncrementalResult};
 pub use pipeline::{parse_project, parse_project_with_cache, ParseCache, ParseOutput};

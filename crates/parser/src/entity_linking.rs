@@ -24,8 +24,8 @@ pub struct EntityDictionary {
 
 /// 从全名派生可独立指代的分段（隐性别名）。
 ///
-/// 仅处理含分隔符（·、-、—、空格）的复合名；每段 ≥2 字才入典
-/// （单字段误报面太大）。中文姓名（无分隔符）返回空。
+/// 仅处理含分隔符（·、-、—、空格）的复合名；每段 ≥2 字、且非数字型
+/// （见 [`is_number_like`]）才入典。中文姓名（无分隔符）返回空。
 fn derive_name_parts(display_name: &str) -> Vec<String> {
     let separators = ['·', '·', '-', '—', ' '];
     let has_sep = display_name.chars().any(|c| separators.contains(&c));
@@ -36,7 +36,29 @@ fn derive_name_parts(display_name: &str) -> Vec<String> {
         .split(|c| separators.contains(&c))
         .map(|p| p.trim().to_string())
         .filter(|p| p.chars().count() >= 2)
+        .filter(|p| !is_number_like(p))
         .collect()
+}
+
+/// 判断词条是否为「数字型」：由数字（ASCII / 汉字数字 / 天干序数）与
+/// 常见单位字（号楼层……）及连接符组成，且至少含一个数字。
+///
+/// 「十七号」「204」「三楼」「丙-17」→ true；「档案楼」「槐安路十七号」→ false。
+/// 这类词条作为隐式派生段误报面极大（正文中门牌号、档案编号、层数
+/// 随处都是），一律不参与确定性匹配；确有需要时由作者加显式别名。
+pub fn is_number_like(text: &str) -> bool {
+    const NUMERALS: &str = "0123456789〇零一二两三四五六七八九十百千万亿兆甲乙丙丁戊己庚辛壬癸";
+    const UNITS: &str = "号楼层室间座栋单元年月日卷章节回";
+    const CONNECTORS: &str = "-－—·.． ";
+    let mut has_numeral = false;
+    for c in text.chars() {
+        if NUMERALS.contains(c) {
+            has_numeral = true;
+        } else if !UNITS.contains(c) && !CONNECTORS.contains(c) {
+            return false;
+        }
+    }
+    has_numeral
 }
 
 impl EntityDictionary {
@@ -329,6 +351,53 @@ mod tests {
             derive_name_parts("洛恩·巴克尔"),
             vec!["洛恩".to_string(), "巴克尔".to_string()]
         );
+    }
+
+    #[test]
+    fn number_like_derived_parts_skipped() {
+        // 「十七号·档案楼」：数字段不入典，只留「档案楼」——
+        // 否则正文里门牌号 / 档案编号里的"十七号"会全文误锚
+        assert_eq!(
+            derive_name_parts("十七号·档案楼"),
+            vec!["档案楼".to_string()]
+        );
+        assert!(derive_name_parts("A·204").is_empty());
+        // 含其他文字的段不受影响
+        assert_eq!(derive_name_parts("槐安路十七号·档案楼").len(), 2);
+    }
+
+    #[test]
+    fn is_number_like_classification() {
+        for s in ["十七号", "204", "三楼", "丙-17", "十二", "305室"] {
+            assert!(is_number_like(s), "{s} 应为数字型");
+        }
+        for s in ["档案楼", "槐安路十七号", "顾岩", "十三姨"] {
+            assert!(!is_number_like(s), "{s} 不应为数字型");
+        }
+        assert!(!is_number_like(""));
+    }
+
+    #[test]
+    fn number_like_derived_part_not_in_dictionary() {
+        let mut graph = SemanticGraph::new();
+        graph.insert(story_ir::SemanticNode::Location(story_ir::LocationNode {
+            id: StableId::new_unchecked("l_001"),
+            symbol: None,
+            display_name: "十七号·档案楼".to_string(),
+            aliases: vec![],
+            parent: None,
+            kind: None,
+            position: None,
+        }));
+        let dict = EntityDictionary::from_semantic_graph(&graph);
+        let auto = dict.build_automaton().unwrap();
+        // 正文里的裸"十七号"（如医生口中的红档编号）不再误锚
+        let (mentions, _) = link_in_text("医生说：什么十七号。", &dict, &auto);
+        assert!(mentions.is_empty(), "{mentions:?}");
+        // 全名与"档案楼"段照常命中
+        let (mentions, _) = link_in_text("他推开档案楼的门。", &dict, &auto);
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].entity.as_str(), "l_001");
     }
 
     #[test]

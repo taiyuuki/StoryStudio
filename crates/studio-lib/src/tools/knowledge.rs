@@ -917,6 +917,7 @@ impl Tool for EditFragmentTextTool {
             description:
                 "精准修改片段正文的局部内容：在指定片段中搜索 old_text，替换为 new_text。\
             适用于只改几句话或一个段落的场景（比 rewrite_fragment 更精确可控，不依赖 LLM 改写）。\
+            ⚠️ 参数顺序勿颠倒：old_text 是正文里【已有】的文字，new_text 是【要改成】的文字。\
             ⚠️ old_text 必须与正文中逐字一致（含空格、标点、换行），建议先 read_fragment_text 确认原文。\
             默认要求 old_text 在正文中唯一出现；若多次出现需加 replace_all=true（否则报错并列出所有位置）。\
             要覆盖整篇正文请用 write_fragment_text，要续写请用 append_fragment_text。"
@@ -1000,6 +1001,15 @@ impl Tool for EditFragmentTextTool {
                         可能原因：不可见字符差异、Unicode 规范化（全角/半角）、标点变体。\n\
                         建议：用 read_fragment_text 重新读取，复制精确文本。\n"
                         .to_string();
+                    // 填反检测：old_text 找不到而 new_text 能在正文中精确找到，
+                    // 十有八九是两个参数互换了（反向替换的前兆）
+                    if !new_text.is_empty() && !find_all_occurrences(&frag.text, &new_text).is_empty()
+                    {
+                        msg.push_str(&format!(
+                            "\n⚠️ 疑似 old_text 与 new_text 填反：new_text「{new_text}」\
+                            在正文中找得到而 old_text 没有。请互换两个参数后重试。"
+                        ));
+                    }
                     if let Some(hint) = hint {
                         msg.push_str(&format!("\n最接近的正文片段（供参考）：\n  \"{hint}\""));
                     }
@@ -2272,6 +2282,24 @@ fragments = []
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("未在正文中找到"), "错误信息: {err}");
+    }
+
+    #[test]
+    fn edit_fragment_detects_swapped_args() {
+        // old_text/new_text 填反：要找的"新文"其实在正文里，
+        // 要替换成的"旧文"反而不存在 → 报错并点名疑似填反
+        let (_tmp, ctx, fid) = setup_fragment("林风推开门，雨水顺着发梢滴落。");
+
+        let tool = EditFragmentTextTool::new(ctx);
+        let result = tool.execute(&serde_json::json!({
+            "fragment_id": fid,
+            "old_text": "冰雨如鞭般抽打在脸上",
+            "new_text": "雨水顺着发梢滴落",
+        }));
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("填反"), "应提示疑似填反: {err}");
     }
 
     #[test]

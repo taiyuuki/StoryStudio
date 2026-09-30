@@ -332,6 +332,13 @@ onActivated(() => void scrollToBottom())
   display: flex;
   flex-direction: column;
   gap: 10px;
+  // 会话内容需要能选中复制——全局 body 禁选，这里显式放开；
+  // 列表内的按钮（快捷尝试 / 提问选项）保持不可选，避免双击误选文字
+  user-select: text;
+
+  button {
+    user-select: none;
+  }
 }
 
 .miao-hero {
