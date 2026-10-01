@@ -39,7 +39,7 @@ impl Tool for UpdateEntityTool {
                 ("habits", "string", "习性：口头禅、惯用手、小动作等（角色，多行自由文本）", false),
                 ("race", "string", "种族（角色）", false),
                 ("parent", "string", "父地点 ID（地点）", false),
-                ("geo_kind", "string", "地理类型（地点，如 settlement/city）", false),
+                ("geo_kind", "string", "地理类型（地点，常见值 city/town/village/mountain/forest/ruins/realm 等，可自定）", false),
                 ("position", "string", "地理位置描述（地点）", false),
                 ("item_kind", "string", "道具类型（道具，如 weapon/potion）", false),
                 ("grade", "string", "品级（道具，如 legendary/common）", false),

@@ -190,7 +190,7 @@ impl Tool for CreateLocationTool {
                 (
                     "geo_kind",
                     "string",
-                    "地理类型（如：continent/nation/city/realm/landform）",
+                    "地理类型（常见值：continent/ocean/plane/planet/nation/kingdom/empire/region/island/mountain/forest/desert/river/lake/landform/city/town/village/settlement/building/ruins/realm，可自定）",
                     false,
                 ),
                 ("position", "string", "地理位置描述", false),

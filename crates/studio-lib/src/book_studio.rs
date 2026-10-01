@@ -149,7 +149,9 @@ pub struct CharacterItem {
 #[serde(rename_all = "camelCase", default)]
 pub struct LocationItem {
     pub name: String,
-    /// continent / nation / city / realm / landform
+    /// 地理类型：continent/ocean/plane/planet/nation/kingdom/empire/region/
+    /// island/mountain/forest/desert/river/lake/landform/city/town/village/
+    /// settlement/building/ruins/realm（自由文本，未列出亦可）
     pub kind: String,
     /// 上级地点名（保存时解析为已建档的 Location ID）
     pub parent: String,
@@ -1021,10 +1023,27 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
 fn location_kind_zh(kind: &str) -> &str {
     match kind {
         "continent" => "大陆",
+        "ocean" => "海洋",
+        "plane" => "位面",
+        "planet" => "星球",
         "nation" => "国家",
-        "city" => "城市",
-        "realm" => "秘境",
+        "kingdom" => "王国",
+        "empire" => "帝国",
+        "region" => "区域",
+        "island" => "岛屿",
+        "mountain" => "山脉",
+        "forest" => "森林",
+        "desert" => "沙漠",
+        "river" => "河流",
+        "lake" => "湖泊",
         "landform" => "地形",
+        "city" => "城市",
+        "town" => "城镇",
+        "village" => "村庄",
+        "settlement" => "聚落",
+        "building" => "建筑",
+        "ruins" => "遗迹",
+        "realm" => "秘境",
         _ => "地点",
     }
 }

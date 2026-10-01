@@ -76,7 +76,12 @@ pub struct GeographySection {
     /// 父地点（构成地理层级树，引用 Location 的 StableId）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    /// 地理类型：continent（大陆）/ nation（国家）/ city（城市）/ realm（秘境）/ landform（地形）等
+    /// 地理类型（自由文本，常见值）：continent（大陆）/ ocean（海洋）/
+    /// plane（位面）/ planet（星球）/ nation（国家）/ kingdom（王国）/
+    /// empire（帝国）/ region（区域）/ island（岛屿）/ mountain（山脉）/
+    /// forest（森林）/ desert（沙漠）/ river（河流）/ lake（湖泊）/
+    /// landform（其他地形）/ city（城市）/ town（城镇）/ village（村庄）/
+    /// settlement（聚落）/ building（建筑）/ ruins（遗迹）/ realm（秘境）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     /// 位置描述

@@ -18,7 +18,30 @@ const ROLES: [string, string][] = [
   ['support', '配角'],
 ]
 const SYSTEM_KINDS = ['cultivation', 'magic', 'technology', 'power']
-const LOCATION_KINDS = ['continent', 'nation', 'city', 'realm', 'landform']
+const LOCATION_KINDS: [string, string][] = [
+  ['continent', '大陆'],
+  ['ocean', '海洋'],
+  ['plane', '位面'],
+  ['planet', '星球'],
+  ['nation', '国家'],
+  ['kingdom', '王国'],
+  ['empire', '帝国'],
+  ['region', '区域'],
+  ['island', '岛屿'],
+  ['mountain', '山脉'],
+  ['forest', '森林'],
+  ['desert', '沙漠'],
+  ['river', '河流'],
+  ['lake', '湖泊'],
+  ['landform', '其他地形'],
+  ['city', '城市'],
+  ['town', '城镇'],
+  ['village', '村庄'],
+  ['settlement', '聚落'],
+  ['building', '建筑'],
+  ['ruins', '遗迹'],
+  ['realm', '秘境'],
+]
 const ORG_KINDS = ['sect', 'nation', 'clan', 'guild', 'organization']
 
 const charNames = computed(() => draft.value.characters.map((c) => c.name).filter(Boolean))
@@ -212,7 +235,8 @@ function addThread() {
             <div class="wz-field">
               <label>类型</label>
               <select v-model="l.kind">
-                <option v-for="k in LOCATION_KINDS" :key="k" :value="k">{{ k }}</option>
+                <option v-if="!LOCATION_KINDS.some(([v]) => v === l.kind)" :value="l.kind">{{ l.kind }}</option>
+                <option v-for="[v, label] in LOCATION_KINDS" :key="v" :value="v">{{ label }}</option>
               </select>
             </div>
             <div class="wz-field">
