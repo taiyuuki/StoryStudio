@@ -60,6 +60,51 @@ pub struct GitCommitResult {
     pub detail: String,
 }
 
+// ── diff（改动对比） ──────────────────────────────────────
+
+/// 单文件改动统计
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiffFileDto {
+    /// 仓库相对路径（如 fragments/f_0001.md）
+    pub path: String,
+    /// A=新增 / M=修改 / D=删除
+    pub status: String,
+    /// 新增行数
+    pub added: u64,
+    /// 删除行数
+    pub deleted: u64,
+}
+
+/// diff 中的一行
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiffLineDto {
+    /// ctx | add | del
+    pub kind: String,
+    pub text: String,
+}
+
+/// 一个 hunk（含位置头的连续改动块）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiffHunkDto {
+    /// @@ -1,3 +1,4 @@ 形式的位置头
+    pub header: String,
+    pub lines: Vec<GitDiffLineDto>,
+}
+
+/// 单文件 diff 明细
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiffDetailDto {
+    pub path: String,
+    pub hunks: Vec<GitDiffHunkDto>,
+    pub binary: bool,
+    /// 行数超上限被截断
+    pub truncated: bool,
+}
+
 // ============================================================================
 // 内部：git 调用
 // ============================================================================
@@ -293,6 +338,176 @@ pub fn git_restore(dir: &Path, target: &str) -> Result<GitCommitResult, StudioEr
 }
 
 // ============================================================================
+// diff（改动对比）
+// ============================================================================
+
+/// 单文件明细的行数上限（防止整个 diff 对话框被巨量改动淹没）
+const DIFF_LINE_CAP: usize = 2000;
+
+/// 校验提交存在 + 路径安全（仓库内相对路径，拒绝 .. 与绝对路径）
+fn ensure_commit(dir: &Path, id: &str) -> Result<(), StudioError> {
+    run_git_ok(dir, &["cat-file", "-e", &format!("{id}^{{commit}}")])
+        .map(|_| ())
+        .map_err(|_| StudioError::NotFound(format!("存档 '{id}' 不存在")))
+}
+
+fn ensure_safe_path(path: &str) -> Result<(), StudioError> {
+    let bad = path.is_empty()
+        || path.starts_with('/')
+        || path.starts_with('-')
+        || std::path::Path::new(path)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+    if bad {
+        return Err(StudioError::Config(format!("无效的文件路径: {path}")));
+    }
+    Ok(())
+}
+
+/// 两个存档（或 存档→工作区，`to = None`）之间的文件级改动统计。
+/// `--no-renames`：重命名表现为 删除+新增，避免解析 rename 特有的路径格式。
+pub fn git_diff_summary(
+    dir: &Path,
+    from: &str,
+    to: Option<&str>,
+) -> Result<Vec<GitDiffFileDto>, StudioError> {
+    ensure_commit(dir, from)?;
+    if let Some(to) = to {
+        ensure_commit(dir, to)?;
+    }
+
+    // 状态（A/M/D）与行数（numstat）分两趟，按路径合并
+    let mut args: Vec<&str> = vec!["diff", "--no-renames", "--name-status", from];
+    if let Some(to) = to {
+        args.push(to);
+    }
+    let status_out = run_git_ok(dir, &args)?;
+
+    let mut args: Vec<&str> = vec!["diff", "--no-renames", "--numstat", from];
+    if let Some(to) = to {
+        args.push(to);
+    }
+    let numstat_out = run_git_ok(dir, &args)?;
+
+    let mut nums: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+    for line in numstat_out.lines() {
+        let mut parts = line.split('\t');
+        let (Some(added), Some(deleted), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let (Ok(added), Ok(deleted)) = (added.parse::<u64>(), deleted.parse::<u64>()) else {
+            continue; // 二进制文件是 "-"
+        };
+        nums.insert(path.to_string(), (added, deleted));
+    }
+
+    let mut files = Vec::new();
+    for line in status_out.lines() {
+        let mut parts = line.split('\t');
+        let (Some(status), Some(path)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        // rename 被禁用后不出现双路径形态；保险起见取最后一个字段
+        let path = parts.last().unwrap_or(path);
+        let (added, deleted) = nums.get(path).copied().unwrap_or((0, 0));
+        files.push(GitDiffFileDto {
+            path: path.to_string(),
+            status: status.chars().take(1).collect(),
+            added,
+            deleted,
+        });
+    }
+    Ok(files)
+}
+
+/// 单文件 diff 明细（统一 diff 解析为 hunk + 行）。
+pub fn git_diff_file(
+    dir: &Path,
+    from: &str,
+    to: Option<&str>,
+    path: &str,
+) -> Result<GitDiffDetailDto, StudioError> {
+    ensure_commit(dir, from)?;
+    if let Some(to) = to {
+        ensure_commit(dir, to)?;
+    }
+    ensure_safe_path(path)?;
+
+    let mut args: Vec<&str> = vec!["diff", "--no-renames", "-U3", from];
+    if let Some(to) = to {
+        args.push(to);
+    }
+    args.push("--");
+    args.push(path);
+    let out = run_git_ok(dir, &args)?;
+
+    let mut detail = GitDiffDetailDto {
+        path: path.to_string(),
+        hunks: Vec::new(),
+        binary: false,
+        truncated: false,
+    };
+    let mut line_count = 0usize;
+    let mut current: Option<GitDiffHunkDto> = None;
+
+    for line in out.lines() {
+        if detail.binary || detail.truncated {
+            break;
+        }
+        if line.starts_with("diff --git")
+            || line.starts_with("index ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("new file mode")
+            || line.starts_with("deleted file mode")
+            || line.starts_with("\\ No newline")
+        {
+            continue;
+        }
+        if line.starts_with("Binary files") {
+            detail.binary = true;
+            continue;
+        }
+        if let Some(header) = line.strip_prefix("@@") {
+            let header = format!("@{header}");
+            if let Some(hunk) = current.take() {
+                detail.hunks.push(hunk);
+            }
+            current = Some(GitDiffHunkDto {
+                header,
+                lines: Vec::new(),
+            });
+            continue;
+        }
+        let (kind, text) = if let Some(t) = line.strip_prefix('+') {
+            ("add", t)
+        } else if let Some(t) = line.strip_prefix('-') {
+            ("del", t)
+        } else if let Some(t) = line.strip_prefix(' ') {
+            ("ctx", t)
+        } else {
+            continue;
+        };
+        let Some(hunk) = current.as_mut() else {
+            continue;
+        };
+        hunk.lines.push(GitDiffLineDto {
+            kind: kind.to_string(),
+            text: text.to_string(),
+        });
+        line_count += 1;
+        if line_count >= DIFF_LINE_CAP {
+            detail.truncated = true;
+        }
+    }
+    if let Some(hunk) = current.take() {
+        detail.hunks.push(hunk);
+    }
+    Ok(detail)
+}
+
+// ============================================================================
 // 测试（需要系统装有 git，未装则跳过）
 // ============================================================================
 
@@ -342,6 +557,67 @@ mod tests {
         assert!(log.iter().any(|c| c.message.contains("恢复到存档")));
         assert!(log.iter().any(|c| c.message.contains("恢复前自动备份")));
         assert!(log[0].message.contains("全书"));
+    }
+
+    #[test]
+    fn diff_summary_and_detail_between_commits() {
+        if !git_ready() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "diff-test").unwrap();
+        let dir = tmp.path();
+        git_init(dir).unwrap();
+
+        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n第一版内容。\n").unwrap();
+        let a = git_commit(dir, "存档A").unwrap().id.unwrap();
+
+        // 修改 f_0001 + 新增 f_0002
+        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n第二版内容，改了。\n").unwrap();
+        std::fs::write(dir.join("fragments/f_0002.md"), "---\nid: f_0002\n---\n全新段落。\n").unwrap();
+        let b = git_commit(dir, "存档B").unwrap().id.unwrap();
+
+        // 统计：f_0001 修改（有增有删）、f_0002 新增
+        let files = git_diff_summary(dir, &a, Some(&b)).unwrap();
+        assert_eq!(files.len(), 2, "{files:?}");
+        let f1 = files.iter().find(|f| f.path.ends_with("f_0001.md")).unwrap();
+        assert_eq!(f1.status, "M");
+        assert!(f1.added > 0 && f1.deleted > 0, "{f1:?}");
+        let f2 = files.iter().find(|f| f.path.ends_with("f_0002.md")).unwrap();
+        assert_eq!(f2.status, "A");
+
+        // 明细：hunk 含 del（第一版）与 add（第二版）
+        let detail = git_diff_file(dir, &a, Some(&b), "fragments/f_0001.md").unwrap();
+        assert!(!detail.binary);
+        assert!(!detail.hunks.is_empty(), "{detail:?}");
+        let all_lines: Vec<_> = detail.hunks.iter().flat_map(|h| &h.lines).collect();
+        assert!(all_lines.iter().any(|l| l.kind == "add" && l.text.contains("第二版")), "{detail:?}");
+        assert!(all_lines.iter().any(|l| l.kind == "del" && l.text.contains("第一版")), "{detail:?}");
+
+        // 不存在的提交 / 危险路径 → 报错
+        assert!(git_diff_summary(dir, "deadbeef", Some(&b)).is_err());
+        assert!(git_diff_file(dir, &a, Some(&b), "../outside.txt").is_err());
+    }
+
+    #[test]
+    fn diff_against_working_tree() {
+        if !git_ready() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "diff-wt").unwrap();
+        let dir = tmp.path();
+        git_init(dir).unwrap();
+
+        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n已存档内容。\n").unwrap();
+        git_commit(dir, "存档").unwrap();
+
+        // 工作区再改（未存档）→ to=None 对比工作区可见
+        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n未存档的新内容。\n").unwrap();
+        let head = run_git_ok(dir, &["rev-parse", "--short", "HEAD"]).unwrap().trim().to_string();
+        let files = git_diff_summary(dir, &head, None).unwrap();
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].status, "M");
     }
 
     #[test]

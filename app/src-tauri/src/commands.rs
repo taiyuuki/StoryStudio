@@ -860,6 +860,23 @@ pub fn git_restore(root: String, commit_id: String) -> R<lib::GitCommitResult> {
     lib::git_restore(Path::new(&root), &commit_id).map_err(e)
 }
 
+/// 文件级改动统计：from → to（to 省略为工作区）
+#[tauri::command]
+pub fn git_diff_summary(root: String, from: String, to: Option<String>) -> R<Vec<lib::GitDiffFileDto>> {
+    lib::git_diff_summary(Path::new(&root), &from, to.as_deref()).map_err(e)
+}
+
+/// 单文件 diff 明细（hunk + 增删行）
+#[tauri::command]
+pub fn git_diff_file(
+    root: String,
+    from: String,
+    to: Option<String>,
+    path: String,
+) -> R<lib::GitDiffDetailDto> {
+    lib::git_diff_file(Path::new(&root), &from, to.as_deref(), &path).map_err(e)
+}
+
 // ── Agent 对话（妙笔） ───────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]

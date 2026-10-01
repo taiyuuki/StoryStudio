@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api/backend'
 import type { GitCommitDto, GitStatusDto } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
+import GitDiffDialog, { type GitDiffTarget } from './GitDiffDialog.vue'
 
 // 版本档案 — 项目目录的 git 快照 / 历史 / 一键恢复。
 // AI 批量改稿（妙笔批改、逐章成书）前后自动存档，任何存档可整体回滚，
@@ -18,6 +19,8 @@ const loading = ref(false)
 const message = ref('')
 const committing = ref(false)
 const restoringId = ref<string | null>(null)
+/** 改动对比目标（null = 对话框关闭） */
+const diffTarget = ref<GitDiffTarget | null>(null)
 
 async function refresh() {
   if (!store.root) return
@@ -91,6 +94,14 @@ function fmtTime(ts: number): string {
   const d = new Date(ts * 1000)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getMonth() + 1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 查看改动：from = null → 该存档相对上一存档；openWorktree → HEAD 对比未存档改动 */
+function openDiff(to: GitCommitDto, from: GitCommitDto | null) {
+  const label = (c: GitCommitDto) => `${c.id} · ${c.message.slice(0, 16)}`
+  diffTarget.value = from
+    ? { fromId: from.id, fromLabel: label(from), toId: to.id, toLabel: label(to) }
+    : { fromId: to.id, fromLabel: label(to), toId: null, toLabel: '未存档改动' }
 }
 
 onMounted(() => void refresh())
@@ -168,16 +179,36 @@ onActivated(() => void refresh())
               <span v-if="i === 0" class="gi-now">当前</span>
             </div>
           </div>
-          <button
-            v-if="i > 0"
-            class="ink-btn ink-btn--sm gi-restore"
-            :disabled="restoringId !== null"
-            title="把整本书恢复到这个存档（恢复前会自动备份当前状态）"
-            @click="restore(c)"
-          >
-            <i :class="restoringId === c.id ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-clock-rotate-left'" />
-            恢复
-          </button>
+          <div class="gi-actions">
+            <button
+              v-if="i === 0 && status.dirty"
+              class="ink-btn ink-btn--sm"
+              title="查看当前未存档的改动（相对最新存档）"
+              @click="openDiff(c, null)"
+            >
+              <i class="fa-solid fa-code-compare" />
+              未存档改动
+            </button>
+            <button
+              v-if="i > 0"
+              class="ink-btn ink-btn--sm"
+              title="查看该存档相对上一存档的改动"
+              @click="openDiff(c, commits[i - 1])"
+            >
+              <i class="fa-solid fa-code-compare" />
+              改动
+            </button>
+            <button
+              v-if="i > 0"
+              class="ink-btn ink-btn--sm gi-restore"
+              :disabled="restoringId !== null"
+              title="把整本书恢复到这个存档（恢复前会自动备份当前状态）"
+              @click="restore(c)"
+            >
+              <i :class="restoringId === c.id ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-clock-rotate-left'" />
+              恢复
+            </button>
+          </div>
         </div>
       </div>
 
@@ -185,6 +216,8 @@ onActivated(() => void refresh())
         妙笔批改与逐章成书会自动存档；恢复永远先备份当前状态，历史不丢。
       </p>
     </template>
+
+    <GitDiffDialog v-model:target="diffTarget" />
   </div>
 </template>
 
@@ -358,6 +391,12 @@ onActivated(() => void refresh())
   color: var(--state-success);
   font-size: 10px;
   line-height: 16px;
+}
+
+.gi-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .gi-restore {

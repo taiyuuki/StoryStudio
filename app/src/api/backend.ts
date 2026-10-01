@@ -452,6 +452,35 @@ export interface GitCommitResultDto {
   detail: string
 }
 
+// ── Git 改动对比 ───────────────────────────────────────────
+
+export interface GitDiffFileDto {
+  /** 仓库相对路径（如 fragments/f_0001.md） */
+  path: string
+  /** A=新增 / M=修改 / D=删除 */
+  status: 'A' | 'M' | 'D' | string
+  added: number
+  deleted: number
+}
+
+export interface GitDiffLineDto {
+  /** ctx | add | del */
+  kind: 'ctx' | 'add' | 'del' | string
+  text: string
+}
+
+export interface GitDiffHunkDto {
+  header: string
+  lines: GitDiffLineDto[]
+}
+
+export interface GitDiffDetailDto {
+  path: string
+  hunks: GitDiffHunkDto[]
+  binary: boolean
+  truncated: boolean
+}
+
 // ── 妙笔会话历史 ──────────────────────────────────────────
 
 export interface ChatMetaDto {
@@ -964,6 +993,14 @@ export const api = {
   },
   gitRestore(root: string, commitId: string) {
     return call<GitCommitResultDto>('git_restore', { root, commitId })
+  },
+  /** 文件级改动统计：from → to（to 省略为对比工作区未存档改动） */
+  gitDiffSummary(root: string, from: string, to: string | null) {
+    return call<GitDiffFileDto[]>('git_diff_summary', { root, from, to })
+  },
+  /** 单文件 diff 明细（hunk + 增删行） */
+  gitDiffFile(root: string, from: string, to: string | null, path: string) {
+    return call<GitDiffDetailDto>('git_diff_file', { root, from, to, path })
   },
 
   // ── AI 建书（分步向导）──────────────────────────────────

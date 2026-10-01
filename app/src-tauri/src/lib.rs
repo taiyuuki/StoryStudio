@@ -105,6 +105,8 @@ pub fn run() {
             commands::git_commit,
             commands::git_log,
             commands::git_restore,
+            commands::git_diff_summary,
+            commands::git_diff_file,
             commands::agent_chat,
             commands::agent_respond,
             commands::agent_cancel,

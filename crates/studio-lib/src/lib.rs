@@ -51,7 +51,10 @@ pub use compile::{compile_project, compile_project_full, CompileResult, CompileS
 pub use error::StudioError;
 pub use export::{export_chapters_markdown, export_markdown};
 pub use fragment::{save_drafts, scene_of_fragment};
-pub use git::{git_commit, git_init, git_log, git_restore, git_status, GitCommitDto, GitCommitResult, GitStatusDto};
+pub use git::{
+    git_commit, git_diff_file, git_diff_summary, git_init, git_log, git_restore, git_status,
+    GitCommitDto, GitCommitResult, GitDiffDetailDto, GitDiffFileDto, GitStatusDto,
+};
 pub use mutations::EntityKind;
 pub use mutations::{repair_project, RepairReport};
 pub use project::{
