@@ -5,6 +5,7 @@
 /.claude
 /.zcode
 /.codegraph
+.zcodeignore
 
 # Rust build output
 /target
