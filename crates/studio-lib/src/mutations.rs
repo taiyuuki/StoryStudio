@@ -200,6 +200,54 @@ pub fn save_chapters_file(paths: &ProjectPaths, file: &ChaptersFile) -> Result<(
     file.save(&paths.chapters_toml())
 }
 
+/// 章节收尾提示（写正文回执用）：scene/fragment 所属章节的全部场景
+/// 都已有正文片段、且章节脉络状态未到 completed 时，返回提示行。
+///
+/// 场景"有正文"以 fragments 列表非空为准（与 parse.empty_scene 同口径）。
+pub fn chapter_completion_hint(
+    paths: &ProjectPaths,
+    scene_or_fragment_id: &str,
+) -> Option<String> {
+    let scene_id = if scene_or_fragment_id.starts_with("f_") {
+        scene_of_fragment_id(paths, scene_or_fragment_id)?
+    } else {
+        scene_or_fragment_id.to_string()
+    };
+    let structure = load_structure(paths).ok()?;
+    // 定位场景所属章节
+    let (ch_id, chapter) = structure
+        .chapter
+        .iter()
+        .find(|(_, ch)| ch.scenes.iter().any(|s| s == &scene_id))?;
+    if chapter.scenes.is_empty() {
+        return None;
+    }
+    let all_written = chapter.scenes.iter().all(|s| {
+        structure
+            .scene
+            .get(s)
+            .map(|sc| !sc.fragments.is_empty())
+            .unwrap_or(false)
+    });
+    if !all_written {
+        return None;
+    }
+    let chapters = ChaptersFile::load_or_default(&paths.chapters_toml()).ok()?;
+    let index = chapters
+        .chapters
+        .iter()
+        .position(|c| c.chapter_id.as_deref() == Some(ch_id))?;
+    if chapters.chapters[index].status == story_project_format::chapters_file::STATUS_COMPLETED {
+        return None;
+    }
+    Some(format!(
+        "\n💡 本章 {}「{}」的所有场景均已有正文，可用 update_chapter_outline(index={}, status=\"completed\") 标记本章完成",
+        ch_id,
+        chapters.chapters[index].title,
+        index + 1
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // 章节脉络变更（逐章生文流水线用；index 为 1-based，与
 // tools/chapters.rs 中 get_chapter_outline 展示的编号一致）
@@ -562,6 +610,71 @@ pub fn create_entity(
     Ok(new_id)
 }
 
+/// 角色档案的可选字段集（create 时一步建档用，仅 Character）。
+///
+/// 供 resolve_unresolved_ref 的 create 分支在建档时直接带入，
+/// 免去"建档 → 再 update_entity 补档案"的两步。
+#[derive(Debug, Clone, Default)]
+pub struct CharacterProfileInput {
+    pub gender: Option<String>,
+    pub occupation: Option<String>,
+    pub appearance: Option<String>,
+    pub background: Option<String>,
+    pub personality: Option<String>,
+    pub habits: Option<String>,
+}
+
+impl CharacterProfileInput {
+    pub fn is_empty(&self) -> bool {
+        self.gender.is_none()
+            && self.occupation.is_none()
+            && self.appearance.is_none()
+            && self.background.is_none()
+            && self.personality.is_none()
+            && self.habits.is_none()
+    }
+}
+
+/// 将档案字段合并进已存在的角色实体（create_entity 只建空档案）。
+///
+/// 只覆盖提供的字段，与 update_entity 的合并语义一致。
+fn apply_character_profile(
+    paths: &ProjectPaths,
+    entity_id: &str,
+    profile: &CharacterProfileInput,
+) -> Result<(), StudioError> {
+    let path = paths.characters_dir().join(format!("{entity_id}.toml"));
+    let content = std::fs::read_to_string(&path)?;
+    let mut entity =
+        EntityFile::from_toml_str(&content).map_err(|e| StudioError::Config(format!("解析实体失败: {e}")))?;
+    {
+        let p = entity.profile.get_or_insert_with(Default::default);
+        if let Some(v) = &profile.gender {
+            p.gender = Some(v.clone());
+        }
+        if let Some(v) = &profile.occupation {
+            p.occupation = Some(v.clone());
+        }
+        if let Some(v) = &profile.appearance {
+            p.appearance = Some(v.clone());
+        }
+        if let Some(v) = &profile.background {
+            p.background = Some(v.clone());
+        }
+        if let Some(v) = &profile.personality {
+            p.personality = Some(v.clone());
+        }
+        if let Some(v) = &profile.habits {
+            p.habits = Some(v.clone());
+        }
+    }
+    let toml_content = entity
+        .to_toml_string()
+        .map_err(|e| StudioError::Config(format!("序列化实体失败: {e}")))?;
+    std::fs::write(&path, toml_content)?;
+    Ok(())
+}
+
 /// 删除实体
 ///
 /// 删除实体自己的 .toml 文件，并清理 relations.toml 中以该实体为端点
@@ -822,13 +935,21 @@ pub fn merge_entities(
         relations.save(&relations_path)?;
     }
 
-    // 4. 断言 subject
+    // 4. 断言 subject / object（object 为实体引用的谓词，如 holds/member_of/located_at）
     let assertions_path = paths.assertions_toml();
     let mut assertions = AssertionsFile::load_or_default(&assertions_path)?;
     let mut assertion_changed = false;
     for a in &mut assertions.assertions {
+        let mut hit = false;
         if a.subject == from_id {
             a.subject = into_id.to_string();
+            hit = true;
+        }
+        if matches!(&a.object, toml::Value::String(s) if s == from_id) {
+            a.object = toml::Value::String(into_id.to_string());
+            hit = true;
+        }
+        if hit {
             report.assertions += 1;
             assertion_changed = true;
         }
@@ -1737,7 +1858,8 @@ pub fn load_unresolved_refs(paths: &ProjectPaths) -> Result<Vec<UnresolvedRefDef
 /// - `ignore`  — 忽略，后续锚定不再提示；
 /// - `merge`   — 归拢到已有实体（target_entity_id 必填），并为片段补锚点；
 /// - `create`  — 新建档案（name 必填；匿名指代可用占位名如「九一真凶」，
-///   真名揭晓后用 merge_entities 合并），并为片段补锚点。
+///   真名揭晓后用 merge_entities 合并），并为片段补锚点。角色可经
+///   profile 一步带入性别/职业/外貌/背景/性格/习性，免去再 update_entity。
 ///
 /// 返回给调用方的回执摘要。
 pub fn resolve_unresolved_ref(
@@ -1748,6 +1870,7 @@ pub fn resolve_unresolved_ref(
     target_entity_id: Option<&str>,
     name: Option<&str>,
     kind: Option<&str>,
+    profile: Option<&CharacterProfileInput>,
 ) -> Result<String, StudioError> {
     resolve_unresolved_refs(
         paths,
@@ -1756,6 +1879,7 @@ pub fn resolve_unresolved_ref(
         target_entity_id,
         name,
         kind,
+        profile,
     )
 }
 
@@ -1774,6 +1898,7 @@ pub fn resolve_unresolved_refs(
     target_entity_id: Option<&str>,
     name: Option<&str>,
     kind: Option<&str>,
+    profile: Option<&CharacterProfileInput>,
 ) -> Result<String, StudioError> {
     if refs.is_empty() {
         return Err(StudioError::Config("refs 不能为空".to_string()));
@@ -1799,6 +1924,7 @@ pub fn resolve_unresolved_refs(
     }
 
     // 目标实体：merge 校验传入 ID；create 新建一个（全部指代共享）
+    let mut profile_applied = false;
     let target: String = match action {
         "ignore" => String::new(),
         "merge" => {
@@ -1814,7 +1940,15 @@ pub fn resolve_unresolved_refs(
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| StudioError::Config("create 处置需要 name".to_string()))?;
             let kind = EntityKind::from_type_str(kind.unwrap_or("characters"))?;
-            create_entity(paths, kind, name)?
+            let id = create_entity(paths, kind, name)?;
+            // 一步建档：档案字段直接带入（仅角色）
+            if kind == EntityKind::Character {
+                if let Some(p) = profile.filter(|p| !p.is_empty()) {
+                    apply_character_profile(paths, &id, p)?;
+                    profile_applied = true;
+                }
+            }
+            id
         }
         other => {
             return Err(StudioError::Config(format!(
@@ -1854,8 +1988,9 @@ pub fn resolve_unresolved_refs(
             "ignore" => format!("已忽略 \"{quote}\"（后续锚定不再提示）"),
             "merge" => format!("\"{quote}\" 已归拢到 {target}"),
             _ => format!(
-                "已为 \"{quote}\" 建档 {target}「{}」并补锚点",
-                name.unwrap_or("")
+                "已为 \"{quote}\" 建档 {target}「{}」并补锚点{}",
+                name.unwrap_or(""),
+                if profile_applied { "，档案字段已写入" } else { "" }
             ),
         });
     }
@@ -1864,9 +1999,10 @@ pub fn resolve_unresolved_refs(
         "ignore" => format!("已批量忽略 {} 条指代", found.len()),
         "merge" => format!("已批量归拢 {} 条指代到 {target}", found.len()),
         _ => format!(
-            "已建档 {target}「{}」，{} 条指代全部归拢并补锚点",
+            "已建档 {target}「{}」，{} 条指代全部归拢并补锚点{}",
             name.unwrap_or(""),
-            found.len()
+            found.len(),
+            if profile_applied { "，档案字段已写入" } else { "" }
         ),
     };
     if !missing.is_empty() {
@@ -2929,6 +3065,68 @@ pub fn advance_thread(
     status: &str,
     scene_id: Option<&str>,
 ) -> Result<&'static str, StudioError> {
+    advance_threads(
+        paths,
+        &[(thread_id.to_string(), status.to_string(), scene_id.map(str::to_string))],
+    )
+    .map(|mut v| v.remove(0))
+}
+
+/// 批量推进线索状态：一次读写 threads.toml（单条与批量共用）。
+///
+/// items 为 (thread_id, status, scene_id) 列表；任一条校验失败
+/// （状态非法 / 缺锚点 / 回退 / 线索不存在）则整体报错，不部分落盘。
+/// revealed/resolved 触发的 reader 联动知情在同一文件上统一补记。
+pub fn advance_threads(
+    paths: &ProjectPaths,
+    items: &[(String, String, Option<String>)],
+) -> Result<Vec<&'static str>, StudioError> {
+    if items.is_empty() {
+        return Err(StudioError::Config("advances 不能为空".to_string()));
+    }
+    let threads_path = paths.threads_toml();
+    let mut file: ThreadsFile = ThreadsFile::load_or_default(&threads_path)?;
+
+    let mut results = Vec::with_capacity(items.len());
+    // (thread_id, scene) — revealed/resolved 需要联动 reader 知情的条目
+    let mut reader_notes: Vec<(String, String)> = Vec::new();
+    for (thread_id, status, scene_id) in items {
+        let new_status = apply_thread_advance(&mut file, thread_id, status, scene_id.as_deref())?;
+        if matches!(new_status, "revealed" | "resolved") {
+            if let Some(anchor) = scene_id {
+                let scene = if anchor.starts_with("sc_") {
+                    Some(anchor.clone())
+                } else if anchor.starts_with("f_") {
+                    scene_of_fragment_id(paths, anchor)
+                } else {
+                    None
+                };
+                if let Some(scene) = scene {
+                    reader_notes.push((thread_id.clone(), scene));
+                }
+            }
+        }
+        results.push(new_status);
+    }
+
+    // 揭示/收束时联动 reader（默认观察者）的知晓状态：自动置为 known。
+    // 线索既已对读者揭开，逐章手工补 set_thread_knowledge(reader) 属于
+    // 纯机械操作；角色层知情涉及逐人判断，保留手工维护。
+    for (thread_id, scene) in &reader_notes {
+        let _ = apply_thread_knowledge(&mut file, thread_id, "reader", "known", scene);
+    }
+
+    file.save(&threads_path)?;
+    Ok(results)
+}
+
+/// 在已加载的线索文件上推进单条线索（校验 + 变更），不落盘。
+fn apply_thread_advance(
+    file: &mut ThreadsFile,
+    thread_id: &str,
+    status: &str,
+    scene_id: Option<&str>,
+) -> Result<&'static str, StudioError> {
     let normalized = match status {
         "planted" | "revealed" | "resolved" | "abandoned" => status,
         _ => {
@@ -2944,9 +3142,6 @@ pub fn advance_thread(
             "推进到 '{normalized}' 状态需要提供 scene_id 锚点"
         )));
     }
-
-    let threads_path = paths.threads_toml();
-    let mut file: ThreadsFile = ThreadsFile::load_or_default(&threads_path)?;
 
     let thread = file
         .threads
@@ -2994,26 +3189,6 @@ pub fn advance_thread(
         // unreachable：上面已校验
         _ => unreachable!(),
     };
-
-    file.save(&threads_path)?;
-
-    // 揭示/收束时联动 reader（默认观察者）的知晓状态：自动置为 known。
-    // 线索既已对读者揭开，逐章手工补 set_thread_knowledge(reader) 属于
-    // 纯机械操作；角色层知情涉及逐人判断，保留手工维护。
-    if matches!(new_status, "revealed" | "resolved") {
-        if let Some(anchor) = scene_id {
-            let scene = if anchor.starts_with("sc_") {
-                Some(anchor.to_string())
-            } else if anchor.starts_with("f_") {
-                scene_of_fragment_id(paths, anchor)
-            } else {
-                None
-            };
-            if let Some(scene) = scene {
-                let _ = set_thread_knowledge(paths, thread_id, "reader", "known", &scene);
-            }
-        }
-    }
 
     Ok(new_status)
 }
@@ -3088,6 +3263,45 @@ pub fn set_thread_knowledge(
     state: &str,
     scene_id: &str,
 ) -> Result<(), StudioError> {
+    set_thread_knowledge_batch(
+        paths,
+        &[(
+            thread_id.to_string(),
+            observer.to_string(),
+            state.to_string(),
+            scene_id.to_string(),
+        )],
+    )
+}
+
+/// 批量记录线索可见性：一次读写 threads.toml（单条与批量共用）。
+///
+/// items 为 (thread_id, observer, state, scene_id) 列表；任一条失败
+/// （state 非法 / 线索不存在）则整体报错，不部分落盘。
+pub fn set_thread_knowledge_batch(
+    paths: &ProjectPaths,
+    items: &[(String, String, String, String)],
+) -> Result<(), StudioError> {
+    if items.is_empty() {
+        return Err(StudioError::Config("records 不能为空".to_string()));
+    }
+    let threads_path = paths.threads_toml();
+    let mut file: ThreadsFile = ThreadsFile::load_or_default(&threads_path)?;
+    for (thread_id, observer, state, scene_id) in items {
+        apply_thread_knowledge(&mut file, thread_id, observer, state, scene_id)?;
+    }
+    file.save(&threads_path)?;
+    Ok(())
+}
+
+/// 在已加载的线索文件上记录一条可见性（校验 + 变更），不落盘。
+fn apply_thread_knowledge(
+    file: &mut ThreadsFile,
+    thread_id: &str,
+    observer: &str,
+    state: &str,
+    scene_id: &str,
+) -> Result<(), StudioError> {
     use story_project_format::threads_file::{KnowledgeDef, StateTimelineEntry};
 
     // 校验 state 合法值
@@ -3098,8 +3312,6 @@ pub fn set_thread_knowledge(
     }
 
     let target_observer = parse_observer(observer);
-    let threads_path = paths.threads_toml();
-    let mut file: ThreadsFile = ThreadsFile::load_or_default(&threads_path)?;
 
     let thread = file
         .threads
@@ -3140,7 +3352,6 @@ pub fn set_thread_knowledge(
         }
     }
 
-    file.save(&threads_path)?;
     Ok(())
 }
 
@@ -3239,13 +3450,23 @@ mod tests {
         // 场景 POV 指向 placeholder
         let sc2 = create_scene(&paths, &ch, "场景二", Some(&placeholder)).unwrap();
 
-        // 断言 subject
+        // 断言 subject（a_001）与 object 为实体引用的断言（a_002：other 持有 placeholder）
         let mut assertions = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
         assertions.assertions.push(AssertionDef {
             id: "a_001".into(),
             subject: placeholder.clone(),
             predicate: "is".into(),
             object: toml::Value::String("真凶".into()),
+            status: String::new(),
+            extracted_by: String::new(),
+            evidence: vec![],
+            valid: None,
+        });
+        assertions.assertions.push(AssertionDef {
+            id: "a_002".into(),
+            subject: other.clone(),
+            predicate: "holds".into(),
+            object: toml::Value::String(placeholder.clone()),
             status: String::new(),
             extracted_by: String::new(),
             evidence: vec![],
@@ -3310,7 +3531,7 @@ mod tests {
         assert_eq!(report.anchors, 1);
         assert_eq!(report.relation_edges, 2);
         assert_eq!(report.self_loops_removed, 1);
-        assert_eq!(report.assertions, 1);
+        assert_eq!(report.assertions, 2);
         assert_eq!(report.povs, 1);
         assert_eq!(report.chapter_character_lists, 1);
         assert!(report.thread_refs >= 1);
@@ -3344,6 +3565,12 @@ mod tests {
 
         let assertions = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
         assert_eq!(assertions.assertions[0].subject, real);
+        let holds = assertions
+            .assertions
+            .iter()
+            .find(|a| a.id == "a_002")
+            .unwrap();
+        assert_eq!(holds.object, toml::Value::String(real.clone()));
 
         let threads = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
         let t = threads.threads.iter().find(|t| t.id == t_id).unwrap();
@@ -3383,6 +3610,97 @@ mod tests {
         assert!(merge_entities(&paths, &a, &a).is_err(), "相同实体不能合并");
         assert!(merge_entities(&paths, &a, &loc).is_err(), "跨类型不能合并");
         assert!(merge_entities(&paths, "c_9999", &b).is_err(), "不存在的实体应报错");
+    }
+
+    #[test]
+    fn resolve_create_with_profile_fields() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch_id = create_chapter(&paths, "第一章").unwrap();
+        let sc_id = create_scene(&paths, &ch_id, "场景", None).unwrap();
+        let body = "摆的人沉默地放下了茶盏。";
+        let fid = create_fragment(&paths, &sc_id, body).unwrap();
+        sync_unresolved_refs(
+            &paths,
+            &fid,
+            body,
+            &[("摆的人".to_string(), "疑似新角色".to_string())],
+        )
+        .unwrap();
+
+        let summary = resolve_unresolved_ref(
+            &paths,
+            &fid,
+            "摆的人",
+            "create",
+            None,
+            Some("九一真凶"),
+            None,
+            Some(&CharacterProfileInput {
+                gender: Some("男".into()),
+                occupation: Some("当铺朝奉".into()),
+                background: Some("十年前欠下一笔命债".into()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(summary.contains("档案字段已写入"), "{summary}");
+
+        // 新档案一步带上了档案字段（初始项目无角色，目录里只有这一个文件）
+        let mut files: Vec<_> = std::fs::read_dir(paths.characters_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
+            .collect();
+        assert_eq!(files.len(), 1, "应只建了一个角色");
+        let content = std::fs::read_to_string(files.remove(0).path()).unwrap();
+        let entity = EntityFile::from_toml_str(&content).unwrap();
+        assert_eq!(entity.display_name, "九一真凶");
+        let profile = entity.profile.unwrap();
+        assert_eq!(profile.gender.as_deref(), Some("男"));
+        assert_eq!(profile.occupation.as_deref(), Some("当铺朝奉"));
+        assert_eq!(profile.background.as_deref(), Some("十年前欠下一笔命债"));
+        assert!(profile.appearance.is_none(), "未提供的字段保持为空");
+    }
+
+    #[test]
+    fn chapter_completion_hint_fires_when_all_scenes_written() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch_id = create_chapter(&paths, "第一章").unwrap();
+        let sc1 = create_scene(&paths, &ch_id, "场景一", None).unwrap();
+        let sc2 = create_scene(&paths, &ch_id, "场景二", None).unwrap();
+        let f1 = create_fragment(&paths, &sc1, "第一场正文。").unwrap();
+
+        // 场景二还没正文 → 不提示
+        assert!(chapter_completion_hint(&paths, &f1).is_none());
+
+        // 全部场景有正文、但章节脉络没有对应条目（无从标记）→ 不提示
+        let f2 = create_fragment(&paths, &sc2, "第二场正文。").unwrap();
+        assert!(chapter_completion_hint(&paths, &sc1).is_none());
+
+        // 补上脉络条目 → 提示（含 index 与工具名）
+        let mut chapters = load_chapters_file(&paths).unwrap();
+        chapters.chapters.push(ChapterOutlineDef {
+            chapter_id: Some(ch_id.clone()),
+            title: "第一章".into(),
+            volume_order: 1,
+            status: "planned".into(),
+            ..Default::default()
+        });
+        save_chapters_file(&paths, &chapters).unwrap();
+        let hint =
+            chapter_completion_hint(&paths, &f2).expect("全部场景有正文且未完成时应提示");
+        assert!(hint.contains("update_chapter_outline"), "{hint}");
+        assert!(hint.contains("index=1"), "{hint}");
+
+        // 已完成 → 不再提示
+        let mut chapters = load_chapters_file(&paths).unwrap();
+        chapters.chapters[0].status = "completed".into();
+        save_chapters_file(&paths, &chapters).unwrap();
+        assert!(chapter_completion_hint(&paths, &sc1).is_none());
     }
 
     #[test]
@@ -3776,6 +4094,73 @@ mod tests {
         // 不存在的线索
         let err = advance_thread(&paths, "t_999", "planted", Some("sc_01")).unwrap_err();
         assert!(matches!(err, StudioError::NotFound(_)));
+    }
+
+    #[test]
+    fn advance_threads_and_knowledge_batch() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let t1 = create_thread(&paths, "真凶线", "描述", "main", None, None).unwrap();
+        let t2 = create_thread(&paths, "旧案线", "描述", "minor", None, None).unwrap();
+
+        // 批量推进：多条线索一次落盘
+        let results = advance_threads(
+            &paths,
+            &[
+                (t1.clone(), "revealed".into(), Some("sc_02_01".into())),
+                (t2.clone(), "planted".into(), Some("sc_02_02".into())),
+            ],
+        )
+        .unwrap();
+        assert_eq!(results, vec!["revealed", "planted"]);
+
+        let file: ThreadsFile = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
+        let t = file.threads.iter().find(|t| t.id == t1).unwrap();
+        assert_eq!(t.revealed_at.as_deref(), Some("sc_02_01"));
+        // revealed 联动 reader 知情
+        let reader = t
+            .knowledge
+            .iter()
+            .find(|k| {
+                matches!(
+                    &k.observer,
+                    story_project_format::threads_file::ObserverDef::Builtin(s) if s == "reader"
+                )
+            })
+            .expect("revealed 应联动 reader 知情");
+        assert!(
+            reader
+                .state_timeline
+                .iter()
+                .any(|e| e.scene == "sc_02_01" && e.state == "known")
+        );
+
+        // 批量可见性：多条记录一次落盘
+        set_thread_knowledge_batch(
+            &paths,
+            &[
+                (t1.clone(), "c_0001".into(), "suspected".into(), "sc_02_01".into()),
+                (t1.clone(), "c_0002".into(), "known".into(), "sc_02_03".into()),
+            ],
+        )
+        .unwrap();
+        let file: ThreadsFile = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
+        let t = file.threads.iter().find(|t| t.id == t1).unwrap();
+        assert_eq!(t.knowledge.len(), 3, "reader + c_0001 + c_0002");
+
+        // 批量中任一条失败则整体不落盘
+        let err = advance_threads(
+            &paths,
+            &[
+                (t2.clone(), "revealed".into(), Some("sc_09_01".into())),
+                ("t_999".into(), "planted".into(), Some("sc_09_02".into())),
+            ],
+        );
+        assert!(err.is_err());
+        let file: ThreadsFile = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
+        let t2d = file.threads.iter().find(|t| t.id == t2).unwrap();
+        assert!(t2d.revealed_at.is_none(), "批量失败时不应部分落盘");
     }
 
     #[test]

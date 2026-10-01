@@ -169,7 +169,11 @@ pub fn comprehension_anchor(
 2. 只标注指代消解后能确定身份的；拿不准就不标；\n\
 3. 纯数字/编号型指代（如\"十七号\"\"三楼\"\"丙-17\"）极易与门牌、档案编号、\
 楼层等巧合撞名，一律放入 unresolved（hint 说明疑似指向），不要直接锚定；\n\
-4. 指代对象在名册中找不到的，放入 unresolved 并给一句提示（如\"疑似新角色\"）。\n\
+4. 指代对象在名册中找不到的，放入 unresolved 并给一句提示（如\"疑似新角色\"）；\n\
+5. 非特指的泛指（有人/某人/谁/不知名者/众人等没有具体指代对象的文学性表达）\
+不算指代，既不锚定也不上报；\n\
+6. 数量词+群体称谓（如\"六个女弟子\"\"几名守卫\"）视为背景群演，不上报；\
+除非其中某个体被单独点名或有独立言行，才只针对该个体处理。\n\
 只输出 JSON，格式：\n\
 {\"anchors\": [{\"entity\": \"c_0008\", \"role\": \"referenced\", \"quote\": \"那名佣兵\"}],\
  \"unresolved\": [{\"quote\": \"高个子\", \"hint\": \"疑似新角色\"}]}\n\
@@ -540,6 +544,8 @@ impl Tool for ResolveUnresolvedRefTool {
             action=merge 归拢到已有实体（需 target_entity_id）；\
             action=ignore 忽略，后续锚定不再提示。\
             建档/归拢会自动为所在片段补锚点。\
+            create 角色时可同时传入 gender/occupation/appearance/background/personality/habits\
+            一步建全档案，无需再 update_entity。\
             多条指代指向同一实体时（如同一凶手的多个代称），用 refs 一次批量处置，\
             create 只建一个档案。".into(),
             parameters: object_schema(vec![
@@ -565,14 +571,21 @@ impl Tool for ResolveUnresolvedRefTool {
                     "create 时的实体类型：characters（默认）/ locations / items / organizations",
                     false,
                 ),
+                ("gender", "string", "create 角色时的性别", false),
+                ("occupation", "string", "create 角色时的职业", false),
+                ("appearance", "string", "create 角色时的外貌（多行自由文本）", false),
+                ("background", "string", "create 角色时的背景（多行自由文本）", false),
+                ("personality", "string", "create 角色时的性格（多行自由文本）", false),
+                ("habits", "string", "create 角色时的习性：口头禅、小动作等（多行自由文本）", false),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let action = get_str(arguments, "action")?;
+        let profile = parse_character_profile(arguments);
 
-        // 批量：refs 数组，action/target/name/kind 对每条同样生效
+        // 批量：refs 数组，action/target/name/kind/profile 对每条同样生效
         if let Some(raw) = get_str_opt(arguments, "refs") {
             let items = super::chapters::parse_json_array_lenient(&raw, "refs")?;
             if items.is_empty() {
@@ -589,6 +602,7 @@ impl Tool for ResolveUnresolvedRefTool {
                 get_str_opt(arguments, "target_entity_id").as_deref(),
                 get_str_opt(arguments, "name").as_deref(),
                 get_str_opt(arguments, "kind").as_deref(),
+                profile.as_ref(),
             )
             .map_err(|e| e.to_string());
         }
@@ -603,9 +617,29 @@ impl Tool for ResolveUnresolvedRefTool {
             get_str_opt(arguments, "target_entity_id").as_deref(),
             get_str_opt(arguments, "name").as_deref(),
             get_str_opt(arguments, "kind").as_deref(),
+            profile.as_ref(),
         )
         .map_err(|e| e.to_string())?;
         Ok(summary)
+    }
+}
+
+/// 从工具参数提取 create 一步建档的角色档案字段（全空返回 None）。
+fn parse_character_profile(
+    args: &serde_json::Value,
+) -> Option<crate::mutations::CharacterProfileInput> {
+    let profile = crate::mutations::CharacterProfileInput {
+        gender: get_str_opt(args, "gender"),
+        occupation: get_str_opt(args, "occupation"),
+        appearance: get_str_opt(args, "appearance"),
+        background: get_str_opt(args, "background"),
+        personality: get_str_opt(args, "personality"),
+        habits: get_str_opt(args, "habits"),
+    };
+    if profile.is_empty() {
+        None
+    } else {
+        Some(profile)
     }
 }
 
@@ -733,6 +767,7 @@ mod tests {
             None,
             Some("九一真凶"),
             Some("characters"),
+            None,
         )
         .unwrap();
         assert!(summary.contains("九一真凶"), "{summary}");
@@ -772,7 +807,16 @@ mod tests {
         let ctx = ToolContext::new(dir.to_path_buf());
         anchor_and_apply(&ctx, &provider, &fid).unwrap();
 
-        crate::mutations::resolve_unresolved_ref(&paths, &fid, "写的人", "ignore", None, None, None)
+        crate::mutations::resolve_unresolved_ref(
+            &paths,
+            &fid,
+            "写的人",
+            "ignore",
+            None,
+            None,
+            None,
+            None,
+        )
             .unwrap();
 
         let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
@@ -1128,6 +1172,7 @@ mod tests {
             &fid,
             "不存在的指代",
             "ignore",
+            None,
             None,
             None,
             None,

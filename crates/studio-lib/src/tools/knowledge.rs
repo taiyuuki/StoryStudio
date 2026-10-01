@@ -620,15 +620,16 @@ impl Tool for AdvanceThreadTool {
             description: "推进线索的叙事状态。伏笔最核心的工具——用于标记线索的进展。\
             status 取值：planted(埋下)/revealed(揭示给读者)/resolved(回收闭环)/abandoned(放弃)。\
             planted/revealed/resolved 需要提供 scene_id 锚点；abandoned 不需要。\
-            前向推进，不可回退。操作前先 get_threads 确认当前状态。"
+            前向推进，不可回退。操作前先 get_threads 确认当前状态。\
+            章节回顾等场景一次推进多条线索时，用 advances 批量传入。"
                 .into(),
             parameters: object_schema(vec![
-                ("thread_id", "string", "线索 ID（如 t_001）", true),
+                ("thread_id", "string", "线索 ID（如 t_001）；单条推进时必填", false),
                 (
                     "status",
                     "string",
-                    "目标状态: planted / revealed / resolved / abandoned",
-                    true,
+                    "目标状态: planted / revealed / resolved / abandoned；单条推进时必填",
+                    false,
                 ),
                 (
                     "scene_id",
@@ -638,16 +639,53 @@ impl Tool for AdvanceThreadTool {
                     角色层知情仍需按人物逐个设置",
                     false,
                 ),
+                (
+                    "advances",
+                    "string",
+                    "批量推进：JSON 数组，每项 {\"thread_id\": \"...\", \"status\": \"...\", \"scene_id\": \"...\"(abandoned 可省)}。与 thread_id/status 二选一",
+                    false,
+                ),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let paths = self.ctx.paths();
+
+        // 批量：advances 数组
+        if let Some(raw) = get_str_opt(arguments, "advances") {
+            let items = super::chapters::parse_json_array_lenient(&raw, "advances")?;
+            if items.is_empty() {
+                return Err("advances 不能为空数组".into());
+            }
+            let mut entries: Vec<(String, String, Option<String>)> =
+                Vec::with_capacity(items.len());
+            for item in &items {
+                entries.push((
+                    get_str(item, "thread_id")?,
+                    get_str(item, "status")?,
+                    get_str_opt(item, "scene_id"),
+                ));
+            }
+            let results = crate::mutations::advance_threads(&paths, &entries)
+                .map_err(|e| e.to_string())?;
+
+            let parts: Vec<String> = entries
+                .iter()
+                .zip(&results)
+                .map(|((thread_id, _, _), new_status)| format!("{thread_id}→{new_status}"))
+                .collect();
+            return Ok(format!(
+                "已批量推进 {} 条线索：{}",
+                results.len(),
+                parts.join("；")
+            ));
+        }
+
         let thread_id = get_str(arguments, "thread_id")?;
         let status = get_str(arguments, "status")?;
         let scene_id = get_str_opt(arguments, "scene_id");
 
-        let paths = self.ctx.paths();
         let new_status =
             crate::mutations::advance_thread(&paths, &thread_id, &status, scene_id.as_deref())
                 .map_err(|e| e.to_string())?;
@@ -838,39 +876,79 @@ impl Tool for SetThreadKnowledgeTool {
             name: "set_thread_knowledge".into(),
             description: "记录线索的可见性变化——某观察者在某场景的知晓程度。\
             这是管理信息流的核心工具：跟踪谁（读者/角色/组织）在什么时候知道了什么。\
-            同一观察者的记录会累积为时间线。"
+            同一观察者的记录会累积为时间线。\
+            一次记录多条可见性（如一章后多名角色获知）用 records 批量传入。"
                 .into(),
             parameters: object_schema(vec![
-                ("thread_id", "string", "线索 ID（如 t_001）", true),
+                ("thread_id", "string", "线索 ID（如 t_001）；单条记录时必填", false),
                 (
                     "observer",
                     "string",
-                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)",
-                    true,
+                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)；单条记录时必填",
+                    false,
                 ),
                 (
                     "state",
                     "string",
-                    "知晓程度：unknown(不知道) / suspected(怀疑) / known(知道)",
-                    true,
+                    "知晓程度：unknown(不知道) / suspected(怀疑) / known(知道)；单条记录时必填",
+                    false,
                 ),
                 (
                     "scene_id",
                     "string",
-                    "发生变化的场景 ID（如 sc_01_02）",
-                    true,
+                    "发生变化的场景 ID（如 sc_01_02）；单条记录时必填",
+                    false,
+                ),
+                (
+                    "records",
+                    "string",
+                    "批量记录：JSON 数组，每项 {\"thread_id\": \"...\", \"observer\": \"...\", \"state\": \"...\", \"scene_id\": \"...\"}。与单条参数二选一",
+                    false,
                 ),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let paths = self.ctx.paths();
+
+        // 批量：records 数组
+        if let Some(raw) = get_str_opt(arguments, "records") {
+            let items = super::chapters::parse_json_array_lenient(&raw, "records")?;
+            if items.is_empty() {
+                return Err("records 不能为空数组".into());
+            }
+            let mut entries: Vec<(String, String, String, String)> =
+                Vec::with_capacity(items.len());
+            for item in &items {
+                entries.push((
+                    get_str(item, "thread_id")?,
+                    get_str(item, "observer")?,
+                    get_str(item, "state")?,
+                    get_str(item, "scene_id")?,
+                ));
+            }
+            crate::mutations::set_thread_knowledge_batch(&paths, &entries)
+                .map_err(|e| e.to_string())?;
+
+            let parts: Vec<String> = entries
+                .iter()
+                .map(|(thread_id, observer, state, scene_id)| {
+                    format!("{thread_id}：{observer} 在 {scene_id} 变为 {state}")
+                })
+                .collect();
+            return Ok(format!(
+                "已批量记录 {} 条可见性：{}",
+                entries.len(),
+                parts.join("；")
+            ));
+        }
+
         let thread_id = get_str(arguments, "thread_id")?;
         let observer = get_str(arguments, "observer")?;
         let state = get_str(arguments, "state")?;
         let scene_id = get_str(arguments, "scene_id")?;
 
-        let paths = self.ctx.paths();
         crate::mutations::set_thread_knowledge(&paths, &thread_id, &observer, &state, &scene_id)
             .map_err(|e| e.to_string())?;
 
@@ -989,6 +1067,10 @@ impl Tool for WriteFragmentTextTool {
                 let lines: Vec<String> = briefs.iter().map(|b| format!("  - {b}")).collect();
                 lines.join("\n")
             }));
+        }
+        // 本章所有场景都有正文时提示收尾（best-effort，不影响写入）
+        if let Some(hint) = crate::mutations::chapter_completion_hint(&paths, &scene_id) {
+            msg.push_str(&hint);
         }
         Ok(msg)
     }
@@ -1465,6 +1547,10 @@ impl Tool for AppendFragmentTextTool {
                 Ok(o) => msg.push_str(&super::format_anchor_note(&o, &paths)),
                 Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
             }
+        }
+        // 本章所有场景都有正文时提示收尾（best-effort，不影响追加）
+        if let Some(hint) = crate::mutations::chapter_completion_hint(&paths, &fragment_id) {
+            msg.push_str(&hint);
         }
         Ok(msg)
     }

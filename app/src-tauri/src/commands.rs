@@ -318,6 +318,7 @@ pub fn resolve_unresolved(
         target_entity_id.as_deref(),
         name.as_deref(),
         kind.as_deref(),
+        None,
     )
     .map_err(e)
 }
