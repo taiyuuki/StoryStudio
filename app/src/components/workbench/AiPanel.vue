@@ -421,8 +421,7 @@ onActivated(() => void scrollToBottom())
         <div v-else-if="it.type === 'ai'" class="msg-ai">
           <div class="ai-avatar"><i class="fa-solid fa-feather-pointed" /></div>
           <div class="ai-body">
-            <span class="ai-text">{{ it.text }}</span>
-            <span v-if="it.streaming" class="ai-caret" />
+            <MarkdownView :text="it.text" :caret="it.streaming" />
           </div>
         </div>
 
@@ -791,25 +790,8 @@ onActivated(() => void scrollToBottom())
     font-size: 13px;
     line-height: 1.9;
     color: var(--ink-main);
-    white-space: pre-wrap;
     word-break: break-word;
     padding-top: 3px;
-  }
-}
-
-.ai-caret {
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  margin-left: 2px;
-  vertical-align: -0.15em;
-  background: var(--caret-color);
-  animation: blink 0.9s steps(1) infinite;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0;
   }
 }
 
