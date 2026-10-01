@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useBookStore } from '@/stores/book'
 import { useMiaoStore } from '@/stores/miao'
-import { useUiStore } from '@/stores/ui'
+import { useUiStore, DOCK_WIDTH_DEFAULT, DOCK_WIDTH_MAX, DOCK_WIDTH_MIN } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import AiPanel from './AiPanel.vue'
 import AnchoringReviewPanel from './AnchoringReviewPanel.vue'
@@ -70,10 +70,49 @@ const activeMeta = computed(() => {
   if (!ui.activePanel) return null
   return panels.value.get(ui.activePanel) ?? null
 })
+
+// ── 左缘拖拽调宽（面板打开时出现把手，双击复位） ──────────────
+const resizing = ref(false)
+
+function startResize(e: PointerEvent) {
+  if (e.button !== 0) return
+  e.preventDefault()
+  const handle = e.currentTarget as HTMLElement
+  const startX = e.clientX
+  const startWidth = ui.dockWidth
+  // 小窗口下再留出空间给编辑器，右栏最多占窗口 45%
+  const maxWidth = Math.min(DOCK_WIDTH_MAX, Math.floor(window.innerWidth * 0.45))
+  const onMove = (ev: PointerEvent) => {
+    const w = startWidth - (ev.clientX - startX)
+    ui.dockWidth = Math.round(Math.min(maxWidth, Math.max(DOCK_WIDTH_MIN, w)))
+  }
+  const stop = () => {
+    resizing.value = false
+    document.documentElement.classList.remove('dock-resizing')
+    handle.removeEventListener('pointermove', onMove)
+    handle.removeEventListener('pointerup', stop)
+    handle.removeEventListener('lostpointercapture', stop)
+  }
+  resizing.value = true
+  document.documentElement.classList.add('dock-resizing')
+  // 指针捕获后 move/up 全部回落到把手，拖出窗口边界也不丢事件
+  handle.setPointerCapture(e.pointerId)
+  handle.addEventListener('pointermove', onMove)
+  handle.addEventListener('pointerup', stop)
+  handle.addEventListener('lostpointercapture', stop)
+}
 </script>
 
 <template>
   <aside v-if="store.ws" class="dock">
+    <div
+      v-if="activeComp"
+      class="dock-resizer"
+      :class="{ 'is-resizing': resizing }"
+      title="拖动调整宽度，双击复位"
+      @pointerdown="startResize"
+      @dblclick="ui.dockWidth = DOCK_WIDTH_DEFAULT"
+    />
     <div class="dock-rail">
       <button
         v-for="[key, p] in panels"
@@ -110,11 +149,45 @@ const activeMeta = computed(() => {
 
 <style scoped lang="scss">
 .dock {
+  position: relative;
   display: flex;
   min-height: 0;
   border-left: 1px solid var(--divider);
   background: var(--surface-1);
   backdrop-filter: blur(12px);
+}
+
+// 左缘拖拽把手：跨中缝各占一半更好抓，悬停/拖拽时显出细线
+.dock-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 9px;
+  z-index: 20;
+  cursor: col-resize;
+  touch-action: none;
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2px;
+    transform: translateX(-50%);
+    background: transparent;
+    transition: background 0.15s;
+  }
+
+  &:hover::after,
+  &.is-resizing::after {
+    background: var(--ink-accent-soft);
+  }
+
+  &.is-resizing::after {
+    background: var(--ink-accent);
+  }
 }
 
 .dock-rail {
@@ -229,5 +302,13 @@ const activeMeta = computed(() => {
 .dock-panel-leave-to {
   opacity: 0;
   margin-right: -20px;
+}
+</style>
+
+<style lang="scss">
+// 拖拽期间挂在 <html> 上：指针无论扫过哪个区域都保持列宽光标且不选中文本
+.dock-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 </style>

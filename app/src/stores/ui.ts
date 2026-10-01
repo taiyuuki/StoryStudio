@@ -14,6 +14,15 @@ export interface RecentProject {
 /** 主题直接落 localStorage，避免依赖插件的恢复时机 */
 const THEME_KEY = 'ss-theme'
 
+// 右栏宽度边界：拖拽与持久化恢复共用（越界值一律拉回范围内）
+export const DOCK_WIDTH_MIN = 300
+export const DOCK_WIDTH_MAX = 600
+export const DOCK_WIDTH_DEFAULT = 360
+
+function clampDockWidth(w: number): number {
+  return Math.min(DOCK_WIDTH_MAX, Math.max(DOCK_WIDTH_MIN, w))
+}
+
 export const useUiStore = defineStore(
   'ui',
   () => {
@@ -22,7 +31,7 @@ export const useUiStore = defineStore(
     )
     const recentProjects = ref<RecentProject[]>([])
     const activePanel = ref<DockPanel>(null)
-    const dockWidth = ref(360)
+    const dockWidth = ref(DOCK_WIDTH_DEFAULT)
     /** 编辑器 AI 幽灵补全（Tab 采纳 / Esc 关闭） */
     const aiGhost = ref(true)
     
@@ -54,6 +63,12 @@ export const useUiStore = defineStore(
 
     watch(theme, applyTheme)
     applyTheme()
+
+    // 持久化恢复或其他写入方给出越界宽度时拉回范围内
+    watch(dockWidth, (w) => {
+      const clamped = clampDockWidth(w)
+      if (clamped !== w) dockWidth.value = clamped
+    })
 
     return {
       theme,
