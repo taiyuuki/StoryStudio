@@ -209,29 +209,36 @@ function conceptProblem(): string | null {
 }
 
 async function confirmConcept(reroll: boolean) {
-  if (!reroll) {
-    const problem = conceptProblem()
-    if (problem) {
-      ElMessage.warning(problem)
-      return
-    }
-    const dir = parentDir.value.trim() || defaultDir.value
-    generating.value = true
-    busyPhase.value = 'world'
-    error.value = ''
-    try {
-      root.value = await api.createBookProject(dir, concept.value, buildOptions())
-    } catch (err) {
-      error.value = (err as Error).message
-      generating.value = false
-      return
-    }
-  } else {
+  if (reroll) {
+    // 重新想：只重生成候选并留在本步，不建项目、不生成设定
     generating.value = true
     busyPhase.value = 'concepts'
     error.value = ''
+    try {
+      concepts.value = await api.aiBookConcepts(buildOptions())
+      concept.value = concepts.value[0] ?? emptyConcept()
+    } catch (err) {
+      error.value = (err as Error).message
+    } finally {
+      generating.value = false
+    }
+    return
   }
+
+  const problem = conceptProblem()
+  if (problem) {
+    ElMessage.warning(problem)
+    return
+  }
+  const dir = parentDir.value.trim() || defaultDir.value
+  generating.value = true
+  busyPhase.value = 'world'
+  error.value = ''
   try {
+    // 项目一次向导只建一次；设定生成失败重试时不重复建目录
+    if (!root.value) {
+      root.value = await api.createBookProject(dir, concept.value, buildOptions())
+    }
     worldDraft.value = await api.aiBookWorld(concept.value, buildOptions())
     worldReport.value = null
     step.value = 2
@@ -265,7 +272,11 @@ async function openAfterConcept() {
 
 // ── 第 2 → 3 步：保存设定 → 生成首批大纲 ─────────────────
 async function confirmWorld(reroll: boolean) {
-  if (!worldDraft.value || !root.value) return
+  if (!worldDraft.value || !root.value) {
+    // 正常流程不会走到（项目在确认构思时已创建）；提示而非静默无反应
+    ElMessage.warning('项目还没创建——请回到「构思」一步重新确认后再继续')
+    return
+  }
   generating.value = true
   busyPhase.value = 'outline'
   error.value = ''
@@ -285,7 +296,10 @@ async function confirmWorld(reroll: boolean) {
 
 // ── 第 3 → 4 步：保存章节 → 完成 ─────────────────────────
 async function confirmOutline() {
-  if (!outlineDraft.value || !root.value) return
+  if (!outlineDraft.value || !root.value) {
+    ElMessage.warning('项目还没创建——请回到「构思」一步重新确认后再继续')
+    return
+  }
   if (outlineDraft.value.chapters.length === 0) {
     ElMessage.warning('至少要有一章')
     return
@@ -305,7 +319,10 @@ async function confirmOutline() {
 
 /** 设定存完就收工：不排大纲，直接打开书稿（大纲以后在项目里续排） */
 async function openAfterWorld() {
-  if (!worldDraft.value || !root.value) return
+  if (!worldDraft.value || !root.value) {
+    ElMessage.warning('项目还没创建——请回到「构思」一步重新确认后再继续')
+    return
+  }
   generating.value = true
   busyPhase.value = 'save'
   error.value = ''
