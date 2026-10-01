@@ -585,9 +585,8 @@ impl Tool for ResolveUnresolvedRefTool {
         let action = get_str(arguments, "action")?;
         let profile = parse_character_profile(arguments);
 
-        // 批量：refs 数组，action/target/name/kind/profile 对每条同样生效
-        if let Some(raw) = get_str_opt(arguments, "refs") {
-            let items = super::chapters::parse_json_array_lenient(&raw, "refs")?;
+        // 批量：refs 数组（兼容字符串与原生数组形态），action/target/name/kind/profile 对每条同样生效
+        if let Some(items) = super::get_json_array_opt(arguments, "refs")? {
             if items.is_empty() {
                 return Err("refs 不能为空数组".into());
             }

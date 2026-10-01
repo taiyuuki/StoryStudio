@@ -187,6 +187,29 @@ pub(super) fn get_str_opt(args: &serde_json::Value, key: &str) -> Option<String>
         .filter(|s| !s.is_empty())
 }
 
+/// 读取批量参数（JSON 数组），兼容字符串与原生数组两种形态。
+///
+/// 模型原生工具调用常无视 schema 的 "string" 声明直接传数组；若只按
+/// 字符串读取会静默返回 None、误入单条分支，报出误导性的"缺少参数"。
+/// - 缺省 → `Ok(None)`（走单条分支）
+/// - 数组 → 直接使用；字符串 → 宽松解析（剥围栏/截取/修复引号）
+/// - 其他类型 → 明确报错，不再静默降级
+pub(super) fn get_json_array_opt(
+    args: &serde_json::Value,
+    key: &str,
+) -> Result<Option<Vec<serde_json::Value>>, String> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(serde_json::Value::Array(items)) => Ok(Some(items.clone())),
+        Some(serde_json::Value::String(raw)) => {
+            self::chapters::parse_json_array_lenient(raw, key).map(Some)
+        }
+        Some(other) => Err(format!(
+            "{key} 需为 JSON 数组（字符串或数组形式），收到: {other}"
+        )),
+    }
+}
+
 pub(super) fn get_u32_opt(args: &serde_json::Value, key: &str) -> Option<u32> {
     match args.get(key) {
         Some(v) => v.as_u64().map(|n| n as u32).or_else(|| {

@@ -5,7 +5,7 @@ use story_ai_runtime::{Tool, ToolDef};
 use story_ir::StableId;
 use story_project_format::FragmentFile;
 
-use super::{get_str, get_str_opt, get_u32_opt, object_schema, ToolContext};
+use super::{get_json_array_opt, get_str, get_str_opt, get_u32_opt, object_schema, ToolContext};
 
 // ============================================================================
 // add_assertion
@@ -67,9 +67,8 @@ impl Tool for AddAssertionTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let paths = self.ctx.paths();
 
-        // 批量：assertions 数组
-        if let Some(raw) = get_str_opt(arguments, "assertions") {
-            let items = super::chapters::parse_json_array_lenient(&raw, "assertions")?;
+        // 批量：assertions 数组（兼容字符串与原生数组形态）
+        if let Some(items) = get_json_array_opt(arguments, "assertions")? {
             if items.is_empty() {
                 return Err("assertions 不能为空数组".into());
             }
@@ -279,9 +278,8 @@ impl Tool for AddRelationTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let paths = self.ctx.paths();
 
-        // 批量：relations 数组
-        if let Some(raw) = get_str_opt(arguments, "relations") {
-            let items = super::chapters::parse_json_array_lenient(&raw, "relations")?;
+        // 批量：relations 数组（兼容字符串与原生数组形态）
+        if let Some(items) = get_json_array_opt(arguments, "relations")? {
             if items.is_empty() {
                 return Err("relations 不能为空数组".into());
             }
@@ -652,9 +650,8 @@ impl Tool for AdvanceThreadTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let paths = self.ctx.paths();
 
-        // 批量：advances 数组
-        if let Some(raw) = get_str_opt(arguments, "advances") {
-            let items = super::chapters::parse_json_array_lenient(&raw, "advances")?;
+        // 批量：advances 数组（兼容字符串与原生数组形态）
+        if let Some(items) = get_json_array_opt(arguments, "advances")? {
             if items.is_empty() {
                 return Err("advances 不能为空数组".into());
             }
@@ -912,9 +909,8 @@ impl Tool for SetThreadKnowledgeTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let paths = self.ctx.paths();
 
-        // 批量：records 数组
-        if let Some(raw) = get_str_opt(arguments, "records") {
-            let items = super::chapters::parse_json_array_lenient(&raw, "records")?;
+        // 批量：records 数组（兼容字符串与原生数组形态）
+        if let Some(items) = get_json_array_opt(arguments, "records")? {
             if items.is_empty() {
                 return Err("records 不能为空数组".into());
             }
@@ -979,8 +975,8 @@ impl Tool for WriteFragmentTextTool {
                 "写入或覆盖场景的正文片段。创建新片段时省略 fragment_id（自动生成新 ID）。\
             传入已有 fragment_id 则覆盖该片段的全部内容。\
             ⚠️ 要追加内容到已有片段请用 append_fragment_text，不要用此工具。\
-            正文一般应达 800 字以上、包含完整叙事；刻意留短的收尾/过渡段可以更短，\
-            但过短会收到警示提示。注意：正文不要以 --- 分隔线起笔。"
+            正文一般应达 800 字以上、包含完整叙事；刻意的短片段（收尾/过渡/暗线视角）\
+            传 short=true 声明，跳过字数下限警示。注意：正文不要以 --- 分隔线起笔。"
                     .into(),
             parameters: object_schema(vec![
                 ("scene_id", "string", "目标场景 ID（如 sc_01_01）", true),
@@ -994,6 +990,12 @@ impl Tool for WriteFragmentTextTool {
                     "fragment_id",
                     "string",
                     "已有片段 ID（仅覆盖已有片段时传入；创建新片段时省略）",
+                    false,
+                ),
+                (
+                    "short",
+                    "boolean",
+                    "声明为刻意短片段（收尾/过渡/暗线视角等），跳过 800 字下限警示。默认 false",
                     false,
                 ),
             ]),
@@ -1043,12 +1045,17 @@ impl Tool for WriteFragmentTextTool {
         };
 
         let word_count = crate::workflow::count_words(&text) as usize;
+        let declared_short = arguments
+            .get("short")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let action = if is_new { "创建" } else { "更新" };
         let mut msg = format!(
             "片段已{action}: id={fragment_id}, scene={scene_id}, 字数={word_count}"
         );
-        if word_count < 800 {
-            msg.push_str(" ⚠ 低于建议下限 800 字，如非刻意留短（如收尾短章），建议扩写完整叙事");
+        if word_count < 800 && !declared_short {
+            msg.push_str(" ⚠ 低于建议下限 800 字，如非刻意留短（如收尾短章），建议扩写完整叙事；\
+            刻意短片段（收尾/过渡/暗线视角）可传 short=true 声明，跳过此警示");
         }
         // 写入时理解锚定：LLM 指代消解，把"那人/佣兵"这类文字匹配认不到的
         // 出场落为显式锚点（best-effort，失败不影响已完成的写入）
@@ -1741,7 +1748,9 @@ impl Tool for SplitFragmentTool {
             name: "split_fragment".into(),
             description: "在指定标记处把一个片段拆成两个。原片段保留标记及其之前的内容，\
             标记之后的内容成为新片段（自动插入到原片段后面，保持叙事顺序）。\
-            原片段的锚点全部保留在前半部分。拆分前请先 read_fragment_text 确认标记位置。"
+            原片段的锚点全部保留在前半部分；后半段会自动重跑理解锚定\
+            （文本匹配的名字出场由解析层自动识别，指代出场由锚定补齐）。\
+            拆分前请先 read_fragment_text 确认标记位置。"
                 .into(),
             parameters: object_schema(vec![
                 (
@@ -1833,11 +1842,21 @@ impl Tool for SplitFragmentTool {
         crate::mutations::insert_fragment_after(&paths, scene_id_str, &fragment_id, &new_id)
             .map_err(|e| e.to_string())?;
 
-        Ok(format!(
+        let mut msg = format!(
             "片段已拆分：{fragment_id} 保留前半（{} 字），{new_id} 为后半（{} 字）",
             crate::workflow::count_words(&before),
             crate::workflow::count_words(&after)
-        ))
+        );
+        // 后半段重跑理解锚定（best-effort，不影响拆分结果）：显式锚点全留在
+        // 前半，后半的指代出场（代词/称谓）与 appears/mentioned 角色需要重新
+        // 识别——确定性文本匹配在解析层自动完成，这里补 LLM 理解层
+        if let Some(provider) = self.ctx.provider.as_ref() {
+            match super::anchoring::anchor_and_apply(&self.ctx, provider, &new_id) {
+                Ok(o) => msg.push_str(&super::format_anchor_note(&o, &paths)),
+                Err(e) => msg.push_str(&format!("\n（后半段指代锚定跳过：{e}）")),
+            }
+        }
+        Ok(msg)
     }
 }
 
@@ -1910,16 +1929,24 @@ impl Tool for MoveFragmentTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "move_fragment".into(),
-            description: "调整片段在场景内的顺序。方向：up（前移一位）/ down（后移一位）/ \
-            to_first（移到最前）/ to_last（移到最后）。用于重排叙事节奏。"
+            description: "调整片段在场景内的顺序。direction：up（前移一位）/ down（后移一位）/ \
+            to_first（移到最前）/ to_last（移到最后）；跨多位移动用 position 直接指定\
+            目标位置（1-based，提供时忽略 direction）。用于重排叙事节奏。"
                 .into(),
             parameters: object_schema(vec![
                 ("fragment_id", "string", "要移动的片段 ID", true),
                 (
                     "direction",
                     "string",
-                    "移动方向：up / down / to_first / to_last",
-                    true,
+                    "移动方向：up / down / to_first / to_last（与 position 二选一）",
+                    false,
+                ),
+                (
+                    "position",
+                    "string",
+                    "目标位置（1-based，1=最前；场景内有几个片段就有效到几）。\
+                    跨多位移动时直接指定，提供时忽略 direction",
+                    false,
                 ),
             ]),
         }
@@ -1927,7 +1954,6 @@ impl Tool for MoveFragmentTool {
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let fragment_id = get_str(arguments, "fragment_id")?;
-        let direction = get_str(arguments, "direction")?;
 
         let parse_output = self.ctx.parse()?;
         let sid = StableId::new_unchecked(&fragment_id);
@@ -1947,29 +1973,43 @@ impl Tool for MoveFragmentTool {
             .ok_or_else(|| format!("片段 '{fragment_id}' 不在场景的 fragments 列表中"))?;
 
         let total = fragments.len();
-        // 计算目标位置（移除 current_pos 后的索引）
-        let new_index = match direction.as_str() {
-            "up" => {
-                if current_pos == 0 {
-                    return Err(format!("片段 {fragment_id} 已在最前，无法前移"));
-                }
-                current_pos - 1
-            }
-            "down" => {
-                if current_pos == total - 1 {
-                    return Err(format!("片段 {fragment_id} 已在最后，无法后移"));
-                }
-                current_pos + 1
-            }
-            "to_first" => 0,
-            "to_last" => {
-                // 移除后数组长度为 total-1，追加即末尾
-                total - 1
-            }
-            other => {
+        // 计算目标位置（移除 current_pos 后的索引；插入后即最终 0-based 位置）
+        let new_index = if let Some(position) = get_u32_opt(arguments, "position") {
+            let position = position as usize;
+            if position == 0 || position > total {
                 return Err(format!(
-                    "无效的 direction '{other}'（支持: up / down / to_first / to_last）"
-                ))
+                    "position 必须在 1..={total} 内（场景共 {total} 个片段），收到 {position}"
+                ));
+            }
+            position - 1
+        } else {
+            let direction = get_str(arguments, "direction").map_err(|_| {
+                "需要提供 direction（up/down/to_first/to_last）或 position（1-based 目标位置）"
+                    .to_string()
+            })?;
+            match direction.as_str() {
+                "up" => {
+                    if current_pos == 0 {
+                        return Err(format!("片段 {fragment_id} 已在最前，无法前移"));
+                    }
+                    current_pos - 1
+                }
+                "down" => {
+                    if current_pos == total - 1 {
+                        return Err(format!("片段 {fragment_id} 已在最后，无法后移"));
+                    }
+                    current_pos + 1
+                }
+                "to_first" => 0,
+                "to_last" => {
+                    // 移除后数组长度为 total-1，追加即末尾
+                    total - 1
+                }
+                other => {
+                    return Err(format!(
+                        "无效的 direction '{other}'（支持: up / down / to_first / to_last）"
+                    ))
+                }
             }
         };
 
@@ -1979,7 +2019,8 @@ impl Tool for MoveFragmentTool {
 
         Ok(format!(
             "片段 {fragment_id} 已移动（位置 {} → {}）",
-            current_pos, new_index
+            current_pos + 1,
+            new_index + 1
         ))
     }
 }
@@ -2401,7 +2442,7 @@ fragments = []
         }));
         let result = result.unwrap();
         assert!(result.contains("已移动"));
-        assert!(result.contains("0 → 1"));
+        assert!(result.contains("1 → 2"));
 
         // 验证 structure 顺序变了
         let structure_content = std::fs::read_to_string(tmp.path().join("structure.toml")).unwrap();
@@ -2428,6 +2469,141 @@ fragments = []
             "direction": "sideways"
         }));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn move_fragment_to_position() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let create = WriteFragmentTextTool::new(ctx.clone());
+        for text in ["片段一", "片段二", "片段三"] {
+            create
+                .execute(&serde_json::json!({ "scene_id": "sc_01_01", "text": text }))
+                .unwrap();
+        }
+
+        // 顺序：[f_0001, f_0002, f_0003]，把 f_0001 跨两位移到第 3 位
+        let tool = MoveFragmentTool::new(ctx);
+        let result = tool
+            .execute(&serde_json::json!({
+                "fragment_id": "f_0001",
+                "position": 3
+            }))
+            .unwrap();
+        assert!(result.contains("1 → 3"), "{result}");
+
+        let structure_content =
+            std::fs::read_to_string(tmp.path().join("structure.toml")).unwrap();
+        let pos2 = structure_content.find("f_0002").unwrap();
+        let pos3 = structure_content.find("f_0003").unwrap();
+        let pos1 = structure_content.rfind("f_0001").unwrap();
+        assert!(pos2 < pos3 && pos3 < pos1, "顺序应为 f_0002, f_0003, f_0001");
+
+        // 越界报错
+        let tool = MoveFragmentTool::new(ToolContext::new(tmp.path().to_path_buf()));
+        let err = tool
+            .execute(&serde_json::json!({
+                "fragment_id": "f_0001",
+                "position": 4
+            }))
+            .unwrap_err();
+        assert!(err.contains("1..=3"), "{err}");
+    }
+
+    #[test]
+    fn add_assertion_batch_accepts_native_array_and_rejects_wrong_type() {
+        let tmp = setup_test_project();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = AddAssertionTool::new(ctx);
+
+        // 原生数组形态：模型常无视 schema 的 "string" 声明直接传数组，
+        // 且字段顺序与声明顺序无关（evidence_fragment 在 subject 前）
+        let result = tool
+            .execute(&serde_json::json!({
+                "assertions": [
+                    { "evidence_fragment": null, "predicate": "alive", "subject": "c_0001", "object": "true" },
+                    { "subject": "c_0002", "predicate": "age", "object": "17" }
+                ]
+            }))
+            .unwrap();
+        assert!(result.contains("批量"), "{result}");
+
+        // 类型错误：明确报错，而不是静默误入单条分支报"缺少参数 subject"
+        let err = tool
+            .execute(&serde_json::json!({ "assertions": 42 }))
+            .unwrap_err();
+        assert!(err.contains("assertions 需为 JSON 数组"), "{err}");
+    }
+
+    #[test]
+    fn write_fragment_short_declaration_skips_warning() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = WriteFragmentTextTool::new(ctx);
+
+        // 未声明：短文本触发字数警示
+        let r1 = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01", "text": "短片段。" }))
+            .unwrap();
+        assert!(r1.contains("低于建议下限"), "{r1}");
+
+        // 声明 short=true（刻意短片段）：跳过警示
+        let r2 = tool
+            .execute(&serde_json::json!({
+                "scene_id": "sc_01_01",
+                "text": "另一个刻意短片段。",
+                "short": true
+            }))
+            .unwrap();
+        assert!(!r2.contains("低于建议下限"), "{r2}");
+    }
+
+    #[test]
+    fn split_fragment_reanchors_tail() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let dir = tmp.path();
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let c1 = crate::mutations::create_entity(
+            &paths,
+            crate::mutations::EntityKind::Character,
+            "林风",
+        )
+        .unwrap();
+
+        // 锚定 LLM 固定返回：后半段的"他"锚到林风（appears）
+        let provider = Arc::new(MockRewriteProvider {
+            response: format!(
+                "{{\"anchors\": [{{\"entity\": \"{c1}\", \"role\": \"appears\", \"quote\": \"他走入雨中。\"}}], \"unresolved\": []}}"
+            ),
+            stop_reason: StopReason::EndTurn,
+        }) as Arc<dyn story_ai_runtime::AiProvider>;
+        let ctx = ToolContext::with_provider(dir.to_path_buf(), provider);
+
+        let create = WriteFragmentTextTool::new(ctx.clone());
+        create
+            .execute(&serde_json::json!({
+                "scene_id": "sc_01_01",
+                "text": "林风推开门。雨声骤响。他走入雨中。"
+            }))
+            .unwrap();
+
+        let tool = SplitFragmentTool::new(ctx);
+        let result = tool
+            .execute(&serde_json::json!({
+                "fragment_id": "f_0001",
+                "split_at": "雨声骤响。"
+            }))
+            .unwrap();
+        assert!(result.contains("已拆分"), "{result}");
+
+        // 后半段（f_0002）补上了理解锚点——"锚点全留前半"不再导致出场失联
+        let f2 = std::fs::read_to_string(dir.join("fragments/f_0002.md")).unwrap();
+        assert!(f2.contains(&format!("entity: {c1}")), "{f2}");
+        assert!(f2.contains("role: appears"), "{f2}");
     }
 
     // ------------------------------------------------------------------------
