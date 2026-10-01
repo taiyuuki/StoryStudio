@@ -2141,6 +2141,10 @@ pub fn insert_fragment_after(
         .get_mut(scene_id)
         .ok_or_else(|| StudioError::NotFound(format!("场景 '{scene_id}' 不存在")))?;
 
+    // 真实"移到其后"语义：new_id 已在列表中（create_fragment 会把新片段推到
+    // 场景末尾）时先移除再插入，否则会被防重逻辑留在原位（末尾）——
+    // 拆分场景时造成叙事顺序错乱。移除可能使 after_id 索引前移，需重新定位。
+    scene.fragments.retain(|f| f != new_id);
     let pos = scene
         .fragments
         .iter()
@@ -2149,11 +2153,8 @@ pub fn insert_fragment_after(
             StudioError::NotFound(format!("片段 '{after_id}' 不在场景 '{scene_id}' 中"))
         })?;
 
-    // 若 new_id 已存在则不重复插入
-    if !scene.fragments.contains(&new_id.to_string()) {
-        scene.fragments.insert(pos + 1, new_id.to_string());
-        structure.save(&structure_path)?;
-    }
+    scene.fragments.insert(pos + 1, new_id.to_string());
+    structure.save(&structure_path)?;
     Ok(())
 }
 
@@ -4844,6 +4845,27 @@ mod tests {
         let fragments = &structure.scene[&sc_id].fragments;
         // 顺序应为 [f1, f_9999, f2]
         assert_eq!(fragments, &vec![f1.clone(), "f_9999".to_string(), f2]);
+    }
+
+    #[test]
+    fn insert_fragment_after_moves_existing_fragment() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch_id = create_chapter(&paths, "测试章").unwrap();
+        let sc_id = create_scene(&paths, &ch_id, "场景A", None).unwrap();
+        let f1 = create_fragment(&paths, &sc_id, "片段一").unwrap();
+        let f2 = create_fragment(&paths, &sc_id, "片段二").unwrap();
+        // create_fragment 把新片段推到末尾 → [f1, f2, f3]
+        // （split_fragment 的真实调用序列就是这个形态）
+        let f3 = create_fragment(&paths, &sc_id, "片段三").unwrap();
+
+        insert_fragment_after(&paths, &sc_id, &f1, &f3).unwrap();
+
+        let structure = load_structure(&paths).unwrap();
+        let fragments = &structure.scene[&sc_id].fragments;
+        // 应移动到 f1 之后 → [f1, f3, f2]，而非因"已存在"守卫留在末尾
+        assert_eq!(fragments, &vec![f1.clone(), f3.clone(), f2.clone()]);
     }
 
     #[test]

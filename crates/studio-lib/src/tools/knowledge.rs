@@ -2339,6 +2339,42 @@ fragments = []
     }
 
     #[test]
+    fn split_fragment_inserts_tail_after_original() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let create = WriteFragmentTextTool::new(ctx.clone());
+        create
+            .execute(&serde_json::json!({
+                "scene_id": "sc_01_01",
+                "text": "半夜，林风推开门。雨声骤响。他走入雨中。"
+            }))
+            .unwrap();
+        create
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01", "text": "天快亮了。" }))
+            .unwrap();
+
+        // 拆分第一个片段：后半（f_0003）应紧跟 f_0001，排在 f_0002（天快亮）之前
+        let tool = SplitFragmentTool::new(ctx);
+        let result = tool
+            .execute(&serde_json::json!({
+                "fragment_id": "f_0001",
+                "split_at": "雨声骤响。"
+            }))
+            .unwrap();
+        assert!(result.contains("已拆分"), "{result}");
+
+        let content = std::fs::read_to_string(tmp.path().join("structure.toml")).unwrap();
+        let structure = story_project_format::StructureFile::from_toml_str(&content).unwrap();
+        assert_eq!(
+            structure.scene["sc_01_01"].fragments,
+            vec!["f_0001".to_string(), "f_0003".to_string(), "f_0002".to_string()],
+            "后半应插在原片段之后、f_0002 之前，保持叙事顺序"
+        );
+    }
+
+    #[test]
     fn split_fragment_marker_not_found() {
         let tmp = setup_test_project();
         write_structure_with_scene(tmp.path());
