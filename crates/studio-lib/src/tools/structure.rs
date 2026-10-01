@@ -4,7 +4,7 @@ use story_ai_runtime::{Tool, ToolDef};
 use story_ir::StableId;
 use story_project_format::structure_toml::StoryTimeDef;
 
-use super::{get_str, get_str_opt, object_schema, ToolContext};
+use super::{get_json_array_opt, get_str, get_str_opt, object_schema, ToolContext};
 
 // ============================================================================
 // compile_check
@@ -562,19 +562,20 @@ impl Tool for SaveSceneSummariesTool {
             parameters: object_schema(vec![(
                 "summaries",
                 "string",
-                "JSON 数组，每项 {\"scene_id\": \"sc_01_01\", \"summary\": \"一句话摘要\"}",
+                "字符串形式的 JSON 数组（传原生数组亦可），\
+                每项 {\"scene_id\": \"sc_01_01\", \"summary\": \"一句话摘要\"}",
                 true,
             )]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let summaries_json = get_str(arguments, "summaries")?;
-        let items =
-            crate::tools::chapters::parse_json_array_lenient(&summaries_json, "summaries")?;
-        if items.is_empty() {
-            return Err("summaries 不能为空数组".into());
-        }
+        // summaries 兼容字符串与原生数组两种形态（模型常无视 schema 的 "string" 声明）
+        let items = match get_json_array_opt(arguments, "summaries")? {
+            Some(items) if !items.is_empty() => items,
+            Some(_) => return Err("summaries 不能为空数组".into()),
+            None => return Err("缺少参数: summaries".into()),
+        };
 
         let paths = self.ctx.paths();
         let mut saved = Vec::new();
@@ -926,5 +927,46 @@ mod tests {
             }))
             .unwrap_err();
         assert!(err.contains("锚点角色"), "{err}");
+    }
+
+    #[test]
+    fn save_scene_summaries_accepts_string_and_native_array() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "渡口", None).unwrap();
+
+        let tool = SaveSceneSummariesTool::new(ToolContext::new(dir.to_path_buf()));
+
+        // 字符串形式的 JSON 数组（schema 声明的形态）
+        let out = tool
+            .execute(&serde_json::json!({
+                "summaries": format!(
+                    "[{{\"scene_id\": \"{sc}\", \"summary\": \"主角抵达渡口\"}}]"
+                )
+            }))
+            .unwrap();
+        assert!(out.contains("已保存 1 条"), "{out}");
+
+        // 原生数组（模型常无视 "string" 声明直接传），同样落盘
+        let out = tool
+            .execute(&serde_json::json!({
+                "summaries": [
+                    { "scene_id": sc, "summary": "渡口雾夜初逢" },
+                ]
+            }))
+            .unwrap();
+        assert!(out.contains("已保存 1 条"), "{out}");
+        let structure = std::fs::read_to_string(dir.join("structure.toml")).unwrap();
+        assert!(structure.contains("渡口雾夜初逢"), "{structure}");
+
+        // 缺参数与空数组分别给出明确错误
+        let err = tool.execute(&serde_json::json!({})).unwrap_err();
+        assert!(err.contains("缺少参数"), "{err}");
+        let err = tool
+            .execute(&serde_json::json!({ "summaries": "[]" }))
+            .unwrap_err();
+        assert!(err.contains("不能为空数组"), "{err}");
     }
 }

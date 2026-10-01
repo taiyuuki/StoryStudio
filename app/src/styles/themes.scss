@@ -56,6 +56,7 @@ html.theme-ink {
   --nav-active-bg: linear-gradient(90deg, #f1e3df 0%, transparent 100%);
   --nav-active-bar-color: #7a3028;
   --scrollbar-thumb: #b9b2a8;
+  --scrollbar-thumb-strong: #948d81;
 
   // 纸面（编辑器）
   --editor-paper-bg: rgba(255, 253, 248, 0.94);
@@ -111,6 +112,7 @@ html.theme-dark {
   --nav-active-bg: linear-gradient(90deg, rgba(159, 71, 47, 0.22) 0%, transparent 100%);
   --nav-active-bar-color: #c25b41;
   --scrollbar-thumb: #4a473d;
+  --scrollbar-thumb-strong: #676252;
 
   --editor-paper-bg: rgba(29, 28, 24, 0.96);
   --editor-rule-color: rgba(194, 91, 65, 0.28);

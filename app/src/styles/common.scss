@@ -301,7 +301,7 @@ textarea,
   }
 }
 
-// ── 滚动条 ────────────────────────────────────────────────
+// ── 滚动条（常显：低调浅色，指针悬停容器或拖动时加深） ─────
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -312,13 +312,13 @@ textarea,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: transparent;
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 
 *:hover::-webkit-scrollbar-thumb,
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb);
+  background: var(--scrollbar-thumb-strong);
 }
 
 ::-webkit-scrollbar-corner {
