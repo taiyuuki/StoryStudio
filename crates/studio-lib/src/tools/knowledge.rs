@@ -25,6 +25,11 @@ impl Tool for AddAssertionTool {
         ToolDef {
             name: "add_assertion".into(),
             description: "添加知识库断言，写入 knowledge/assertions.toml。\
+            ⚠️ 断言记录的是上帝视角的事实真相（作者已确定的世界现实），\
+            不是正文当前呈现的表象，也不是未决悬案：正文写了角色死亡但实为假死时，\
+            应按真相断言（假死即 alive=true），\"读者/角色以为他死了\"用线索可见性\
+            （advance_thread / set_thread_knowledge）体现；身份、位置等表象与真相\
+            不符时同理——真相入断言，认知差走线索。\
             object 值会根据 predicate 自动转换类型：alive 用 true/false，age 用整数，其他用字符串。\
             时变谓词（located_at/status/alive/age）会自动将同主体同谓词的旧断言置为 superseded，\
             所以\"角色当前位置/状态/生死/年龄\"直接添加新值即可，无需先删旧值；\
