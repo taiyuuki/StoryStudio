@@ -48,18 +48,17 @@ const SCALES: [string, number][] = [
   ['标准（100 万字）', 1_000_000],
   ['长跑（200 万字+）', 2_000_000],
 ]
-const WORD_OPTIONS = [2000, 3000, 4000, 5000, 6000]
+const WORD_OPTIONS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000]
 
 const idea = ref('')
 const genre = ref('自动')
+const customGenre = ref('')
 const audience = ref('')
 const pov = ref('')
 const style = ref('')
 const scaleIdx = ref(1)
 const chapterCount = ref(12)
 const chapterWords = ref(3000)
-const characterCount = ref(6)
-const advancedOpen = ref(false)
 
 const parentDir = ref('')
 const defaultDir = ref('')
@@ -85,16 +84,17 @@ async function pickDir() {
 }
 
 function buildOptions(): BookCreationOptionsDto {
+  // 自定义题材优先生效；否则用预设芯片；「自动」= 交给 AI 判断
+  const custom = customGenre.value.trim()
   return {
     idea: idea.value.trim(),
-    genre: genre.value === '自动' ? null : genre.value,
+    genre: custom || (genre.value === '自动' ? null : genre.value),
     chapterCount: chapterCount.value,
     targetWords: SCALES[scaleIdx.value]?.[1] ?? null,
     chapterWords: chapterWords.value || null,
     audience: audience.value || null,
     pov: pov.value || null,
     style: style.value || null,
-    characterCount: characterCount.value || null,
   }
 }
 
@@ -119,10 +119,11 @@ const generating = ref(false)
 const error = ref('')
 
 /** 生成中提示按实际阶段显示（步骤号在请求期间不变，不能作依据） */
-type Phase = 'concepts' | 'world' | 'outline' | 'save'
+type Phase = 'concepts' | 'create' | 'world' | 'outline' | 'save'
 const busyPhase = ref<Phase>('concepts')
 const PHASE_TEXT: Record<Phase, string> = {
   concepts: '正在想三个候选方向…',
+  create: '正在建档立卷…',
   world: '正在搭世界观与人物…',
   outline: '正在排章节脉络…',
   save: '正在保存章节…',
@@ -199,14 +200,19 @@ function pickConcept(c: BookConceptDto) {
 }
 
 // ── 第 1 → 2 步：确认概念 → 建项目 → 生成设定 ────────────
+
+/** 概念必填项校验，返回错误文案（null = 通过） */
+function conceptProblem(): string | null {
+  if (!concept.value.title.trim()) return '书名不能为空'
+  if (!concept.value.premise.trim()) return '主线不能为空——后续设定和大纲都以此为纲'
+  return null
+}
+
 async function confirmConcept(reroll: boolean) {
   if (!reroll) {
-    if (!concept.value.title.trim()) {
-      ElMessage.warning('书名不能为空')
-      return
-    }
-    if (!concept.value.premise.trim()) {
-      ElMessage.warning('主线不能为空——后续设定和大纲都以此为纲')
+    const problem = conceptProblem()
+    if (problem) {
+      ElMessage.warning(problem)
       return
     }
     const dir = parentDir.value.trim() || defaultDir.value
@@ -229,6 +235,27 @@ async function confirmConcept(reroll: boolean) {
     worldDraft.value = await api.aiBookWorld(concept.value, buildOptions())
     worldReport.value = null
     step.value = 2
+  } catch (err) {
+    error.value = (err as Error).message
+  } finally {
+    generating.value = false
+  }
+}
+
+/** 走到这里就够了：存下构思直接打开书稿，设定和大纲以后在项目里补 */
+async function openAfterConcept() {
+  const problem = conceptProblem()
+  if (problem) {
+    ElMessage.warning(problem)
+    return
+  }
+  const dir = parentDir.value.trim() || defaultDir.value
+  generating.value = true
+  busyPhase.value = 'create'
+  error.value = ''
+  try {
+    root.value = await api.createBookProject(dir, concept.value, buildOptions())
+    await openBook()
   } catch (err) {
     error.value = (err as Error).message
   } finally {
@@ -276,6 +303,25 @@ async function confirmOutline() {
   }
 }
 
+/** 设定存完就收工：不排大纲，直接打开书稿（大纲以后在项目里续排） */
+async function openAfterWorld() {
+  if (!worldDraft.value || !root.value) return
+  generating.value = true
+  busyPhase.value = 'save'
+  error.value = ''
+  try {
+    // 设定只保存一次（重复保存会追加重复实体）；已存过就直接打开
+    if (!worldReport.value) {
+      worldReport.value = await api.saveBookWorld(root.value, worldDraft.value)
+    }
+    await openBook()
+  } catch (err) {
+    error.value = (err as Error).message
+  } finally {
+    generating.value = false
+  }
+}
+
 function backStep() {
   error.value = ''
   if (step.value === 2) step.value = 1
@@ -287,7 +333,11 @@ function cancelGenerating() {
 }
 
 async function openBook() {
-  if (await store.openRoot(root.value)) router.push('/workbench')
+  if (await store.openRoot(root.value)) {
+    // 中途存完直接打开也算走完全程：置为完成态，避免离开确认拦截
+    step.value = 4
+    router.push('/workbench')
+  }
 }
 
 function goBack() {
@@ -360,14 +410,22 @@ function goBack() {
                   v-for="g in GENRES"
                   :key="g.name"
                   class="genre-chip"
-                  :class="{ 'is-picked': genre === g.name, 'is-auto': g.name === '自动' }"
-                  @click="genre = g.name"
+                  :class="{ 'is-picked': !customGenre.trim() && genre === g.name, 'is-auto': g.name === '自动' }"
+                  @click="genre = g.name; customGenre = ''"
                 >
                   <i class="fa-solid" :class="g.icon" />
                   {{ g.name }}
                 </button>
               </div>
-              <p class="ab-sec-hint">不确定就选「自动」，AI 会顺着你的灵感自己定</p>
+              <div class="wz-field">
+                <label>自定义题材</label>
+                <input
+                  v-model="customGenre"
+                  maxlength="20"
+                  placeholder="预设不合意就写一个，如：无限流、克苏鲁、赛博朋克"
+                />
+              </div>
+              <p class="ab-sec-hint">填了自定义题材就优先用它；否则选预设；都不想定就选「自动」，AI 会顺着灵感自己判断</p>
             </section>
 
             <!-- 篇幅与节奏 -->
@@ -382,8 +440,10 @@ function goBack() {
                   <input v-model.number="chapterCount" type="number" min="3" max="40" />
                 </div>
                 <div class="wz-field">
-                  <label>主要角色数</label>
-                  <input v-model.number="characterCount" type="number" min="2" max="12" />
+                  <label>体量</label>
+                  <select v-model.number="scaleIdx">
+                    <option v-for="(s, i) in SCALES" :key="i" :value="i">{{ s[0] }}</option>
+                  </select>
                 </div>
               </div>
               <div class="wz-field">
@@ -402,20 +462,13 @@ function goBack() {
               </div>
             </section>
 
-            <!-- 更多选项 -->
-            <button class="adv-toggle" @click="advancedOpen = !advancedOpen">
-              <i class="fa-solid" :class="advancedOpen ? 'fa-angle-down' : 'fa-angle-right'" />
-              更多选项（体量 / 人群 / 视角 / 文风）
-            </button>
-
-            <div v-if="advancedOpen" class="adv-panel">
+            <!-- 基调与视角 -->
+            <section class="ab-sec">
+              <h4 class="ab-sec-title">
+                <i class="fa-solid fa-compass" />
+                基调与视角
+              </h4>
               <div class="wz-row">
-                <div class="wz-field">
-                  <label>体量</label>
-                  <select v-model.number="scaleIdx">
-                    <option v-for="(s, i) in SCALES" :key="i" :value="i">{{ s[0] }}</option>
-                  </select>
-                </div>
                 <div class="wz-field">
                   <label>面向人群</label>
                   <select v-model="audience">
@@ -423,8 +476,6 @@ function goBack() {
                     <option v-for="a in AUDIENCES" :key="a" :value="a">{{ a }}</option>
                   </select>
                 </div>
-              </div>
-              <div class="wz-row">
                 <div class="wz-field">
                   <label>叙事视角</label>
                   <select v-model="pov">
@@ -432,15 +483,15 @@ function goBack() {
                     <option v-for="p in POVS" :key="p" :value="p">{{ p }}</option>
                   </select>
                 </div>
-                <div class="wz-field">
-                  <label>文风基调</label>
-                  <select v-model="style">
-                    <option value="">不限</option>
-                    <option v-for="s in STYLES" :key="s" :value="s">{{ s }}</option>
-                  </select>
-                </div>
               </div>
-            </div>
+              <div class="wz-field">
+                <label>文风基调</label>
+                <select v-model="style">
+                  <option value="">不限</option>
+                  <option v-for="s in STYLES" :key="s" :value="s">{{ s }}</option>
+                </select>
+              </div>
+            </section>
 
             <!-- 存放目录 -->
             <section class="ab-sec">
@@ -459,7 +510,7 @@ function goBack() {
 
             <p class="ab-hint">
               <i class="fa-solid fa-circle-info" />
-              分四步走：AI 想候选 → 你挑一个改定 → AI 搭设定 → 你增删改后保存 → 排首批章节大纲。长篇不必一次排完大纲，写一段排一段。
+              分四步走：AI 想候选 → 你挑一个改定 → AI 搭设定 → 你增删改后保存 → 排首批章节大纲。不必走完全程——每一步存完都能直接打开开写，剩下的以后在项目里补；长篇也不必一次排完大纲，写一段排一段。
             </p>
 
             <button class="ink-btn ink-btn--primary ink-btn--lg ab-run" @click="generateConcepts">
@@ -500,6 +551,7 @@ function goBack() {
             <div class="step-actions">
               <button class="ink-btn ink-btn--sm" @click="step = 0"><i class="fa-solid fa-arrow-left" /> 上一步</button>
               <button class="ink-btn ink-btn--sm" @click="confirmConcept(true)"><i class="fa-solid fa-rotate" /> 重新想</button>
+              <button class="ink-btn ink-btn--sm" @click="openAfterConcept"><i class="fa-solid fa-book-open" /> 存下构思，直接打开</button>
               <button class="ink-btn ink-btn--primary" @click="confirmConcept(false)">
                 就用这个，开书
                 <i class="fa-solid fa-arrow-right" />
@@ -520,6 +572,7 @@ function goBack() {
             <div class="step-actions">
               <button class="ink-btn ink-btn--sm" @click="backStep"><i class="fa-solid fa-arrow-left" /> 上一步</button>
               <button class="ink-btn ink-btn--sm" @click="confirmWorld(true)"><i class="fa-solid fa-rotate" /> 重新生成</button>
+              <button class="ink-btn ink-btn--sm" @click="openAfterWorld"><i class="fa-solid fa-book-open" /> 保存设定，直接打开</button>
               <button class="ink-btn ink-btn--primary" @click="confirmWorld(false)">
                 保存设定，去排大纲
                 <i class="fa-solid fa-arrow-right" />
@@ -848,33 +901,6 @@ function goBack() {
     color: var(--ink-main);
     font-weight: 600;
   }
-}
-
-.adv-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  border: none;
-  background: transparent;
-  color: var(--ink-muted);
-  font-family: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 2px 0;
-
-  &:hover {
-    color: var(--ink-accent);
-  }
-}
-
-.adv-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px dashed var(--divider);
-  border-radius: 10px;
 }
 
 .ab-dir {

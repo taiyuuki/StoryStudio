@@ -479,7 +479,6 @@ export interface BookCreationOptionsDto {
   audience: string | null
   pov: string | null
   style: string | null
-  characterCount: number | null
 }
 
 export interface BookConceptDto {
