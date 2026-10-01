@@ -359,7 +359,8 @@ pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) 
         }
         note.push_str(
             "\n处置方式：resolve_unresolved_ref 建档（匿名指代可用占位名如「九一真凶」）、\
-             归拢到已有实体或忽略；已处置的后续不再提示。",
+             归拢到已有实体或忽略；已处置的后续不再提示。\
+             多条指代若指向同一实体，可在一次调用中用 refs 批量处置。",
         );
     }
     note
@@ -533,15 +534,23 @@ impl Tool for ResolveUnresolvedRefTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "resolve_unresolved_ref".into(),
-            description: "处置一条未锚定指代（先可用 list_unresolved_refs 查看待处置清单）：\
+            description: "处置未锚定指代（先可用 list_unresolved_refs 查看待处置清单）：\
             action=create 为其新建档案（匿名指代用占位名，如悬疑里的凶手指代\
             \"摆的人/写的人\"可建档为「九一真凶」，真名揭晓后 merge_entities 合并）；\
             action=merge 归拢到已有实体（需 target_entity_id）；\
             action=ignore 忽略，后续锚定不再提示。\
-            建档/归拢会自动为所在片段补锚点。".into(),
+            建档/归拢会自动为所在片段补锚点。\
+            多条指代指向同一实体时（如同一凶手的多个代称），用 refs 一次批量处置，\
+            create 只建一个档案。".into(),
             parameters: object_schema(vec![
-                ("fragment_id", "string", "指代所在片段 ID", true),
-                ("quote", "string", "指代原文（台账中的 quote，需完全一致）", true),
+                ("fragment_id", "string", "指代所在片段 ID（单条处置时必填）", false),
+                ("quote", "string", "指代原文（台账中的 quote，需完全一致；单条处置时必填）", false),
+                (
+                    "refs",
+                    "string",
+                    "批量处置：JSON 数组，每项 {\"fragment_id\": \"...\", \"quote\": \"...\"}（可跨片段）。与 fragment_id/quote 二选一",
+                    false,
+                ),
                 ("action", "string", "处置动作：create | merge | ignore", true),
                 (
                     "target_entity_id",
@@ -561,9 +570,31 @@ impl Tool for ResolveUnresolvedRefTool {
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let action = get_str(arguments, "action")?;
+
+        // 批量：refs 数组，action/target/name/kind 对每条同样生效
+        if let Some(raw) = get_str_opt(arguments, "refs") {
+            let items = super::chapters::parse_json_array_lenient(&raw, "refs")?;
+            if items.is_empty() {
+                return Err("refs 不能为空数组".into());
+            }
+            let mut refs: Vec<(String, String)> = Vec::with_capacity(items.len());
+            for item in &items {
+                refs.push((get_str(item, "fragment_id")?, get_str(item, "quote")?));
+            }
+            return crate::mutations::resolve_unresolved_refs(
+                &self.ctx.paths(),
+                &refs,
+                &action,
+                get_str_opt(arguments, "target_entity_id").as_deref(),
+                get_str_opt(arguments, "name").as_deref(),
+                get_str_opt(arguments, "kind").as_deref(),
+            )
+            .map_err(|e| e.to_string());
+        }
+
         let fragment_id = get_str(arguments, "fragment_id")?;
         let quote = get_str(arguments, "quote")?;
-        let action = get_str(arguments, "action")?;
         let summary = crate::mutations::resolve_unresolved_ref(
             &self.ctx.paths(),
             &fragment_id,
@@ -909,6 +940,199 @@ mod tests {
         let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
         assert_eq!(outcome.anchored.len(), 1);
         assert_eq!(outcome.anchored[0].0, "c_0001");
+    }
+
+    // —— 批量处置：多个代称归到同一实体 ——
+
+    /// 同一片段的两个代称（「摆的人」「写的人」）一次 merge 归拢到同一实体：
+    /// 台账全部 resolved，片段上该实体只留一个锚点。
+    #[test]
+    fn batch_resolve_merges_quotes_to_same_entity() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"沈屹\"\n\n[profile]\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(
+            &paths,
+            &sc,
+            "摆的人懂行，知道我们先看什么。写的人不慌。",
+        )
+        .unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [], \"unresolved\": [{\"quote\": \"摆的人\", \"hint\": \"疑似凶手\"}, {\"quote\": \"写的人\", \"hint\": \"疑似凶手\"}]}".to_string(),
+        });
+        let ctx = ToolContext::new(dir.to_path_buf());
+        anchor_and_apply(&ctx, &provider, &fid).unwrap();
+
+        let tool = ResolveUnresolvedRefTool::new(ctx);
+        let out = tool
+            .execute(&serde_json::json!({
+                "refs": format!(
+                    "[{{\"fragment_id\": \"{fid}\", \"quote\": \"摆的人\"}}, {{\"fragment_id\": \"{fid}\", \"quote\": \"写的人\"}}]"
+                ),
+                "action": "merge",
+                "target_entity_id": "c_0001"
+            }))
+            .unwrap();
+        assert!(out.contains("已批量归拢 2 条指代到 c_0001"), "{out}");
+
+        let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert!(
+            refs.iter().all(|r| r.status == "resolved"
+                && r.target.as_deref() == Some("c_0001")),
+            "{refs:?}"
+        );
+
+        // 同片段同实体只应有一处锚点
+        let content = std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+        assert_eq!(
+            content.matches("entity: c_0001").count(),
+            1,
+            "同实体不应重复落锚: {content}"
+        );
+    }
+
+    /// 同一匿名对象的代称散布在两个片段：create 批量处置只建**一个**档案，
+    /// 两个片段都补锚点。
+    #[test]
+    fn batch_resolve_create_builds_single_entity_across_fragments() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        // 名册非空锚定才会执行（此处放一个无关角色做诱饵）
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"顾岩\"\n\n[profile]\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid1 =
+            crate::mutations::create_fragment(&paths, &sc, "摆的人懂行。").unwrap();
+        let fid2 =
+            crate::mutations::create_fragment(&paths, &sc, "写的人不慌。").unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [], \"unresolved\": [{\"quote\": \"摆的人\", \"hint\": \"疑似凶手\"}]}".to_string(),
+        });
+        let ctx = ToolContext::new(dir.to_path_buf());
+        anchor_and_apply(&ctx, &provider, &fid1).unwrap();
+        let provider2: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [], \"unresolved\": [{\"quote\": \"写的人\", \"hint\": \"疑似凶手\"}]}".to_string(),
+        });
+        anchor_and_apply(&ctx, &provider2, &fid2).unwrap();
+
+        let tool = ResolveUnresolvedRefTool::new(ctx);
+        let out = tool
+            .execute(&serde_json::json!({
+                "refs": format!(
+                    "[{{\"fragment_id\": \"{fid1}\", \"quote\": \"摆的人\"}}, {{\"fragment_id\": \"{fid2}\", \"quote\": \"写的人\"}}]"
+                ),
+                "action": "create",
+                "name": "九一真凶"
+            }))
+            .unwrap();
+        assert!(out.contains("九一真凶"), "{out}");
+        assert!(out.contains("2 条指代全部归拢"), "{out}");
+
+        // 只新建了一个实体档案（原有 1 个诱饵 + 1 个新档案）
+        let chars_dir = dir.join("entities/characters");
+        let files: Vec<_> = std::fs::read_dir(&chars_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".toml"))
+            .collect();
+        assert_eq!(files.len(), 2, "create 批量只应建一个新档案");
+
+        // 两个片段都锚定了同一新实体，台账同目标
+        let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
+        let target = refs[0].target.clone().unwrap();
+        assert_ne!(target, "c_0001", "不应归拢到诱饵实体");
+        assert!(refs.iter().all(|r| r.status == "resolved" && r.target.as_deref() == Some(&target)));
+        for fid in [&fid1, &fid2] {
+            let content =
+                std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+            assert!(content.contains(&format!("entity: {target}")), "{fid}: {content}");
+        }
+    }
+
+    /// 批量里混入台账中不存在的 quote：整体不失败，回执点名未找到的条目。
+    #[test]
+    fn batch_resolve_reports_missing_quotes_without_failing() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"沈屹\"\n\n[profile]\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "摆的人懂行。").unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [], \"unresolved\": [{\"quote\": \"摆的人\", \"hint\": \"疑似凶手\"}]}".to_string(),
+        });
+        let ctx = ToolContext::new(dir.to_path_buf());
+        anchor_and_apply(&ctx, &provider, &fid).unwrap();
+
+        let tool = ResolveUnresolvedRefTool::new(ctx);
+        let out = tool
+            .execute(&serde_json::json!({
+                "refs": format!(
+                    "[{{\"fragment_id\": \"{fid}\", \"quote\": \"摆的人\"}}, {{\"fragment_id\": \"{fid}\", \"quote\": \"不存在的人\"}}]"
+                ),
+                "action": "ignore"
+            }))
+            .unwrap();
+        assert!(out.contains("已批量忽略 1 条指代"), "{out}");
+        assert!(out.contains("未找到 1 条"), "{out}");
+        assert!(out.contains("不存在的人"), "{out}");
+
+        let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].status, "ignored");
+    }
+
+    /// 单条处置（fragment_id + quote）未找到仍然报错——与批量语义区分。
+    #[test]
+    fn single_resolve_missing_quote_still_errors() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "现场干净。").unwrap();
+
+        let result = crate::mutations::resolve_unresolved_ref(
+            &paths,
+            &fid,
+            "不存在的指代",
+            "ignore",
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_err());
     }
 }
 

@@ -1537,33 +1537,52 @@ pub fn set_fragment_anchor(
     entity_id: &str,
     role: &str,
 ) -> Result<(), StudioError> {
-    let role = match role {
-        "appears" => story_ir::AnchorRole::Appears,
-        "mentioned" => story_ir::AnchorRole::Mentioned,
-        "referenced" => story_ir::AnchorRole::Referenced,
-        other => {
-            return Err(StudioError::Config(format!(
-                "锚点角色 '{other}' 无效，应为 appears / mentioned / referenced"
-            )))
-        }
-    };
+    set_fragment_anchors(paths, fragment_id, &[(entity_id.to_string(), role.to_string())])
+        .map(|_| ())
+}
 
-    let (frontmatter, body, mut anchors) = read_fragment_with_anchors(paths, fragment_id)?;
-    let entity = story_ir::StableId::new(entity_id)
-        .map_err(|_| StudioError::Config(format!("无效的实体 ID: {entity_id}")))?;
-    match anchors.iter_mut().find(|a| a.entity == entity) {
-        Some(a) => a.role = role,
-        None => anchors.push(story_ir::EntityAnchor { entity, role }),
+/// 批量为片段设置显式锚点：一次读盘、合并全部、一次写盘。
+///
+/// anchors 为 (entity_id, role) 对；同一实体重复出现时后者覆盖 role。
+/// 任一实体 ID / role 非法即整体报错，不部分落盘。返回写入的锚点总数。
+pub fn set_fragment_anchors(
+    paths: &ProjectPaths,
+    fragment_id: &str,
+    anchors: &[(String, String)],
+) -> Result<usize, StudioError> {
+    if anchors.is_empty() {
+        return Err(StudioError::Config("锚点列表不能为空".to_string()));
     }
+
+    let (frontmatter, body, mut merged) = read_fragment_with_anchors(paths, fragment_id)?;
     let _ = frontmatter;
-    let content = render_fragment_file_anchored(fragment_id, &body, &anchors);
+    for (entity_id, role) in anchors {
+        let role = match role.as_str() {
+            "appears" => story_ir::AnchorRole::Appears,
+            "mentioned" => story_ir::AnchorRole::Mentioned,
+            "referenced" => story_ir::AnchorRole::Referenced,
+            other => {
+                return Err(StudioError::Config(format!(
+                    "锚点角色 '{other}' 无效，应为 appears / mentioned / referenced"
+                )))
+            }
+        };
+        let entity = story_ir::StableId::new(entity_id)
+            .map_err(|_| StudioError::Config(format!("无效的实体 ID: {entity_id}")))?;
+        match merged.iter_mut().find(|a| a.entity == entity) {
+            Some(a) => a.role = role,
+            None => merged.push(story_ir::EntityAnchor { entity, role }),
+        }
+    }
+    let count = merged.len();
+    let content = render_fragment_file_anchored(fragment_id, &body, &merged);
     crate::journal::write_verified(
         paths.root(),
         "anchor_update",
         &paths.fragments_dir().join(format!("{fragment_id}.md")),
         &content,
     )?;
-    Ok(())
+    Ok(count)
 }
 
 /// 整体替换片段的显式锚点列表（理解锚定用：LLM 判定结果为权威集）。
@@ -1730,29 +1749,64 @@ pub fn resolve_unresolved_ref(
     name: Option<&str>,
     kind: Option<&str>,
 ) -> Result<String, StudioError> {
+    resolve_unresolved_refs(
+        paths,
+        &[(fragment_id.to_string(), quote.to_string())],
+        action,
+        target_entity_id,
+        name,
+        kind,
+    )
+}
+
+/// 批量处置未锚定指代：一次台账读写，action / target / name / kind 对每条生效。
+///
+/// refs 为 (fragment_id, quote) 列表。典型场景：同一实体的多个代称
+/// （「摆的人」「写的人」…）一次归拢——create 只新建**一个**档案，
+/// 全部指代与涉及的片段（每片段一次写盘）都归到它。
+///
+/// 单条时回执与「未找到即 Err」的行为和逐条调用完全一致；
+/// 多条时未命中的条目记入回执继续处理其余，不整体失败。
+pub fn resolve_unresolved_refs(
+    paths: &ProjectPaths,
+    refs: &[(String, String)],
+    action: &str,
+    target_entity_id: Option<&str>,
+    name: Option<&str>,
+    kind: Option<&str>,
+) -> Result<String, StudioError> {
+    if refs.is_empty() {
+        return Err(StudioError::Config("refs 不能为空".to_string()));
+    }
+    let single = refs.len() == 1;
     let anchoring_path = paths.anchoring_toml();
     let mut file = AnchoringFile::load_or_default(&anchoring_path)?;
-    let idx = file
-        .index_of(fragment_id, quote)
-        .ok_or_else(|| StudioError::NotFound(format!(
-            "未找到指代记录：片段 {fragment_id} 的 \"{quote}\""
-        )))?;
 
-    let summary = match action {
-        "ignore" => {
-            file.refs[idx].status = "ignored".into();
-            file.refs[idx].target = None;
-            format!("已忽略 \"{quote}\"（后续锚定不再提示）")
+    // 定位每条记录：单条未找到直接 Err（兼容逐条行为），多条收集后继续
+    let mut found: Vec<usize> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for (fragment_id, quote) in refs {
+        match file.index_of(fragment_id, quote) {
+            Some(i) => found.push(i),
+            None => missing.push(format!("{fragment_id}「{quote}」")),
         }
+    }
+    if single && !missing.is_empty() {
+        let (fragment_id, quote) = &refs[0];
+        return Err(StudioError::NotFound(format!(
+            "未找到指代记录：片段 {fragment_id} 的 \"{quote}\""
+        )));
+    }
+
+    // 目标实体：merge 校验传入 ID；create 新建一个（全部指代共享）
+    let target: String = match action {
+        "ignore" => String::new(),
         "merge" => {
             let target = target_entity_id.ok_or_else(|| {
                 StudioError::Config("merge 处置需要 target_entity_id".to_string())
             })?;
             validate_entity_exists(paths, target)?;
-            set_fragment_anchor(paths, fragment_id, target, "referenced")?;
-            file.refs[idx].status = "resolved".into();
-            file.refs[idx].target = Some(target.to_string());
-            format!("\"{quote}\" 已归拢到 {target}")
+            target.to_string()
         }
         "create" => {
             let name = name
@@ -1760,11 +1814,7 @@ pub fn resolve_unresolved_ref(
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| StudioError::Config("create 处置需要 name".to_string()))?;
             let kind = EntityKind::from_type_str(kind.unwrap_or("characters"))?;
-            let new_id = create_entity(paths, kind, name)?;
-            set_fragment_anchor(paths, fragment_id, &new_id, "referenced")?;
-            file.refs[idx].status = "resolved".into();
-            file.refs[idx].target = Some(new_id.clone());
-            format!("已为 \"{quote}\" 建档 {new_id}「{name}」并补锚点")
+            create_entity(paths, kind, name)?
         }
         other => {
             return Err(StudioError::Config(format!(
@@ -1773,8 +1823,60 @@ pub fn resolve_unresolved_ref(
         }
     };
 
+    // 涉及的片段各补一次锚点（同片段多条指代不重复写盘）
+    if !found.is_empty() && action != "ignore" {
+        let mut anchored: Vec<String> = Vec::new();
+        for i in &found {
+            let fragment_id = file.refs[*i].fragment_id.clone();
+            if anchored.contains(&fragment_id) {
+                continue;
+            }
+            anchored.push(fragment_id.clone());
+            set_fragment_anchor(paths, &fragment_id, &target, "referenced")?;
+        }
+    }
+
+    for i in &found {
+        if action == "ignore" {
+            file.refs[*i].status = "ignored".into();
+            file.refs[*i].target = None;
+        } else {
+            file.refs[*i].status = "resolved".into();
+            file.refs[*i].target = Some(target.clone());
+        }
+    }
+
     file.save(&anchoring_path)?;
-    Ok(summary)
+
+    if single {
+        let (_, quote) = &refs[0];
+        return Ok(match action {
+            "ignore" => format!("已忽略 \"{quote}\"（后续锚定不再提示）"),
+            "merge" => format!("\"{quote}\" 已归拢到 {target}"),
+            _ => format!(
+                "已为 \"{quote}\" 建档 {target}「{}」并补锚点",
+                name.unwrap_or("")
+            ),
+        });
+    }
+
+    let mut out = match action {
+        "ignore" => format!("已批量忽略 {} 条指代", found.len()),
+        "merge" => format!("已批量归拢 {} 条指代到 {target}", found.len()),
+        _ => format!(
+            "已建档 {target}「{}」，{} 条指代全部归拢并补锚点",
+            name.unwrap_or(""),
+            found.len()
+        ),
+    };
+    if !missing.is_empty() {
+        out.push_str(&format!(
+            "；未找到 {} 条（片段与 quote 需与台账完全一致）：{}",
+            missing.len(),
+            missing.join("、")
+        ));
+    }
+    Ok(out)
 }
 
 /// 校验实体文件存在（按 ID 前缀路由）。
@@ -2128,14 +2230,62 @@ pub fn add_assertion(
     object: &str,
     evidence: Option<&str>,
 ) -> Result<AddAssertionOutcome, StudioError> {
+    add_assertions(
+        paths,
+        &[(
+            subject.to_string(),
+            predicate.to_string(),
+            object.to_string(),
+            evidence.map(str::to_string),
+        )],
+    )
+    .map(|mut v| v.remove(0))
+}
+
+/// 批量添加断言：一次读写 assertions.toml（证据登记逐条进行）。
+///
+/// items 为 (subject, predicate, object, evidence_fragment) 列表，
+/// 返回与输入顺序对应的每条结果。任一条失败（如证据片段不存在）则
+/// 整体报错，断言不部分落盘。
+pub fn add_assertions(
+    paths: &ProjectPaths,
+    items: &[(String, String, String, Option<String>)],
+) -> Result<Vec<AddAssertionOutcome>, StudioError> {
+    if items.is_empty() {
+        return Err(StudioError::Config("assertions 不能为空".to_string()));
+    }
     let assertions_path = paths.knowledge_dir().join("assertions.toml");
     std::fs::create_dir_all(paths.knowledge_dir())?;
 
     let mut file: AssertionsFile = AssertionsFile::load_or_default(&assertions_path)?;
+    let mut outcomes = Vec::with_capacity(items.len());
+    for (subject, predicate, object, evidence) in items {
+        outcomes.push(apply_assertion(
+            paths,
+            &mut file,
+            subject,
+            predicate,
+            object,
+            evidence.as_deref(),
+        )?);
+    }
+    file.save(&assertions_path)?;
+    Ok(outcomes)
+}
 
+/// 在已加载的断言文件上应用一条断言（查重 / 时变自动失效 / 并存收集 /
+/// 证据登记 / 追加），不落盘——单条与批量共用。
+fn apply_assertion(
+    paths: &ProjectPaths,
+    file: &mut AssertionsFile,
+    subject: &str,
+    predicate: &str,
+    object: &str,
+    evidence: Option<&str>,
+) -> Result<AddAssertionOutcome, StudioError> {
     let object_value = coerce_object_value(predicate, object);
 
-    // 查重：完全相同的 active 断言直接复用
+    // 查重：完全相同的 active 断言直接复用（不登记证据，避免孤儿条目）
     if let Some(existing) = file.assertions.iter().find(|a| {
         a.subject == subject
             && a.predicate == predicate
@@ -2199,7 +2349,6 @@ pub fn add_assertion(
         valid: None,
     });
 
-    file.save(&assertions_path)?;
     Ok(AddAssertionOutcome {
         id: new_id,
         superseded,
@@ -2502,31 +2651,52 @@ pub fn add_relation(
     to: &str,
     relation: &str,
 ) -> Result<String, StudioError> {
+    add_relations(
+        paths,
+        &[(from.to_string(), to.to_string(), relation.to_string())],
+    )
+    .map(|mut ids| ids.remove(0))
+}
+
+/// 批量添加角色关系：一次读写 relations.toml。
+///
+/// relations 为 (from, to, relation) 三元组列表，返回与输入顺序对应的新关系 ID。
+pub fn add_relations(
+    paths: &ProjectPaths,
+    relations: &[(String, String, String)],
+) -> Result<Vec<String>, StudioError> {
+    if relations.is_empty() {
+        return Err(StudioError::Config("relations 不能为空".to_string()));
+    }
     let relations_path = paths.relations_toml();
 
     let mut file: RelationsFile = RelationsFile::load_or_default(&relations_path)?;
 
     // se_ 前缀 + 4 位十进制自增
-    let max_num = file
+    let mut max_num = file
         .relations
         .iter()
         .filter_map(|r| r.id.strip_prefix("se_").and_then(|n| n.parse::<u32>().ok()))
         .max()
         .unwrap_or(0);
 
-    let new_id = format!("se_{:04}", max_num + 1);
-
-    file.relations.push(RelationDef {
-        id: new_id.clone(),
-        from: from.to_string(),
-        to: to.to_string(),
-        relation: relation.to_string(),
-        valid: None,
-        evidence: vec![],
-    });
+    let mut ids = Vec::with_capacity(relations.len());
+    for (from, to, relation) in relations {
+        max_num += 1;
+        let new_id = format!("se_{max_num:04}");
+        file.relations.push(RelationDef {
+            id: new_id.clone(),
+            from: from.clone(),
+            to: to.clone(),
+            relation: relation.clone(),
+            valid: None,
+            evidence: vec![],
+        });
+        ids.push(new_id);
+    }
 
     file.save(&relations_path)?;
-    Ok(new_id)
+    Ok(ids)
 }
 
 /// 移除角色关系边

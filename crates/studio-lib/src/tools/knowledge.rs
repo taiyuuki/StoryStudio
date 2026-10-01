@@ -30,23 +30,23 @@ impl Tool for AddAssertionTool {
             所以\"角色当前位置/状态/生死/年龄\"直接添加新值即可，无需先删旧值；\
             可多值谓词（occupation/holds 等）允许并存（一人可有多重职业），\
             但并存时回执会提示旧值——同一职位的演进（如拟聘→正式）请用 retire_assertion 废弃旧值。\
-            完全相同的断言不会重复创建。"
+            完全相同的断言不会重复创建。一次沉淀多条事实（如章节回顾）用 assertions 批量传入。"
                 .into(),
             parameters: object_schema(vec![
-                ("subject", "string", "断言主体（角色 ID）", true),
+                ("subject", "string", "断言主体（角色 ID），单条添加时必填", false),
                 (
                     "predicate",
                     "string",
                     "谓词：alive/age/holds/located_at/member_of/identity/status，\
-                    也可用自定义谓词记录事件型事实（如 death_cause=\"非病亡\"）",
-                    true,
+                    也可用自定义谓词记录事件型事实（如 death_cause=\"非病亡\"）；单条添加时必填",
+                    false,
                 ),
                 (
                     "object",
                     "string",
                     "断言值：alive 用 \"true\"/\"false\"；age 用数字（如 \"17\"）；\
                     holds/located_at/member_of 用实体 ID；identity 及自定义谓词用文本。系统会按 predicate 自动转换类型。",
-                    true,
+                    false,
                 ),
                 (
                     "evidence_fragment",
@@ -54,17 +54,73 @@ impl Tool for AddAssertionTool {
                     "证据片段 ID（须为已存在的片段；系统自动登记证据条目）",
                     false,
                 ),
+                (
+                    "assertions",
+                    "string",
+                    "批量添加：JSON 数组，每项 {\"subject\": \"...\", \"predicate\": \"...\", \"object\": \"...\", \"evidence_fragment\": \"...\"(可选)}。与 subject/predicate/object 二选一",
+                    false,
+                ),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let paths = self.ctx.paths();
+
+        // 批量：assertions 数组
+        if let Some(raw) = get_str_opt(arguments, "assertions") {
+            let items = super::chapters::parse_json_array_lenient(&raw, "assertions")?;
+            if items.is_empty() {
+                return Err("assertions 不能为空数组".into());
+            }
+            let mut entries: Vec<(String, String, String, Option<String>)> =
+                Vec::with_capacity(items.len());
+            for item in &items {
+                entries.push((
+                    get_str(item, "subject")?,
+                    get_str(item, "predicate")?,
+                    get_str(item, "object")?,
+                    get_str_opt(item, "evidence_fragment"),
+                ));
+            }
+            let outcomes = crate::mutations::add_assertions(&paths, &entries)
+                .map_err(|e| e.to_string())?;
+
+            let mut superseded_all: Vec<String> = Vec::new();
+            let mut coexisting_count = 0usize;
+            let mut parts: Vec<String> = Vec::with_capacity(entries.len());
+            for ((subject, predicate, _, _), outcome) in entries.iter().zip(&outcomes) {
+                if outcome.deduplicated {
+                    parts.push(format!("{subject} {predicate}：已存在，跳过"));
+                } else {
+                    parts.push(format!("{}：{subject} {predicate}", outcome.id));
+                }
+                superseded_all.extend(outcome.superseded.iter().cloned());
+                if !outcome.coexisting.is_empty() {
+                    coexisting_count += 1;
+                }
+            }
+            let mut msg = format!("断言批量处理完成：{}", parts.join("；"));
+            if !superseded_all.is_empty() {
+                msg.push_str(&format!(
+                    "；旧断言 {} 已自动置为 superseded",
+                    superseded_all.join(", ")
+                ));
+            }
+            if coexisting_count > 0 {
+                msg.push_str(&format!(
+                    " ⚠ {coexisting_count} 条存在同谓词并存断言；\
+                     若是同一身份或职位的演进（如拟聘→正式），请用 retire_assertion 废弃旧值"
+                ));
+            }
+            return Ok(msg);
+        }
+
         let subject = get_str(arguments, "subject")?;
         let predicate = get_str(arguments, "predicate")?;
         let object_val = get_str(arguments, "object")?;
         let evidence = get_str_opt(arguments, "evidence_fragment");
 
-        let paths = self.ctx.paths();
         let outcome = crate::mutations::add_assertion(
             &paths,
             &subject,
@@ -195,10 +251,12 @@ impl Tool for AddRelationTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "add_relation".into(),
-            description: "添加角色之间的关系，写入 relations.toml。关系是单向的（from → to）。".into(),
+            description: "添加角色之间的关系，写入 relations.toml。关系是单向的（from → to）。\
+            一次添加多条（如建档后补全人物关系网）用 relations 批量传入。"
+                .into(),
             parameters: object_schema(vec![
-                ("from", "string", "主体角色 ID（如 c_8A91D4）", true),
-                ("to", "string", "目标角色 ID（如 c_A1B2C3）", true),
+                ("from", "string", "主体角色 ID（如 c_8A91D4），单条添加时必填", false),
+                ("to", "string", "目标角色 ID（如 c_A1B2C3），单条添加时必填", false),
                 (
                     "relation",
                     "string",
@@ -206,18 +264,51 @@ impl Tool for AddRelationTool {
                     subordinate_of/superior_of/knows/friend_of/apprentice_of/\
                     employed_by(受雇于)/employer_of(雇佣)/owner_of(拥有)/guardian_of(监护)。\
                     也可用其他自定义类型（如 business_with），语义自行保持一致",
-                    true,
+                    false,
+                ),
+                (
+                    "relations",
+                    "string",
+                    "批量添加：JSON 数组，每项 {\"from\": \"...\", \"to\": \"...\", \"relation\": \"...\"}。与 from/to/relation 二选一",
+                    false,
                 ),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let paths = self.ctx.paths();
+
+        // 批量：relations 数组
+        if let Some(raw) = get_str_opt(arguments, "relations") {
+            let items = super::chapters::parse_json_array_lenient(&raw, "relations")?;
+            if items.is_empty() {
+                return Err("relations 不能为空数组".into());
+            }
+            let mut triples: Vec<(String, String, String)> =
+                Vec::with_capacity(items.len());
+            for item in &items {
+                triples.push((
+                    get_str(item, "from")?,
+                    get_str(item, "to")?,
+                    get_str(item, "relation")?,
+                ));
+            }
+            let ids = crate::mutations::add_relations(&paths, &triples)
+                .map_err(|e| e.to_string())?;
+            let detail = triples
+                .iter()
+                .zip(&ids)
+                .map(|((from, to, relation), id)| format!("{id}: {from} --{relation}--> {to}"))
+                .collect::<Vec<_>>()
+                .join("；");
+            return Ok(format!("已批量添加 {} 条关系：{detail}", ids.len()));
+        }
+
         let from = get_str(arguments, "from")?;
         let to = get_str(arguments, "to")?;
         let relation = get_str(arguments, "relation")?;
 
-        let paths = self.ctx.paths();
         let new_id = crate::mutations::add_relation(&paths, &from, &to, &relation)
             .map_err(|e| e.to_string())?;
 
@@ -860,9 +951,16 @@ impl Tool for WriteFragmentTextTool {
                 .map_err(|e| e.to_string())?;
             (fid, false)
         } else {
-            // 创建新片段
-            let fid = crate::mutations::create_fragment(&paths, &scene_id, &text)
-                .map_err(|e| e.to_string())?;
+            // 创建新片段（AI 来源记账——create_fragment 固定记手写，
+            // 妙笔新建的正文会全部错记进手写账本）
+            let fid = crate::mutations::create_fragment_anchored_source(
+                &paths,
+                &scene_id,
+                &text,
+                &[],
+                crate::stats::WriteSource::Ai,
+            )
+            .map_err(|e| e.to_string())?;
             (fid, true)
         };
 
@@ -1890,6 +1988,30 @@ fragments = []
         assert!(!content.contains(frag_id));
     }
 
+    // —— write_fragment_text 记账来源 ——
+
+    /// 妙笔新建片段（省略 fragment_id）必须记入 AI 账本。
+    /// 曾走 create_fragment（固定手写），AI 新写的正文全被错记为手写。
+    #[test]
+    fn write_fragment_text_new_fragment_records_ai_words() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        write_structure_with_scene(dir);
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = WriteFragmentTextTool::new(ctx);
+        // "妙笔写下的第一段正文" = 10 字（CJK 逐字计）
+        tool.execute(&serde_json::json!({
+            "scene_id": "sc_01_01",
+            "text": "妙笔写下的第一段正文"
+        }))
+        .unwrap();
+
+        let s = crate::stats::summary(dir, 7);
+        assert_eq!(s.today.ai, 10);
+        assert_eq!(s.today.manual, 0);
+    }
+
     #[test]
     fn delete_fragment_nonexistent() {
         let tmp = setup_test_project();
@@ -2682,6 +2804,64 @@ race = "星辰精灵"
         .unwrap();
         let content = std::fs::read_to_string(dir.join("fragments/f_0001.md")).unwrap();
         assert!(!content.contains("entity: c_0001"), "{content}");
+    }
+
+    /// 批量添加关系：一次写入多条，ID 连续自增；单条调用续接编号。
+    #[test]
+    fn add_relation_batch_then_single() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = AddRelationTool::new(ctx);
+
+        let out = tool
+            .execute(&serde_json::json!({
+                "relations": "[{\"from\": \"c_0001\", \"to\": \"c_0002\", \"relation\": \"mentor_of\"}, {\"from\": \"c_0002\", \"to\": \"c_0003\", \"relation\": \"friend_of\"}]"
+            }))
+            .unwrap();
+        assert!(out.contains("已批量添加 2 条关系"), "{out}");
+        assert!(out.contains("se_0001"), "{out}");
+        assert!(out.contains("se_0002"), "{out}");
+
+        // 单条路径续接批量后的自增编号
+        let out = tool
+            .execute(&serde_json::json!({
+                "from": "c_0001", "to": "c_0003", "relation": "enemy_of"
+            }))
+            .unwrap();
+        assert!(out.contains("se_0003"), "{out}");
+    }
+
+    /// 批量添加断言：时变谓词自动取代旧值、批内重复跳过。
+    #[test]
+    fn add_assertion_batch_supersedes_and_dedupes() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = AddAssertionTool::new(ctx);
+
+        // 预置旧位置断言（a_0001）
+        tool.execute(&serde_json::json!({
+            "subject": "c_0001", "predicate": "located_at", "object": "l_0001"
+        }))
+        .unwrap();
+
+        // 批量：1) 新位置（取代 a_0001）2) 新角色状态 3) 与 2) 完全相同 → 跳过
+        let out = tool
+            .execute(&serde_json::json!({
+                "assertions": "[{\"subject\": \"c_0001\", \"predicate\": \"located_at\", \"object\": \"l_0002\"}, {\"subject\": \"c_0002\", \"predicate\": \"status\", \"object\": \"在逃\"}, {\"subject\": \"c_0002\", \"predicate\": \"status\", \"object\": \"在逃\"}]"
+            }))
+            .unwrap();
+        assert!(out.contains("a_0002：c_0001 located_at"), "{out}");
+        assert!(out.contains("a_0003：c_0002 status"), "{out}");
+        assert!(out.contains("已存在，跳过"), "{out}");
+        assert!(out.contains("a_0001 已自动置为 superseded"), "{out}");
+
+        // 落盘验证：3 条断言，a_0001 已 superseded
+        let content =
+            std::fs::read_to_string(dir.join("knowledge/assertions.toml")).unwrap();
+        assert_eq!(content.matches("id = ").count(), 3, "{content}");
+        assert!(content.contains("superseded"), "{content}");
     }
 
 }

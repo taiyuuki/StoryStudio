@@ -347,9 +347,11 @@ impl Tool for SetOutlineItemTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "set_outline_item".into(),
-            description: "设置/添加大纲内容。通过 section 参数指定操作类型：story=故事元信息, volume=添加卷, arc=添加角色弧线, storyline=添加故事线, conflict=添加冲突关系。".into(),
+            description: "设置/添加大纲内容。通过 section 参数指定操作类型：story=故事元信息, volume=添加卷, arc=添加角色弧线, storyline=添加故事线, conflict=添加冲突关系。\
+            生成整套大纲（多卷/多弧线/多冲突）时用 items 批量传入，一次写完。"
+                .into(),
             parameters: object_schema(vec![
-                ("section", "string", "操作类型: story / volume / arc / storyline / conflict", true),
+                ("section", "string", "操作类型: story / volume / arc / storyline / conflict（单条时必填）", false),
                 ("title", "string", "故事标题（section=story）", false),
                 ("genre", "string", "类型（section=story）", false),
                 ("premise", "string", "前提设定（section=story）", false),
@@ -366,12 +368,17 @@ impl Tool for SetOutlineItemTool {
                 ("kind", "string", "冲突类型: character/faction/internal/cosmic（section=conflict）", false),
                 ("parties", "string", "冲突双方描述（section=conflict）", false),
                 ("climax", "string", "冲突高潮所在的卷（section=conflict）", false),
+                (
+                    "items",
+                    "string",
+                    "批量添加：JSON 数组，每项 {\"section\": \"...\", ...该类型对应字段}。与 section+单条字段二选一",
+                    false,
+                ),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let section = get_str(arguments, "section")?;
         let outline_path = self.ctx.paths().outline_toml();
 
         let mut outline = if outline_path.exists() {
@@ -386,88 +393,20 @@ impl Tool for SetOutlineItemTool {
             OutlineFile::default()
         };
 
-        match section.as_str() {
-            "story" => {
-                if let Some(v) = get_str_opt(arguments, "title") {
-                    outline.story.title = Some(v);
-                }
-                if let Some(v) = get_str_opt(arguments, "genre") {
-                    outline.story.genre = Some(v);
-                }
-                if let Some(v) = get_str_opt(arguments, "premise") {
-                    outline.story.premise = Some(v);
-                }
-                if let Some(v) = get_str_opt(arguments, "theme") {
-                    outline.story.theme = Some(v);
-                }
-                if let Some(v) = get_str_opt(arguments, "setting") {
-                    outline.story.setting = Some(v);
-                }
-                if let Some(v) = get_str_opt(arguments, "time_span") {
-                    outline.story.time_span = Some(v);
-                }
-                if let Some(v) = get_str_opt(arguments, "audience") {
-                    outline.story.audience = Some(v);
-                }
-                if let Some(v) = get_str_opt(arguments, "target_words") {
-                    let n: u64 = v
-                        .parse()
-                        .map_err(|_| format!("target_words 必须是正整数，收到 '{v}'"))?;
-                    outline.story.target_words = Some(n);
-                }
+        let items: Vec<serde_json::Value> = if let Some(raw) = get_str_opt(arguments, "items") {
+            let arr = super::chapters::parse_json_array_lenient(&raw, "items")?;
+            if arr.is_empty() {
+                return Err("items 不能为空数组".into());
             }
-            "volume" => {
-                let name = get_str(arguments, "name")?;
-                let summary = get_str_opt(arguments, "summary");
-                let theme = get_str_opt(arguments, "theme");
+            arr
+        } else {
+            // 单条：把扁平参数当作一条 item 处理（保持原语义）
+            vec![arguments.clone()]
+        };
 
-                outline.volumes.push(VolumeDef {
-                    name,
-                    summary,
-                    theme,
-                });
-            }
-            "arc" => {
-                let character = get_str(arguments, "character")?;
-                let name = get_str(arguments, "name")?;
-                let stages = get_str_opt(arguments, "stages");
-                let summary = get_str_opt(arguments, "summary");
-                outline.arcs.push(ArcDef {
-                    character,
-                    name,
-                    stages,
-                    summary,
-                });
-            }
-            "storyline" => {
-                let thread = get_str_opt(arguments, "thread");
-                let name = get_str(arguments, "name")?;
-                let summary = get_str_opt(arguments, "summary");
-                outline.storylines.push(StorylineDef {
-                    thread,
-                    name,
-                    summary,
-                });
-            }
-            "conflict" => {
-                let name = get_str(arguments, "name")?;
-                let kind = get_str_opt(arguments, "kind");
-                let parties = get_str_opt(arguments, "parties");
-                let summary = get_str_opt(arguments, "summary");
-                let climax = get_str_opt(arguments, "climax");
-                outline.conflicts.push(ConflictDef {
-                    name,
-                    kind,
-                    parties,
-                    summary,
-                    climax,
-                });
-            }
-            other => {
-                return Err(format!(
-                    "未知 section 类型: {other}（支持: story, volume, arc, storyline, conflict）"
-                ))
-            }
+        let mut sections: Vec<String> = Vec::with_capacity(items.len());
+        for item in &items {
+            sections.push(apply_outline_item(&mut outline, item)?);
         }
 
         let toml_content = outline
@@ -475,10 +414,121 @@ impl Tool for SetOutlineItemTool {
             .map_err(|e| format!("序列化失败: {e}"))?;
         std::fs::write(&outline_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
 
-        Ok(format!(
-            "大纲已更新: section={section}, 已写入 outline.toml"
-        ))
+        if items.len() == 1 {
+            return Ok(format!(
+                "大纲已更新: section={}, 已写入 outline.toml",
+                sections[0]
+            ));
+        }
+        let volume_n = sections.iter().filter(|s| s.as_str() == "volume").count();
+        let arc_n = sections.iter().filter(|s| s.as_str() == "arc").count();
+        let storyline_n = sections.iter().filter(|s| s.as_str() == "storyline").count();
+        let conflict_n = sections.iter().filter(|s| s.as_str() == "conflict").count();
+        let story_n = sections.iter().filter(|s| s.as_str() == "story").count();
+        let mut out = format!(
+            "大纲已批量更新：卷 +{volume_n}、角色弧线 +{arc_n}、故事线 +{storyline_n}、冲突 +{conflict_n}"
+        );
+        if story_n > 0 {
+            out.push_str("，故事元信息已设置");
+        }
+        out.push_str("（已写入 outline.toml）");
+        Ok(out)
     }
+}
+
+/// 把一条大纲条目（section + 字段）应用到已加载的 OutlineFile，单条与批量共用。
+/// 返回该条的 section（供回执统计），不落盘。
+fn apply_outline_item(
+    outline: &mut OutlineFile,
+    item: &serde_json::Value,
+) -> Result<String, String> {
+    let section = get_str(item, "section")?;
+
+    match section.as_str() {
+        "story" => {
+            if let Some(v) = get_str_opt(item, "title") {
+                outline.story.title = Some(v);
+            }
+            if let Some(v) = get_str_opt(item, "genre") {
+                outline.story.genre = Some(v);
+            }
+            if let Some(v) = get_str_opt(item, "premise") {
+                outline.story.premise = Some(v);
+            }
+            if let Some(v) = get_str_opt(item, "theme") {
+                outline.story.theme = Some(v);
+            }
+            if let Some(v) = get_str_opt(item, "setting") {
+                outline.story.setting = Some(v);
+            }
+            if let Some(v) = get_str_opt(item, "time_span") {
+                outline.story.time_span = Some(v);
+            }
+            if let Some(v) = get_str_opt(item, "audience") {
+                outline.story.audience = Some(v);
+            }
+            if let Some(v) = get_str_opt(item, "target_words") {
+                let n: u64 = v
+                    .parse()
+                    .map_err(|_| format!("target_words 必须是正整数，收到 '{v}'"))?;
+                outline.story.target_words = Some(n);
+            }
+        }
+        "volume" => {
+            let name = get_str(item, "name")?;
+            let summary = get_str_opt(item, "summary");
+            let theme = get_str_opt(item, "theme");
+
+            outline.volumes.push(VolumeDef {
+                name,
+                summary,
+                theme,
+            });
+        }
+        "arc" => {
+            let character = get_str(item, "character")?;
+            let name = get_str(item, "name")?;
+            let stages = get_str_opt(item, "stages");
+            let summary = get_str_opt(item, "summary");
+            outline.arcs.push(ArcDef {
+                character,
+                name,
+                stages,
+                summary,
+            });
+        }
+        "storyline" => {
+            let thread = get_str_opt(item, "thread");
+            let name = get_str(item, "name")?;
+            let summary = get_str_opt(item, "summary");
+            outline.storylines.push(StorylineDef {
+                thread,
+                name,
+                summary,
+            });
+        }
+        "conflict" => {
+            let name = get_str(item, "name")?;
+            let kind = get_str_opt(item, "kind");
+            let parties = get_str_opt(item, "parties");
+            let summary = get_str_opt(item, "summary");
+            let climax = get_str_opt(item, "climax");
+            outline.conflicts.push(ConflictDef {
+                name,
+                kind,
+                parties,
+                summary,
+                climax,
+            });
+        }
+        other => {
+            return Err(format!(
+                "未知 section 类型: {other}（支持: story, volume, arc, storyline, conflict）"
+            ))
+        }
+    }
+
+    Ok(section)
 }
 
 // ============================================================================
@@ -729,4 +779,48 @@ fn save_outline(path: &Path, outline: &OutlineFile) -> Result<(), String> {
         .to_toml_string()
         .map_err(|e| format!("序列化失败: {e}"))?;
     std::fs::write(path, toml_content).map_err(|e| format!("写入失败: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use story_project_format::init::init_project;
+
+    fn setup_test_project() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "test-novel").unwrap();
+        tmp
+    }
+
+    /// 批量写入大纲：一次调用混合 story 元信息与卷/弧线/冲突，统一落盘。
+    #[test]
+    fn set_outline_item_batch_mixed_sections() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let tool = SetOutlineItemTool::new(ToolContext::new(dir.to_path_buf()));
+
+        let out = tool
+            .execute(&serde_json::json!({
+                "items": "[{\"section\": \"story\", \"title\": \"雾城\", \"genre\": \"悬疑\"}, {\"section\": \"volume\", \"name\": \"第一卷\"}, {\"section\": \"arc\", \"character\": \"c_0001\", \"name\": \"觉醒\"}, {\"section\": \"conflict\", \"name\": \"新旧之争\", \"kind\": \"faction\"}]"
+            }))
+            .unwrap();
+        assert!(out.contains("卷 +1"), "{out}");
+        assert!(out.contains("角色弧线 +1"), "{out}");
+        assert!(out.contains("冲突 +1"), "{out}");
+        assert!(out.contains("故事元信息已设置"), "{out}");
+
+        let content = std::fs::read_to_string(dir.join("outline.toml")).unwrap();
+        assert!(content.contains("雾城"), "{content}");
+        assert!(content.contains("第一卷"), "{content}");
+        assert!(content.contains("觉醒"), "{content}");
+        assert!(content.contains("新旧之争"), "{content}");
+
+        // 单条路径仍可用
+        let out = tool
+            .execute(&serde_json::json!({
+                "section": "storyline", "name": "暗线"
+            }))
+            .unwrap();
+        assert!(out.contains("section=storyline"), "{out}");
+    }
 }

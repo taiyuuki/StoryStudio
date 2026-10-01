@@ -690,11 +690,18 @@ impl Tool for SetFragmentAnchorTool {
             name: "set_fragment_anchor".into(),
             description: "为片段显式锚定实体（写入片段锚点列表，不依赖正文文字匹配）。\
             适用：以代词/身份称谓出场而文字匹配不到的角色（如「佣兵」「那人」），\
-            或需要精确登记出道具/地点的出场。同一实体重复设置会更新角色而非重复添加。"
+            或需要精确登记出道具/地点的出场。同一实体重复设置会更新角色而非重复添加。\
+            一次锚定多个实体时用 entity_ids 批量传入，避免逐个调用。"
                 .into(),
             parameters: object_schema(vec![
                 ("fragment_id", "string", "片段 ID（如 f_0003）", true),
-                ("entity_id", "string", "实体 ID（如 c_0008 / l_0002 / i_0001）", true),
+                ("entity_id", "string", "实体 ID（如 c_0008 / l_0002 / i_0001），单条锚定时必填", false),
+                (
+                    "entity_ids",
+                    "string",
+                    "批量锚定：JSON 数组，每项为实体 ID 字符串或 {\"entity_id\": \"...\", \"role\": \"...\"}。与 entity_id 二选一",
+                    false,
+                ),
                 (
                     "role",
                     "string",
@@ -707,9 +714,41 @@ impl Tool for SetFragmentAnchorTool {
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let fragment_id = get_str(arguments, "fragment_id")?;
-        let entity_id = get_str(arguments, "entity_id")?;
         let role = get_str_opt(arguments, "role").unwrap_or_else(|| "appears".to_string());
 
+        // 批量：entity_ids 数组（ID 字符串或 {entity_id, role} 对象）
+        if let Some(raw) = get_str_opt(arguments, "entity_ids") {
+            let items =
+                super::chapters::parse_json_array_lenient(&raw, "entity_ids")?;
+            if items.is_empty() {
+                return Err("entity_ids 不能为空数组".into());
+            }
+            let mut anchors: Vec<(String, String)> = Vec::with_capacity(items.len());
+            for item in &items {
+                let pair = if let Some(id) = item.as_str() {
+                    (id.to_string(), role.clone())
+                } else {
+                    (
+                        get_str(item, "entity_id")?,
+                        get_str_opt(item, "role").unwrap_or_else(|| role.clone()),
+                    )
+                };
+                anchors.push(pair);
+            }
+            crate::mutations::set_fragment_anchors(&self.ctx.paths(), &fragment_id, &anchors)
+                .map_err(|e| e.to_string())?;
+            let list = anchors
+                .iter()
+                .map(|(id, r)| format!("{id}（{r}）"))
+                .collect::<Vec<_>>()
+                .join("、");
+            return Ok(format!(
+                "已锚定 {} 个实体到片段 {fragment_id}：{list}",
+                anchors.len()
+            ));
+        }
+
+        let entity_id = get_str(arguments, "entity_id")?;
         crate::mutations::set_fragment_anchor(&self.ctx.paths(), &fragment_id, &entity_id, &role)
             .map_err(|e| e.to_string())?;
         Ok(format!("已锚定：片段 {fragment_id} ← 实体 {entity_id}（{role}）"))
@@ -833,5 +872,59 @@ mod tests {
         assert!(content.contains("year = 1023"), "{content}");
         assert!(content.contains("month = 9"), "{content}");
         assert!(content.contains("day = 15"), "{content}");
+    }
+
+    /// 批量锚定：一次调用为片段锚定多个实体（混合 ID 字符串与 {entity_id, role}），
+    /// 重复实体更新 role 而非重复添加。
+    #[test]
+    fn set_fragment_anchor_batch_entity_ids() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "两人在雾里对峙。").unwrap();
+
+        let tool = SetFragmentAnchorTool::new(ToolContext::new(dir.to_path_buf()));
+        let out = tool
+            .execute(&serde_json::json!({
+                "fragment_id": fid,
+                "entity_ids": "[{\"entity_id\": \"c_0001\", \"role\": \"appears\"}, \"l_0002\", {\"entity_id\": \"i_0003\", \"role\": \"mentioned\"}]"
+            }))
+            .unwrap();
+        assert!(out.contains("已锚定 3 个实体"), "{out}");
+
+        let content = std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+        assert!(content.contains("entity: c_0001"), "{content}");
+        assert!(content.contains("entity: l_0002"), "{content}");
+        // 纯 ID 项走 role 默认值 appears
+        assert!(content.contains("entity: i_0003"), "{content}");
+        assert!(content.contains("role: mentioned"), "{content}");
+
+        // 再次批量同一实体：更新 role，不重复添加，其他锚点保留
+        let out = tool
+            .execute(&serde_json::json!({
+                "fragment_id": fid,
+                "entity_ids": "[{\"entity_id\": \"c_0001\", \"role\": \"referenced\"}]"
+            }))
+            .unwrap();
+        assert!(out.contains("已锚定 1 个实体"), "{out}");
+        let content = std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+        assert_eq!(
+            content.matches("entity: c_0001").count(),
+            1,
+            "重复实体不应产生第二个锚点: {content}"
+        );
+        assert!(content.contains("role: referenced"), "{content}");
+        assert!(content.contains("entity: i_0003"), "{content}");
+
+        // 非法 role 整体报错，不部分落盘
+        let err = tool
+            .execute(&serde_json::json!({
+                "fragment_id": fid,
+                "entity_ids": "[\"c_0001\", {\"entity_id\": \"c_0004\", \"role\": \"主角\"}]"
+            }))
+            .unwrap_err();
+        assert!(err.contains("锚点角色"), "{err}");
     }
 }

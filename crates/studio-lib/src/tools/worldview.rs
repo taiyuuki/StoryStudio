@@ -178,67 +178,113 @@ impl Tool for SetWorldviewItemTool {
         ToolDef {
             name: "set_worldview_item".into(),
             description: "添加世界观条目（设计层文档）。section 指定类型：concept=基础概念, system=体系设定。\
-            永远是追加新条目。地理与势力不是世界观条目——用 create_location / create_organization。"
+            永远是追加新条目。地理与势力不是世界观条目——用 create_location / create_organization。\
+            生成整套世界观时用 items 批量传入，一次写完。"
                 .into(),
             parameters: object_schema(vec![
-                ("section", "string", "条目类型: concept / system", true),
-                ("name", "string", "名称（全部类型通用）", true),
+                ("section", "string", "条目类型: concept / system（单条添加时必填）", false),
+                ("name", "string", "名称（全部类型通用）", false),
                 ("category", "string", "概念分类（section=concept）", false),
                 ("summary", "string", "摘要（全部类型通用）", false),
                 ("details", "string", "详细说明（section=concept）", false),
                 ("kind", "string", "体系类型: cultivation/magic/technology/power（section=system）", false),
                 ("levels", "string", "等级划分，如「炼气→筑基→金丹」（section=system）", false),
                 ("rules", "string", "规则与代价（section=system）", false),
+                (
+                    "items",
+                    "string",
+                    "批量添加：JSON 数组，每项 {\"section\": \"concept|system\", \"name\": \"...\", ...各类型字段}。与 section+单条字段二选一",
+                    false,
+                ),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let section = get_str(arguments, "section")?;
         let paths = self.ctx.paths();
 
-        match section.as_str() {
-            "concept" => {
-                let mut file: ConceptsFile = load_section(&paths.worldview_concepts_toml())?;
-                file.concepts.push(ConceptDef {
-                    name: get_str(arguments, "name")?,
-                    category: get_str_opt(arguments, "category"),
-                    summary: get_str_opt(arguments, "summary"),
-                    details: get_str_opt(arguments, "details"),
-                });
-                save_section(&paths.worldview_concepts_toml(), &file)?;
+        let items: Vec<serde_json::Value> = if let Some(raw) = get_str_opt(arguments, "items") {
+            let arr = super::chapters::parse_json_array_lenient(&raw, "items")?;
+            if arr.is_empty() {
+                return Err("items 不能为空数组".into());
             }
-            "system" => {
-                let mut file: SystemsFile = load_section(&paths.worldview_systems_toml())?;
-                file.systems.push(SystemDef {
-                    name: get_str(arguments, "name")?,
-                    kind: get_str_opt(arguments, "kind"),
-                    levels: get_str_opt(arguments, "levels"),
-                    rules: get_str_opt(arguments, "rules"),
-                    summary: get_str_opt(arguments, "summary"),
-                });
-                save_section(&paths.worldview_systems_toml(), &file)?;
+            arr
+        } else {
+            // 单条：把扁平参数当作一条 item 处理（保持原语义）
+            vec![arguments.clone()]
+        };
+
+        // 分节文件懒加载：批量混合 concept/system 时各读一次、各写一次
+        let mut concepts: Option<ConceptsFile> = None;
+        let mut systems: Option<SystemsFile> = None;
+        let mut sections: Vec<String> = Vec::with_capacity(items.len());
+
+        for item in &items {
+            let section = get_str(item, "section")?;
+            match section.as_str() {
+                "concept" => {
+                    if concepts.is_none() {
+                        concepts = Some(load_section(&paths.worldview_concepts_toml())?);
+                    }
+                    let file = concepts.as_mut().unwrap();
+                    file.concepts.push(ConceptDef {
+                        name: get_str(item, "name")?,
+                        category: get_str_opt(item, "category"),
+                        summary: get_str_opt(item, "summary"),
+                        details: get_str_opt(item, "details"),
+                    });
+                }
+                "system" => {
+                    if systems.is_none() {
+                        systems = Some(load_section(&paths.worldview_systems_toml())?);
+                    }
+                    let file = systems.as_mut().unwrap();
+                    file.systems.push(SystemDef {
+                        name: get_str(item, "name")?,
+                        kind: get_str_opt(item, "kind"),
+                        levels: get_str_opt(item, "levels"),
+                        rules: get_str_opt(item, "rules"),
+                        summary: get_str_opt(item, "summary"),
+                    });
+                }
+                "place" | "faction" => {
+                    return Err(
+                        "地理与势力已统一为实体：请用 create_location / create_organization 创建，\
+                        delete_entity 删除，get_entity_detail 查看"
+                            .into(),
+                    )
+                }
+                other => {
+                    return Err(format!(
+                        "未知 section 类型: {other}（支持: concept, system）"
+                    ))
+                }
             }
-            "place" | "faction" => {
-                return Err(
-                    "地理与势力已统一为实体：请用 create_location / create_organization 创建，\
-                    delete_entity 删除，get_entity_detail 查看"
-                        .into(),
-                )
-            }
-            other => {
-                return Err(format!(
-                    "未知 section 类型: {other}（支持: concept, system）"
-                ))
-            }
+            sections.push(section);
         }
 
-        let file = match section.as_str() {
-            "concept" => "worldview/concepts.toml",
-            "system" => "worldview/systems.toml",
-            _ => "worldview/ 目录",
-        };
-        Ok(format!("世界观已更新: section={section}，已写入 {file}"))
+        if let Some(file) = &concepts {
+            save_section(&paths.worldview_concepts_toml(), file)?;
+        }
+        if let Some(file) = &systems {
+            save_section(&paths.worldview_systems_toml(), file)?;
+        }
+
+        if items.len() == 1 {
+            let file = match sections[0].as_str() {
+                "concept" => "worldview/concepts.toml",
+                _ => "worldview/systems.toml",
+            };
+            return Ok(format!(
+                "世界观已更新: section={}，已写入 {file}",
+                sections[0]
+            ));
+        }
+        let concept_n = sections.iter().filter(|s| s.as_str() == "concept").count();
+        let system_n = sections.iter().filter(|s| s.as_str() == "system").count();
+        Ok(format!(
+            "世界观已批量更新：基础概念 +{concept_n}，体系设定 +{system_n}（已写入 worldview/ 目录）"
+        ))
     }
 }
 
@@ -481,4 +527,68 @@ fn load_entities(dir: &Path) -> Vec<EntityFile> {
                 .and_then(|c| EntityFile::from_toml_str(&c).ok())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use story_project_format::init::init_project;
+
+    fn setup_test_project() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "test-novel").unwrap();
+        tmp
+    }
+
+    /// 批量写入世界观：一次调用混合 concept/system，逐段落盘；单条路径不受影响。
+    #[test]
+    fn set_worldview_item_batch_mixed_sections() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let tool = SetWorldviewItemTool::new(ToolContext::new(dir.to_path_buf()));
+
+        let out = tool
+            .execute(&serde_json::json!({
+                "items": "[{\"section\": \"concept\", \"name\": \"红档\", \"summary\": \"禁忌档案\"}, {\"section\": \"concept\", \"name\": \"灰域\"}, {\"section\": \"system\", \"name\": \"灵潮\", \"kind\": \"magic\", \"levels\": \"微澜→惊涛\"}]"
+            }))
+            .unwrap();
+        assert!(out.contains("基础概念 +2"), "{out}");
+        assert!(out.contains("体系设定 +1"), "{out}");
+
+        // 单条路径仍可用
+        let out = tool
+            .execute(&serde_json::json!({
+                "section": "system", "name": "械力", "kind": "technology"
+            }))
+            .unwrap();
+        assert!(out.contains("section=system"), "{out}");
+
+        let concepts =
+            std::fs::read_to_string(dir.join("worldview/concepts.toml")).unwrap();
+        assert!(concepts.contains("红档"), "{concepts}");
+        assert!(concepts.contains("灰域"), "{concepts}");
+        let systems =
+            std::fs::read_to_string(dir.join("worldview/systems.toml")).unwrap();
+        assert!(systems.contains("灵潮"), "{systems}");
+        assert!(systems.contains("械力"), "{systems}");
+    }
+
+    /// 批量中混入未知 section：整体报错，不落任何条目。
+    #[test]
+    fn set_worldview_item_batch_rejects_unknown_section_atomically() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let tool = SetWorldviewItemTool::new(ToolContext::new(dir.to_path_buf()));
+
+        let err = tool
+            .execute(&serde_json::json!({
+                "items": "[{\"section\": \"concept\", \"name\": \"红档\"}, {\"section\": \"faction\", \"name\": \"雾盟\"}]"
+            }))
+            .unwrap_err();
+        assert!(err.contains("create_organization"), "{err}");
+        assert!(
+            !dir.join("worldview/concepts.toml").exists(),
+            "批量整体失败时不应落盘任何条目"
+        );
+    }
 }
