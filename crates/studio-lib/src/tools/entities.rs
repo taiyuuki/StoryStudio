@@ -8,48 +8,64 @@ use crate::mutations::EntityKind;
 
 use super::{format_brief, get_str, get_str_opt, object_schema, ToolContext};
 
-/// 同名检测：创建实体后，若已有其他实体共享同一显示名（跨类型也算），
-/// 返回警告文案。同名会导致正文自动出场识别歧义（编译器 duplicate_display_name）。
-fn duplicate_name_warning(paths: &story_project_format::ProjectPaths, new_id: &str, name: &str) -> String {
-    let mut duplicates: Vec<String> = Vec::new();
-    for dir in [
-        paths.characters_dir(),
-        paths.locations_dir(),
-        paths.items_dir(),
-        paths.organizations_dir(),
-    ] {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
+/// 同名检测：创建实体后检查同名实体。
+///
+/// 同类型内重名才是冲突（Entity Linking 无法区分，编译器 duplicate_display_name
+/// 告警，正文提及被丢弃）→ 返回警告与改错建议。跨类型同名（如「星辰学院」
+/// 既是地点也是机构）是合法的「双面实体」，Linking 会各记一条提及 → 只给
+/// 一句说明，不打警告。
+fn duplicate_name_warning(
+    paths: &story_project_format::ProjectPaths,
+    kind: EntityKind,
+    new_id: &str,
+    name: &str,
+) -> String {
+    let same_names = |dir: &std::path::Path| -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
         };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let fname = entry.file_name().to_string_lossy().to_string();
-            if !fname.ends_with(".toml") {
-                continue;
-            }
-            let id = fname.trim_end_matches(".toml").to_string();
-            if id == new_id {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(entry.path()) else {
-                continue;
-            };
-            let Ok(entity) = EntityFile::from_toml_str(&content) else {
-                continue;
-            };
-            if entity.display_name == name {
-                duplicates.push(id);
-            }
+        entries
+            .filter_map(|e| e.ok())
+            .filter_map(|entry| {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if !fname.ends_with(".toml") {
+                    return None;
+                }
+                let id = fname.trim_end_matches(".toml").to_string();
+                if id == new_id {
+                    return None;
+                }
+                let content = std::fs::read_to_string(entry.path()).ok()?;
+                let entity = EntityFile::from_toml_str(&content).ok()?;
+                (entity.display_name == name).then_some(id)
+            })
+            .collect()
+    };
+
+    let same_kind = same_names(&kind.dir(paths));
+    if !same_kind.is_empty() {
+        return format!(
+            " ⚠ 注意：同类型已存在同名实体 {}，正文自动出场识别将无法区分（duplicate_display_name 告警，提及被丢弃）。\
+            建议为其中一方改名或补充别名区分。",
+            same_kind.join(", ")
+        );
+    }
+
+    // 跨类型同名：合法的双面实体，说明一句即可
+    for other in [EntityKind::Character, EntityKind::Location, EntityKind::Item, EntityKind::Organization] {
+        if other == kind {
+            continue;
+        }
+        let ids = same_names(&other.dir(paths));
+        if !ids.is_empty() {
+            return format!(
+                "（同名{}实体 {} 已存在：按「双面实体」处理，正文提及会同时计入两者。）",
+                other.type_name_zh(),
+                ids.join(", ")
+            );
         }
     }
-    if duplicates.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " ⚠ 注意：已存在同名实体 {}，正文自动出场识别会产生歧义（duplicate_display_name 告警）。\
-            建议为其中一方改名或补充别名区分（如「画铺」地点与「松记画铺」组织）。",
-            duplicates.join(", ")
-        )
-    }
+    String::new()
 }
 
 // ============================================================================
@@ -142,7 +158,7 @@ impl Tool for CreateCharacterTool {
             std::fs::write(&entity_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
         }
 
-        let warning = duplicate_name_warning(&paths, &new_id, &name);
+        let warning = duplicate_name_warning(&paths, EntityKind::Character, &new_id, &name);
         Ok(format!("角色已创建: id={new_id}, name={name}{warning}"))
     }
 }
@@ -235,7 +251,7 @@ impl Tool for CreateLocationTool {
             std::fs::write(&entity_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
         }
 
-        let warning = duplicate_name_warning(&paths, &new_id, &name);
+        let warning = duplicate_name_warning(&paths, EntityKind::Location, &new_id, &name);
         Ok(format!("地点已创建: id={new_id}, name={name}{warning}"))
     }
 }
@@ -325,7 +341,7 @@ impl Tool for CreateItemTool {
             std::fs::write(&entity_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
         }
 
-        let warning = duplicate_name_warning(&paths, &new_id, &name);
+        let warning = duplicate_name_warning(&paths, EntityKind::Item, &new_id, &name);
         Ok(format!("道具已创建: id={new_id}, name={name}{warning}"))
     }
 }
@@ -418,7 +434,7 @@ impl Tool for CreateOrganizationTool {
             std::fs::write(&entity_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
         }
 
-        let warning = duplicate_name_warning(&paths, &new_id, &name);
+        let warning = duplicate_name_warning(&paths, EntityKind::Organization, &new_id, &name);
         Ok(format!("组织已创建: id={new_id}, name={name}{warning}"))
     }
 }
@@ -1957,7 +1973,7 @@ status = "writing"
 
     #[test]
     fn create_same_name_entity_warns() {
-        // 先建地点「山影城」，再建同名组织 → 应返回重名警告
+        // 先建地点「山影城」，再建同名组织 → 合法双面实体：说明而非告警
         let tmp = setup_test_project();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
@@ -1972,16 +1988,26 @@ status = "writing"
             .execute(&serde_json::json!({"name": "山影城"}))
             .unwrap();
         assert!(
-            res.contains("⚠") && res.contains("同名实体"),
-            "同名组织应告警: {res}"
+            !res.contains("⚠") && res.contains("双面实体"),
+            "跨类型同名应说明双面实体而非告警: {res}"
         );
 
-        // 同名角色同样告警（跨类型）
+        // 同名角色与地点、组织都不同类型 → 同样是双面实体说明
         let ch = CreateCharacterTool::new(ctx.clone());
         let res = ch
             .execute(&serde_json::json!({"name": "山影城"}))
             .unwrap();
-        assert!(res.contains("⚠"), "同名角色应告警: {res}");
+        assert!(!res.contains("⚠"), "跨类型同名角色不应告警: {res}");
+
+        // 再建第二个同名地点 → 同类型撞名，真冲突，应告警
+        let location2 = CreateLocationTool::new(ctx.clone());
+        let res = location2
+            .execute(&serde_json::json!({"name": "山影城"}))
+            .unwrap();
+        assert!(
+            res.contains("⚠") && res.contains("同类型已存在同名实体"),
+            "同类型重名应告警: {res}"
+        );
     }
 
     #[test]

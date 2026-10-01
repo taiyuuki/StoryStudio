@@ -13,3 +13,5 @@
 - characters：[{name, role, gender, occupation, personality, background, aliases:[别名]}] 恰好 {{n_chars}} 个主要角色（role 取 protagonist/love_interest/antagonist/mentor/support；必须含 1 名主角与 1 名主要反派）
 - relations：[{from, to, relation}] 角色间关系（from/to 用角色名；relation 如 师徒/宿敌/兄妹）
 - threads：[{title, description, priority}] 2-5 条叙事线索（伏笔/悬念；priority 取 main/minor）
+
+命名一致性（硬性要求）：每个条目的 name 是唯一权威名称——任何字段（summary、features、rules、levels、threads 的 description、relations 等）提到地点、势力、角色、概念时，必须与对应清单的 name 逐字相同，严禁出现清单外的同义变体（例如 locations 是「奥朗王都」，别处却写「鲁恩」）。主线文本里已有的专名可沿用；若你另起更贴切的新名，则所有字段统一用新名，绝不混用。

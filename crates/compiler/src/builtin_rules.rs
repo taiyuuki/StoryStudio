@@ -157,25 +157,26 @@ impl Rule for DuplicateSymbol {
     }
 
     fn run(&self, ctx: &mut RuleContext) {
-        // SymbolTable 在 Parser 构建时已去重，这里做二次验证
-        // 检查是否有多个 Entity 使用同一 display_name（可能导致 Entity Linking 歧义）
+        // 同名但类型不同的实体（如「星辰学院」既是地点也是机构）是合法的
+        // 「双面实体」：Entity Linking 对正文提及各记一条，不构成歧义。
+        // 只有同类型内重名才真正冲突——Linking 无法区分，提及会被丢弃。
         use std::collections::BTreeMap;
-        let mut name_to_entities: BTreeMap<String, Vec<StableId>> = BTreeMap::new();
+        let mut name_to_entities: BTreeMap<(&'static str, String), Vec<StableId>> = BTreeMap::new();
 
         for entity in ctx.ir.semantic.all_entities() {
             name_to_entities
-                .entry(entity.display_name().to_string())
+                .entry((entity.type_name(), entity.display_name().to_string()))
                 .or_default()
                 .push(entity.id().clone());
         }
 
-        for (name, entities) in name_to_entities {
+        for ((kind, name), entities) in name_to_entities {
             if entities.len() > 1 {
                 ctx.warning(
                     self.id(),
                     "duplicate_display_name",
                     format!(
-                        "多个实体共享同名 '{}'，可能导致 Entity Linking 歧义: {:?}",
+                        "多个{kind}实体共享同名 '{}'，Entity Linking 无法区分（提及将被丢弃）: {:?}",
                         name,
                         entities.iter().map(|e| e.as_str()).collect::<Vec<_>>()
                     ),
@@ -1206,6 +1207,82 @@ mod tests {
         }));
         let codes = run_rule(&OrphanAssertion, &ir, None, Some(&kb));
         assert!(codes.is_empty(), "存在的实体不应报孤儿");
+    }
+
+    // ========================================================================
+    // DuplicateSymbol — 同名检测
+    // ========================================================================
+
+    #[test]
+    fn duplicate_symbol_warns_same_kind() {
+        // 两个角色同名 → 真冲突，报警
+        use story_ir::{semantic::CharacterNode, SemanticNode};
+        let mut ir = StoryIR::new();
+        for id in ["c_001", "c_002"] {
+            ir.semantic.insert(SemanticNode::Character(CharacterNode {
+                id: StableId::new_unchecked(id),
+                symbol: None,
+                display_name: "林风".to_string(),
+                aliases: vec![],
+                attributes: Default::default(),
+            }));
+        }
+        let codes = run_rule(&DuplicateSymbol, &ir, None, None);
+        assert_eq!(codes, vec!["duplicate_display_name"]);
+    }
+
+    #[test]
+    fn duplicate_symbol_allows_cross_kind_same_name() {
+        // 「星辰学院」既是地点也是机构：合法双面实体，不报警
+        use story_ir::{semantic::LocationNode, OrganizationNode, SemanticNode};
+        let mut ir = StoryIR::new();
+        ir.semantic.insert(SemanticNode::Location(LocationNode {
+            id: StableId::new_unchecked("l_001"),
+            symbol: None,
+            display_name: "星辰学院".to_string(),
+            aliases: vec![],
+            parent: None,
+            kind: None,
+            position: None,
+        }));
+        ir.semantic.insert(SemanticNode::Organization(OrganizationNode {
+            id: StableId::new_unchecked("o_001"),
+            symbol: None,
+            display_name: "星辰学院".to_string(),
+            aliases: vec![],
+            location: None,
+            attributes: Default::default(),
+        }));
+        let codes = run_rule(&DuplicateSymbol, &ir, None, None);
+        assert!(codes.is_empty(), "跨类型同名是合法双面实体，不应报警，实际: {codes:?}");
+    }
+
+    #[test]
+    fn duplicate_symbol_warns_when_same_kind_exists_alongside_cross_kind() {
+        // 两个地点同名 + 一个同名机构 → 地点组仍要报警
+        use story_ir::{semantic::LocationNode, OrganizationNode, SemanticNode};
+        let mut ir = StoryIR::new();
+        for id in ["l_001", "l_002"] {
+            ir.semantic.insert(SemanticNode::Location(LocationNode {
+                id: StableId::new_unchecked(id),
+                symbol: None,
+                display_name: "星辰学院".to_string(),
+                aliases: vec![],
+                parent: None,
+                kind: None,
+                position: None,
+            }));
+        }
+        ir.semantic.insert(SemanticNode::Organization(OrganizationNode {
+            id: StableId::new_unchecked("o_001"),
+            symbol: None,
+            display_name: "星辰学院".to_string(),
+            aliases: vec![],
+            location: None,
+            attributes: Default::default(),
+        }));
+        let codes = run_rule(&DuplicateSymbol, &ir, None, None);
+        assert_eq!(codes, vec!["duplicate_display_name"]);
     }
 
     // ========================================================================

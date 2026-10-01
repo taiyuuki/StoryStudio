@@ -3,7 +3,7 @@
 【书的主线】{{premise}}
 {{head}}{{existing}}【主要角色】{{characters}}
 【叙事线索】{{threads}}
-
+{{places}}
 接下来是第 {{next_index}} 章起，请排 {{count}} 章的脉络。若最后一卷已排超过 12 章，请在 volumes 里给出下一卷；否则 volumes 留空数组。
 只输出一个 JSON 对象（字符串内的引号用「」），字段：
 - volumes：[{name, order, theme, summary}] 新增卷（order 接续现有最大卷号）

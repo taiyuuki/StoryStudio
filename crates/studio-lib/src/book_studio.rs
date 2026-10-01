@@ -779,6 +779,7 @@ pub fn ai_book_outline_batch(
 }
 
 /// 续排上下文（独立出来便于测试）
+#[derive(Debug, Clone)]
 pub(crate) struct OutlineContext {
     pub premise: String,
     pub genre: Option<String>,
@@ -787,6 +788,10 @@ pub(crate) struct OutlineContext {
     pub audience: Option<String>,
     pub chapter_words: Option<u64>,
     pub character_names: Vec<String>,
+    /// 地点实体（名称, 类型, 上级名）——大纲必须严格沿用这些名称
+    pub locations: Vec<(String, String, String)>,
+    /// 势力实体（名称, 类型）
+    pub organizations: Vec<(String, String)>,
     pub thread_titles: Vec<String>,
     /// 已有卷（name, order, 已排章数）
     pub volumes: Vec<(String, u32, usize)>,
@@ -806,22 +811,44 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
     )
     .map_err(|e| StudioError::Config(format!("outline.toml 解析失败: {e}")))?;
 
-    // 主要角色名
-    let mut character_names = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(paths.characters_dir()) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("toml") {
-                continue;
-            }
-            if let Ok(c) = std::fs::read_to_string(&p) {
-                if let Ok(entity) = story_project_format::EntityFile::from_toml_str(&c) {
-                    character_names.push(entity.display_name);
-                }
-            }
-        }
-    }
+    // 主要角色名 / 地点 / 势力：大纲与正文只能沿用这些已建档名称
+    let mut character_names: Vec<String> = read_entities(&paths.characters_dir())
+        .into_iter()
+        .map(|e| e.display_name)
+        .collect();
     character_names.sort();
+
+    // 地点（上级存的是 StableId，第二遍换算回名称，便于模型理解层级）
+    let loc_entities = read_entities(&paths.locations_dir());
+    let loc_names: std::collections::HashMap<String, String> = loc_entities
+        .iter()
+        .map(|e| (e.id.clone(), e.display_name.clone()))
+        .collect();
+    let locations = loc_entities
+        .into_iter()
+        .map(|e| {
+            let geo = e.geography.unwrap_or_default();
+            let parent = geo
+                .parent
+                .as_deref()
+                .and_then(|id| loc_names.get(id))
+                .cloned()
+                .unwrap_or_default();
+            (e.display_name, geo.kind.unwrap_or_default(), parent)
+        })
+        .collect();
+
+    let organizations = read_entities(&paths.organizations_dir())
+        .into_iter()
+        .map(|e| {
+            let kind = e
+                .org
+                .as_ref()
+                .and_then(|o| o.kind.clone())
+                .unwrap_or_default();
+            (e.display_name, kind)
+        })
+        .collect();
 
     // 线索标题
     let thread_titles: Vec<String> = std::fs::read_to_string(paths.threads_toml())
@@ -887,12 +914,37 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
         audience: outline.story.audience.clone(),
         chapter_words: outline.story.chapter_words,
         character_names,
+        locations,
+        organizations,
         thread_titles,
         volumes,
         recent_chapters,
         completed_summaries,
         existing_chapters: chapters_file.chapters.len(),
     })
+}
+
+/// 读取实体目录下全部 TOML 实体（按文件名排序 = 建档顺序，目录缺失返回空）
+fn read_entities(dir: &Path) -> Vec<story_project_format::EntityFile> {
+    use std::path::PathBuf;
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("toml"))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|p| {
+            std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|c| story_project_format::EntityFile::from_toml_str(&c).ok())
+        })
+        .collect()
 }
 
 fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
@@ -949,6 +1001,7 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
     } else {
         ctx.thread_titles.join("、")
     };
+    let places = render_entity_lists(&ctx.locations, &ctx.organizations);
 
     crate::prompts::render(
         crate::prompts::BOOK_OUTLINE,
@@ -958,10 +1011,59 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
             ("existing", &existing),
             ("characters", &characters),
             ("threads", &threads),
+            ("places", &places),
             ("next_index", &next_index.to_string()),
             ("count", &count.to_string()),
         ],
     )
+}
+
+fn location_kind_zh(kind: &str) -> &str {
+    match kind {
+        "continent" => "大陆",
+        "nation" => "国家",
+        "city" => "城市",
+        "realm" => "秘境",
+        "landform" => "地形",
+        _ => "地点",
+    }
+}
+
+fn org_kind_zh(kind: &str) -> &str {
+    match kind {
+        "sect" => "门派",
+        "nation" => "国家",
+        "clan" => "家族",
+        "guild" => "行会",
+        "organization" => "组织",
+        _ => "势力",
+    }
+}
+
+/// 已建档地点/势力清单 + 命名一致性硬约束（尚无实体时输出空串，不占上下文）
+fn render_entity_lists(
+    locations: &[(String, String, String)],
+    organizations: &[(String, String)],
+) -> String {
+    if locations.is_empty() && organizations.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("\n【已建档的地点与势力】\n");
+    for (name, kind, parent) in locations {
+        let kind = location_kind_zh(kind);
+        if parent.is_empty() {
+            s.push_str(&format!("- {name}（{kind}）\n"));
+        } else {
+            s.push_str(&format!("- {name}（{kind}，属{parent}）\n"));
+        }
+    }
+    for (name, kind) in organizations {
+        s.push_str(&format!("- {name}（{}）\n", org_kind_zh(kind)));
+    }
+    s.push_str(
+        "\n【命名一致性（硬性要求）】上面清单与【主要角色】是全书唯一权威命名：summary、goal、beats、hook 里出现的地点、势力、人名必须与之逐字一致；禁止发明清单外的专名，也禁止给既有实体另起同义名（如把「长明镇」写成「明灯镇」、把「奥朗王都」写成「鲁恩」）。主线里提到但清单没有的地名，以清单为准；剧情确需新地点或新势力时只用泛称（如「边境小镇」「北地商队」），不要起专名。chapters 的 characters 字段只填【主要角色】清单内的名字。\n",
+    );
+    s
 }
 
 fn parse_outline_draft(v: &serde_json::Value, target: usize) -> OutlineBatchDraft {
@@ -1511,7 +1613,7 @@ mod tests {
         file.chapters[0].status = "completed".into();
         std::fs::write(paths.chapters_toml(), file.to_toml_string().unwrap()).unwrap();
 
-        // 增量上下文：含已完成梗概、最近脉络、卷结构、角色名
+        // 增量上下文：含已完成梗概、最近脉络、卷结构、角色名、地点与势力
         let ctx = outline_context(root).unwrap();
         assert_eq!(ctx.existing_chapters, 3);
         assert!(ctx
@@ -1521,6 +1623,21 @@ mod tests {
         assert!(ctx.recent_chapters.last().unwrap().0.contains("灯渣"));
         assert!(ctx.volumes[0].0.contains("灯下"));
         assert!(ctx.character_names.contains(&"阿澈".to_string()));
+        // 地点：名称/类型/上级（parent 由 StableId 换算回名称）
+        assert!(ctx.locations.iter().any(|(n, k, _)| n == "云隐洲" && k == "continent"));
+        assert!(ctx
+            .locations
+            .iter()
+            .any(|(n, _, p)| n == "长明镇" && p == "云隐洲"));
+        assert!(ctx
+            .organizations
+            .iter()
+            .any(|(n, k)| n == "守灯阁" && k == "sect"));
+        // 大纲 prompt 必须带清单与硬约束，防止另起地名
+        let prompt = outline_prompt(&ctx, 3);
+        assert!(prompt.contains("【已建档的地点与势力】"));
+        assert!(prompt.contains("长明镇（城市，属云隐洲）"));
+        assert!(prompt.contains("命名一致性"));
 
         // 第二批：追加 1 章 + 新卷（order=2）
         let draft2 = ai_book_outline_batch(root, 1, scripted(vec![OUTLINE_BATCH2_JSON.into()]))
@@ -1614,6 +1731,11 @@ mod tests {
             audience: None,
             chapter_words: None,
             character_names: vec!["阿澈".into()],
+            locations: vec![
+                ("云隐洲".into(), "continent".into(), String::new()),
+                ("长明镇".into(), "city".into(), "云隐洲".into()),
+            ],
+            organizations: vec![("守灯阁".into(), "sect".into())],
             thread_titles: vec![],
             volumes: vec![("第一卷".into(), 1, 3)],
             recent_chapters: vec![],
@@ -1625,6 +1747,18 @@ mod tests {
         assert!(op.contains("【主要角色】阿澈"));
         assert!(op.contains("【叙事线索】（尚未建线索）"));
         assert!(op.contains("已排 3 章"));
+        // 已建档清单 + 命名一致性硬约束
+        assert!(op.contains("【已建档的地点与势力】"));
+        assert!(op.contains("- 云隐洲（大陆）"));
+        assert!(op.contains("- 长明镇（城市，属云隐洲）"));
+        assert!(op.contains("- 守灯阁（门派）"));
+        assert!(op.contains("【命名一致性（硬性要求）】"));
+
+        // 尚无实体时不输出清单与约束块（早期打开、未建设定的项目）
+        let mut bare = ctx.clone();
+        bare.locations = Vec::new();
+        bare.organizations = Vec::new();
+        assert!(!outline_prompt(&bare, 5).contains("命名一致性"));
     }
 
     #[test]

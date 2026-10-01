@@ -18,6 +18,9 @@ use story_ir::{SemanticGraph, StableId};
 pub struct EntityDictionary {
     /// 词条 → 匹配的实体 ID 列表
     entries: BTreeMap<String, Vec<StableId>>,
+    /// 实体类型（id → type_name），用于区分「双面实体」与真歧义
+    #[serde(default)]
+    kinds: BTreeMap<StableId, String>,
 }
 
 
@@ -73,6 +76,9 @@ impl EntityDictionary {
         let mut dict = Self::new();
 
         for entity in graph.all_entities() {
+            dict.kinds
+                .insert(entity.id().clone(), entity.type_name().to_string());
+
             // display_name 入典
             dict.add(entity.display_name(), entity.id().clone());
 
@@ -116,6 +122,21 @@ impl EntityDictionary {
     /// 是否有歧义（一词多义）
     pub fn is_ambiguous(&self, text: &str) -> bool {
         self.entries.get(text).is_some_and(|v| v.len() > 1)
+    }
+
+    /// 词条命中的实体是否两两类型不同。
+    ///
+    /// 同名不同类型的「双面实体」（如「星辰学院」既是地点也是机构）
+    /// 不是歧义：名称真实指向每一面，各记一条提及。类型未知（旧缓存
+    /// 反序列化）时按不互异处理，退回原歧义行为。
+    fn all_kinds_distinct(&self, entities: &[StableId]) -> bool {
+        let mut kinds: Vec<&str> = entities
+            .iter()
+            .map(|id| self.kinds.get(id).map(String::as_str).unwrap_or(""))
+            .collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        entities.len() == kinds.len() && !kinds.first().is_some_and(|k| k.is_empty())
     }
 
     /// 所有词条
@@ -191,16 +212,20 @@ pub fn link_in_text(
     for (start, end, matched_text) in resolved {
         let entities = dict.lookup(matched_text);
 
-        if entities.len() > 1 {
-            // 歧义：记录但不生成 mention
+        if entities.len() > 1 && !dict.all_kinds_distinct(entities) {
+            // 歧义：同类型内撞名（如两个角色共享「那个人」），记录但不生成 mention
             ambiguities.push(matched_text.to_string());
-        } else if let Some(entity) = entities.first() {
-            mentions.push(Mention {
-                entity: entity.clone(),
-                start,
-                end,
-                matched_text: matched_text.to_string(),
-            });
+        } else {
+            // 单实体命中；或同名「双面实体」（如「星辰学院」既是地点也是
+            // 机构）——名称同时指向每一面，各记一条提及，出场统计两不误
+            for entity in entities {
+                mentions.push(Mention {
+                    entity: entity.clone(),
+                    start,
+                    end,
+                    matched_text: matched_text.to_string(),
+                });
+            }
         }
     }
 
@@ -321,6 +346,82 @@ mod tests {
 
         assert!(mentions.is_empty()); // 歧义不生成 mention
         assert_eq!(ambiguities, vec!["那个人".to_string()]);
+    }
+
+    /// 「星辰学院」既是地点也是机构：同名不同类型是合法的双面实体，
+    /// 正文提及各记一条，不报歧义
+    #[test]
+    fn link_cross_kind_same_name_dual_facet() {
+        let mut graph = SemanticGraph::new();
+        graph.insert(story_ir::SemanticNode::Location(
+            story_ir::LocationNode {
+                id: StableId::new_unchecked("l_001"),
+                symbol: None,
+                display_name: "星辰学院".to_string(),
+                aliases: vec![],
+                parent: None,
+                kind: None,
+                position: None,
+            },
+        ));
+        graph.insert(story_ir::SemanticNode::Organization(
+            story_ir::OrganizationNode {
+                id: StableId::new_unchecked("o_001"),
+                symbol: None,
+                display_name: "星辰学院".to_string(),
+                aliases: vec![],
+                location: None,
+                attributes: Default::default(),
+            },
+        ));
+        let dict = EntityDictionary::from_semantic_graph(&graph);
+        assert!(dict.all_kinds_distinct(dict.lookup("星辰学院")));
+
+        let automaton = dict.build_automaton().unwrap();
+        let (mentions, ambiguities) = link_in_text("他走进了星辰学院。", &dict, &automaton);
+        assert_eq!(mentions.len(), 2, "双面实体应各记一条提及");
+        assert!(mentions
+            .iter()
+            .any(|m| m.entity == StableId::new_unchecked("l_001")));
+        assert!(mentions
+            .iter()
+            .any(|m| m.entity == StableId::new_unchecked("o_001")));
+        assert!(ambiguities.is_empty());
+    }
+
+    /// 两个地点同名（外加同名机构）→ 同类型内撞名才是真歧义，提及丢弃
+    #[test]
+    fn link_same_kind_duplicate_still_ambiguous() {
+        let mut graph = SemanticGraph::new();
+        for id in ["l_001", "l_002"] {
+            graph.insert(story_ir::SemanticNode::Location(
+                story_ir::LocationNode {
+                    id: StableId::new_unchecked(id),
+                    symbol: None,
+                    display_name: "星辰学院".to_string(),
+                    aliases: vec![],
+                    parent: None,
+                    kind: None,
+                    position: None,
+                },
+            ));
+        }
+        graph.insert(story_ir::SemanticNode::Organization(
+            story_ir::OrganizationNode {
+                id: StableId::new_unchecked("o_001"),
+                symbol: None,
+                display_name: "星辰学院".to_string(),
+                aliases: vec![],
+                location: None,
+                attributes: Default::default(),
+            },
+        ));
+        let dict = EntityDictionary::from_semantic_graph(&graph);
+        let automaton = dict.build_automaton().unwrap();
+
+        let (mentions, ambiguities) = link_in_text("他走进了星辰学院。", &dict, &automaton);
+        assert!(mentions.is_empty(), "同类型撞名不应生成提及");
+        assert_eq!(ambiguities, vec!["星辰学院".to_string()]);
     }
 
     #[test]

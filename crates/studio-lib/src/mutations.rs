@@ -487,6 +487,16 @@ impl EntityKind {
         }
     }
 
+    /// 实体类型中文名（提示与错误文案用）
+    pub fn type_name_zh(&self) -> &'static str {
+        match self {
+            EntityKind::Character => "角色",
+            EntityKind::Location => "地点",
+            EntityKind::Item => "道具",
+            EntityKind::Organization => "组织",
+        }
+    }
+
     pub fn from_type_str(s: &str) -> Result<Self, StudioError> {
         match s {
             "characters" | "character" => Ok(EntityKind::Character),
