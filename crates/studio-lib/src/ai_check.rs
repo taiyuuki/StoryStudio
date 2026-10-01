@@ -50,6 +50,9 @@ pub struct AiCheckItem {
     /// 批量检测（场景/章节级）时命中所在的片段；单片段检测为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fragment_id: Option<String>,
+    /// 片段归属是否为推测（引文未能匹配回原文，归到块内首片段时 true）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fragment_uncertain: bool,
 }
 
 /// AI 检测报告
@@ -251,7 +254,7 @@ fn scope_fragments(
 }
 
 /// 场景/章节级批量检测：聚合正文按片段边界分块，逐块调 LLM，
-/// 命中项按 quote 回查片段归属（查不到时归到块内首片段）。
+/// 命中项按 quote 回查片段归属（精确→归一化→LCS 模糊，全落空才归块内首片段并标记推测）。
 /// 结果（含失败）计入 AI 台账，token 为各块之和。
 pub fn check_scope(
     dir: &Path,
@@ -283,6 +286,76 @@ pub fn check_scope(
         ),
     }
     result
+}
+
+/// 引文 → 块内片段归属，返回 (bodies 下标, 是否推测)。
+///
+/// LLM 的引文不总忠实于原文（省略、改标点、跨段落拼接），精确 contains
+/// 失配时依次降级：去空白归一化匹配 → 最长公共子串评分（连续一致部分
+/// 覆盖引文 ≥60% 才采信）；全部落空才归块内首片段并标记 uncertain，
+/// 让调用方提示「归属为推测」，避免错标块首片段被当真。
+fn attribute_quote(chunk: &[usize], bodies: &[(String, String)], quote: &str) -> (usize, bool) {
+    if !quote.is_empty() {
+        // 1. 精确子串：正文原样包含引文
+        if let Some(&i) = chunk.iter().find(|&&i| bodies[i].1.contains(quote)) {
+            return (i, false);
+        }
+        let nq = normalize_ws(quote);
+        let nq_len = nq.chars().count();
+        // 2. 去空白匹配：引文把跨段落的文字拼成一句、或换行差异；太短易误命中
+        if nq_len >= 6 {
+            if let Some(&i) = chunk
+                .iter()
+                .find(|&&i| normalize_ws(&bodies[i].1).contains(&nq))
+            {
+                return (i, false);
+            }
+        }
+        // 3. 模糊评分：与某片段的最长公共子串覆盖引文 ≥60% 即归它（并列取阅读序更早的）
+        if nq_len >= 8 {
+            let mut best: Option<(usize, usize)> = None;
+            for &i in chunk {
+                let score = lcs_substring_len(&nq, &normalize_ws(&bodies[i].1));
+                if score * 10 >= nq_len * 6 && best.map_or(true, |(_, b)| score > b) {
+                    best = Some((i, score));
+                }
+            }
+            if let Some((i, _)) = best {
+                return (i, false);
+            }
+        }
+    }
+    (*chunk.first().expect("检测块非空"), true)
+}
+
+/// 去除全部空白字符（空格、换行、制表、全角空格）
+fn normalize_ws(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// 最长公共子串（连续）长度，滚动数组 DP。
+/// 引文（几十~两百字）对片段正文（≤6000 字）开销可忽略。
+fn lcs_substring_len(a: &str, b: &str) -> usize {
+    let (short, long) = if a.chars().count() <= b.chars().count() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let long_chars: Vec<char> = long.chars().collect();
+    let mut prev = vec![0usize; long_chars.len() + 1];
+    let mut curr = vec![0usize; long_chars.len() + 1];
+    let mut best = 0usize;
+    for sc in short.chars() {
+        for (j, &lc) in long_chars.iter().enumerate() {
+            let v = if sc == lc { prev[j] + 1 } else { 0 };
+            curr[j + 1] = v;
+            if v > best {
+                best = v;
+            }
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    best
 }
 
 fn check_scope_inner(
@@ -356,12 +429,9 @@ fn check_scope_inner(
             }
             chunk_hits += 1;
             // 归因：quote 出现在哪个片段
-            let owner = chunk
-                .iter()
-                .find(|&&i| !item.quote.is_empty() && bodies[i].1.contains(&item.quote))
-                .copied()
-                .unwrap_or(chunk[0]);
+            let (owner, uncertain) = attribute_quote(chunk, &bodies, &item.quote);
             item.fragment_id = Some(bodies[owner].0.clone());
+            item.fragment_uncertain = uncertain;
             if let Some(hit) = fragment_hits.iter_mut().find(|(fid, _)| *fid == bodies[owner].0) {
                 hit.1 += 1;
             }
@@ -513,6 +583,7 @@ fn parse_report(raw: &str) -> Vec<AiCheckItem> {
         severity: AiCheckSeverity::Weak,
         explanation: format!("LLM 返回的内容无法解析为 JSON，原始内容：\n\n{raw}"),
         fragment_id: None,
+        fragment_uncertain: false,
     }]
 }
 
@@ -642,6 +713,7 @@ fn loose_extract_items(input: &str) -> Vec<AiCheckItem> {
                 severity: parse_severity(&item.severity),
                 explanation: item.explanation,
                 fragment_id: None,
+                fragment_uncertain: false,
             });
         }
     }
@@ -692,6 +764,7 @@ fn report_to_items(report: LlmReport) -> Vec<AiCheckItem> {
             severity: parse_severity(&item.severity),
             explanation: item.explanation,
             fragment_id: None,
+            fragment_uncertain: false,
         })
         .collect()
 }
@@ -893,14 +966,73 @@ mod tests {
         assert_eq!(report.scope, "chapter");
         assert_eq!(report.hit_count(), 1);
 
-        // quote 出现在 f2 → 归因到 f2
+        // quote 出现在 f2 → 归因到 f2（精确命中，非推测）
         assert_eq!(report.items[0].fragment_id.as_deref(), Some(fids[1].as_str()));
+        assert!(!report.items[0].fragment_uncertain);
 
         // 覆盖两个片段，命中分布正确
         assert_eq!(report.fragment_hits.len(), 2);
         assert_eq!(report.fragment_hits[0], (fids[0].clone(), 0));
         assert_eq!(report.fragment_hits[1], (fids[1].clone(), 1));
         assert_eq!(report.summary, "整体尚可。");
+    }
+
+    /// 用户真实案例：LLM 改写了引文（「没有名字」写成「没有影子」），
+    /// 精确 contains 失配。旧行为兜底归到块首片段 f1，应改为 LCS 模糊归到 f2。
+    #[test]
+    fn check_scope_paraphrased_quote_attributed_by_lcs() {
+        let (tmp, ch, _sc, fids) = setup_scope_project();
+        let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
+            response: r#"{"items":[{"quote":"第二段正文，情绪没有影子。","feature_id":"3","feature_name":"匀速排比","severity":"Medium","explanation":"引文被轻微改写。"}],"summary":"整体尚可。"}"#.to_string(),
+        });
+
+        let report = check_scope(tmp.path(), CheckScope::Chapter, &ch, &provider).unwrap();
+        assert_eq!(
+            report.items[0].fragment_id.as_deref(),
+            Some(fids[1].as_str()),
+            "改写引文应按最长公共子串归到 f2，而不是兜底块首 f1"
+        );
+        assert!(!report.items[0].fragment_uncertain);
+        assert_eq!(report.fragment_hits[1], (fids[1].clone(), 1));
+    }
+
+    /// 引文把片段内跨段落的文字拼成一句（去掉换行），归一化后应精确命中。
+    #[test]
+    fn check_scope_joined_quote_attributed_after_whitespace_folding() {
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "t").unwrap();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let f1 = crate::mutations::create_fragment(&paths, &sc, "第一段正文，字字如金。").unwrap();
+        let f2 = crate::mutations::create_fragment(&paths, &sc, "他停了很久。\n\n她说不出话。").unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
+            response: r#"{"items":[{"quote":"他停了很久。她说不出话。","feature_id":"13","feature_name":"段段金句","severity":"Weak","explanation":"拼接了两个段落。"}],"summary":"整体尚可。"}"#.to_string(),
+        });
+
+        let report = check_scope(tmp.path(), CheckScope::Chapter, &ch, &provider).unwrap();
+        assert_eq!(
+            report.items[0].fragment_id.as_deref(),
+            Some(f2.as_str()),
+            "去空白后应命中 f2，而不是兜底块首 {f1}"
+        );
+    }
+
+    /// 引文与任何片段都对不上（严重改写或幻觉）：归块首片段，但标记推测。
+    #[test]
+    fn check_scope_unmatchable_quote_marks_uncertain() {
+        let (tmp, ch, _sc, fids) = setup_scope_project();
+        let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
+            response: r#"{"items":[{"quote":"这段话在正文里根本不存在。","feature_id":"B","feature_name":"对话千人一面","severity":"Medium","explanation":"完全对不上。"}],"summary":"整体尚可。"}"#.to_string(),
+        });
+
+        let report = check_scope(tmp.path(), CheckScope::Chapter, &ch, &provider).unwrap();
+        assert_eq!(report.items[0].fragment_id.as_deref(), Some(fids[0].as_str()));
+        assert!(
+            report.items[0].fragment_uncertain,
+            "对不上的引文应标记归属推测"
+        );
     }
 
     #[test]

@@ -103,9 +103,19 @@ async function jumpToFragment(it: AiCheckItemDto) {
           </button>
           <span class="acr-sev" :class="sevMeta(it).cls">{{ sevMeta(it).label }}</span>
           <span class="acr-feature">{{ it.featureName }}</span>
-          <button v-if="it.fragmentId" class="acr-frag num" title="跳到命中位置（必要时切换场景）" @click="jumpToFragment(it)">
+          <button
+            v-if="it.fragmentId"
+            class="acr-frag num"
+            :class="{ 'is-uncertain': it.fragmentUncertain }"
+            :title="
+              it.fragmentUncertain
+                ? '引文未能与原文精确对上，片段归属为就近推测——跳转后请以引文实际所在片段为准'
+                : '跳到命中位置（必要时切换场景）'
+            "
+            @click="jumpToFragment(it)"
+          >
             <i class="fa-solid fa-location-arrow" />
-            {{ it.fragmentId }}
+            {{ it.fragmentId }}{{ it.fragmentUncertain ? '?' : '' }}
           </button>
           <p class="acr-explain">{{ it.explanation }}</p>
           <blockquote class="acr-quote">{{ it.quote }}</blockquote>
@@ -292,6 +302,12 @@ async function jumpToFragment(it: AiCheckItemDto) {
     color: var(--ink-accent);
     border-color: var(--ink-accent);
     background: var(--ink-accent-soft);
+  }
+
+  // 归属推测：引文与原文对不上时的就近兜底，样式弱化提示核对
+  &.is-uncertain {
+    border-style: dashed;
+    color: var(--state-warning);
   }
 }
 

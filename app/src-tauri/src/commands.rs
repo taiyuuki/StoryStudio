@@ -746,6 +746,8 @@ pub struct AiCheckItemDto {
     pub explanation: String,
     /// 命中所在片段（fragment 范围检测时回填为被检片段）
     pub fragment_id: Option<String>,
+    /// 片段归属是否为推测（引文未能匹配回原文，归到块内首片段时 true）
+    pub fragment_uncertain: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -779,6 +781,7 @@ pub async fn ai_check(root: String, scope: String, id: String) -> R<AiCheckResul
                     severity: format!("{:?}", it.severity),
                     explanation: it.explanation.clone(),
                     fragment_id: it.fragment_id.clone().or_else(|| fallback_fid.map(str::to_string)),
+                    fragment_uncertain: it.fragment_uncertain,
                 })
                 .collect()
         };

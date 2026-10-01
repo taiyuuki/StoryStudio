@@ -33,17 +33,22 @@ const SEVERITY_LABEL: Record<string, string> = {
 /** 勾选的命中项 → 妙笔输入框的改进指令文本（导出供测试） */
 export function buildImprovePrompt(label: string, summary: string, items: AiCheckItemDto[]): string {
   const lines = items.map((it, i) => {
-    const where = it.fragmentId ? `（片段 ${it.fragmentId}）` : ''
+    const where = it.fragmentId
+      ? `（片段 ${it.fragmentId}${it.fragmentUncertain ? '?' : ''}）`
+      : ''
     const sev = SEVERITY_LABEL[it.severity] ?? it.severity
     return `${i + 1}. [${sev}·${it.featureName}]${where}：${it.explanation}\n    原文：「${it.quote}」`
   })
-  return [
+  const hasUncertain = items.some((it) => it.fragmentUncertain)
+  const head = [
     `我对「${label}」跑了一次 AI 味检测，共 ${items.length} 处命中。总体：${summary}`,
     '',
     '请逐条改进：直接用工具修改对应片段正文，保持情节、事实与人称不变，只消除 AI 味；个别条目若你判断是误伤，说明理由后跳过。',
-    '',
-    ...lines,
-  ].join('\n')
+  ]
+  if (hasUncertain) {
+    head.push('片段 ID 带 ? 的条目是引文与原文对不上的就近推测，请先按引文找到实际片段再改。')
+  }
+  return [...head, '', ...lines].join('\n')
 }
 
 /**

@@ -23,6 +23,7 @@ const items: AiCheckItemDto[] = [
     severity: 'Strong',
     explanation: '环境描写堆叠四字词。',
     fragmentId: 'f_0004',
+    fragmentUncertain: false,
   },
   {
     quote: '他知道，这一切终将过去。',
@@ -30,6 +31,7 @@ const items: AiCheckItemDto[] = [
     featureName: '格言式收束',
     severity: 'Medium',
     explanation: '段落结尾拔高说理。',
+    fragmentUncertain: false,
   },
 ]
 
@@ -48,6 +50,16 @@ describe('buildImprovePrompt', () => {
     expect(out).toContain('「夜色如墨，万籁俱寂。」')
     // 无片段归属的条目不带片段标注
     expect(out).not.toContain('（片段 f_0005）')
+  })
+
+  it('归属推测的条目片段带 ? 并附核对提示', () => {
+    const uncertain: AiCheckItemDto = { ...items[0], fragmentId: 'f_000D', fragmentUncertain: true }
+    const out = buildImprovePrompt('场景', '概括。', [uncertain, items[1]])
+    expect(out).toContain('（片段 f_000D?）')
+    expect(out).toContain('就近推测')
+    // 全部确定归属时不出现该提示
+    const clean = buildImprovePrompt('场景', '概括。', items)
+    expect(clean).not.toContain('就近推测')
   })
 
   it('给出改进约束（保持情节、误伤可跳过）', () => {

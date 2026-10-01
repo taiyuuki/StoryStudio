@@ -332,6 +332,8 @@ export interface AiCheckItemDto {
   explanation: string
   /** 命中所在片段（单片段检测时为被检片段） */
   fragmentId?: string
+  /** 片段归属是否为推测（引文未能匹配回原文时 true，跳转/改进前建议先核对） */
+  fragmentUncertain: boolean
 }
 
 export interface AiCheckResultDto {

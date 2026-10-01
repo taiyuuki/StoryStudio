@@ -181,7 +181,12 @@ fn format_batch_report_for_llm(report: &ai_check::AiCheckBatchReport) -> String 
             AiCheckSeverity::Medium => "⚠️中信号",
             AiCheckSeverity::Weak => "💡弱信号",
         };
-        let fid = item.fragment_id.as_deref().unwrap_or("?");
+        // 带 ? 表示引文未能匹配回原文、归属为就近推测，以引文实际所在片段为准
+        let fid = match item.fragment_id.as_deref() {
+            None => "?".to_string(),
+            Some(f) if item.fragment_uncertain => format!("{f}?"),
+            Some(f) => f.to_string(),
+        };
         let quote_display = if item.quote.is_empty() {
             "（无原文引用）"
         } else {
