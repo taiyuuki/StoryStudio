@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -27,6 +27,18 @@ function checkScene() {
 
 const povName = computed(() =>
   scene.value?.pov ? store.entityName(scene.value.pov) : '',
+)
+
+// 切换场景（左树点击、妙笔跳转等）后纸面回到顶部，不沿用上一个场景的滚动位置
+const paperScrollEl = useTemplateRef<HTMLElement>('paperScroll')
+
+watch(
+  () => scene.value?.id,
+  () => {
+    void nextTick(() => {
+      if (paperScrollEl.value) paperScrollEl.value.scrollTop = 0
+    })
+  },
 )
 
 async function updateTitle(value: string) {
@@ -123,7 +135,7 @@ async function saveSummary() {
         </div>
       </div>
 
-      <div class="paper-scroll">
+      <div ref="paperScroll" class="paper-scroll">
         <div class="paper">
           <header class="paper-head">
             <div class="paper-chapter seal-font">{{ scene.chapterTitle }}</div>
