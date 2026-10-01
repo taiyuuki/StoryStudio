@@ -789,7 +789,8 @@ pub(crate) struct OutlineContext {
     pub style: Option<String>,
     pub audience: Option<String>,
     pub chapter_words: Option<u64>,
-    pub character_names: Vec<String>,
+    /// 角色档案（名字, 职业摘要）——大纲必须与身份一致，防止张冠李戴
+    pub characters: Vec<(String, String)>,
     /// 地点实体（名称, 类型, 上级名）——大纲必须严格沿用这些名称
     pub locations: Vec<(String, String, String)>,
     /// 势力实体（名称, 类型）
@@ -813,12 +814,19 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
     )
     .map_err(|e| StudioError::Config(format!("outline.toml 解析失败: {e}")))?;
 
-    // 主要角色名 / 地点 / 势力：大纲与正文只能沿用这些已建档名称
-    let mut character_names: Vec<String> = read_entities(&paths.characters_dir())
+    // 主要角色（带职业摘要）/ 地点 / 势力：大纲与正文只能沿用这些已建档名称与身份
+    let mut characters: Vec<(String, String)> = read_entities(&paths.characters_dir())
         .into_iter()
-        .map(|e| e.display_name)
+        .map(|e| {
+            let occupation = e
+                .profile
+                .as_ref()
+                .and_then(|p| p.occupation.clone())
+                .unwrap_or_default();
+            (e.display_name, truncate_chars(&occupation, 20))
+        })
         .collect();
-    character_names.sort();
+    characters.sort_by(|a, b| a.0.cmp(&b.0));
 
     // 地点（上级存的是 StableId，第二遍换算回名称，便于模型理解层级）
     let loc_entities = read_entities(&paths.locations_dir());
@@ -915,7 +923,7 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
         style: outline.story.style.clone(),
         audience: outline.story.audience.clone(),
         chapter_words: outline.story.chapter_words,
-        character_names,
+        characters,
         locations,
         organizations,
         thread_titles,
@@ -993,17 +1001,27 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
         }
     }
     let next_index = ctx.existing_chapters + 1;
-    let characters = if ctx.character_names.is_empty() {
+    let characters = if ctx.characters.is_empty() {
         "（尚未建角色）".to_string()
     } else {
-        ctx.character_names.join("、")
+        ctx.characters
+            .iter()
+            .map(|(name, occupation)| {
+                if occupation.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name}（{occupation}）")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("、")
     };
     let threads = if ctx.thread_titles.is_empty() {
         "（尚未建线索）".to_string()
     } else {
         ctx.thread_titles.join("、")
     };
-    let places = render_entity_lists(&ctx.locations, &ctx.organizations);
+    let entities = render_entity_lists(&ctx.characters, &ctx.locations, &ctx.organizations);
 
     crate::prompts::render(
         crate::prompts::BOOK_OUTLINE,
@@ -1013,7 +1031,7 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
             ("existing", &existing),
             ("characters", &characters),
             ("threads", &threads),
-            ("places", &places),
+            ("entities", &entities),
             ("next_index", &next_index.to_string()),
             ("count", &count.to_string()),
         ],
@@ -1059,28 +1077,32 @@ fn org_kind_zh(kind: &str) -> &str {
     }
 }
 
-/// 已建档地点/势力清单 + 命名一致性硬约束（尚无实体时输出空串，不占上下文）
+/// 已建档实体清单 + 一致性硬约束（尚无任何实体时输出空串，不占上下文）
 fn render_entity_lists(
+    characters: &[(String, String)],
     locations: &[(String, String, String)],
     organizations: &[(String, String)],
 ) -> String {
-    if locations.is_empty() && organizations.is_empty() {
+    if characters.is_empty() && locations.is_empty() && organizations.is_empty() {
         return String::new();
     }
-    let mut s = String::from("\n【已建档的地点与势力】\n");
-    for (name, kind, parent) in locations {
-        let kind = location_kind_zh(kind);
-        if parent.is_empty() {
-            s.push_str(&format!("- {name}（{kind}）\n"));
-        } else {
-            s.push_str(&format!("- {name}（{kind}，属{parent}）\n"));
+    let mut s = String::new();
+    if !locations.is_empty() || !organizations.is_empty() {
+        s.push_str("\n【已建档的地点与势力】\n");
+        for (name, kind, parent) in locations {
+            let kind = location_kind_zh(kind);
+            if parent.is_empty() {
+                s.push_str(&format!("- {name}（{kind}）\n"));
+            } else {
+                s.push_str(&format!("- {name}（{kind}，属{parent}）\n"));
+            }
+        }
+        for (name, kind) in organizations {
+            s.push_str(&format!("- {name}（{}）\n", org_kind_zh(kind)));
         }
     }
-    for (name, kind) in organizations {
-        s.push_str(&format!("- {name}（{}）\n", org_kind_zh(kind)));
-    }
     s.push_str(
-        "\n【命名一致性（硬性要求）】上面清单与【主要角色】是全书唯一权威命名：summary、goal、beats、hook 里出现的地点、势力、人名必须与之逐字一致；禁止发明清单外的专名，也禁止给既有实体另起同义名（如把「长明镇」写成「明灯镇」、把「奥朗王都」写成「鲁恩」）。主线里提到但清单没有的地名，以清单为准；剧情确需新地点或新势力时只用泛称（如「边境小镇」「北地商队」），不要起专名。chapters 的 characters 字段只填【主要角色】清单内的名字。\n",
+        "\n【一致性（硬性要求）】角色身份、职位与排行称谓以【主要角色】括注为准，严禁张冠李戴或擅自改写（例：括注为「紫霄圣地掌教」的角色不得写成扫地杂役；谁是大师兄/大师姐按括注身份来，不得随意安在别人头上）。地点、势力、人名的写法必须与上面清单及【主要角色】逐字一致；禁止发明清单外的专名，也禁止给既有实体另起同义名（如把「长明镇」写成「明灯镇」、把「奥朗王都」写成「鲁恩」）。主线里提到但清单没有的名称，以清单和括注为准；剧情确需新地点或新势力时只用泛称（如「边境小镇」「北地商队」），不要起专名。chapters 的 characters 字段只填【主要角色】清单内的名字。\n",
     );
     s
 }
@@ -1632,7 +1654,7 @@ mod tests {
         file.chapters[0].status = "completed".into();
         std::fs::write(paths.chapters_toml(), file.to_toml_string().unwrap()).unwrap();
 
-        // 增量上下文：含已完成梗概、最近脉络、卷结构、角色名、地点与势力
+        // 增量上下文：含已完成梗概、最近脉络、卷结构、角色档案、地点与势力
         let ctx = outline_context(root).unwrap();
         assert_eq!(ctx.existing_chapters, 3);
         assert!(ctx
@@ -1641,7 +1663,11 @@ mod tests {
             .any(|s| s.contains("灯灭之夜")));
         assert!(ctx.recent_chapters.last().unwrap().0.contains("灯渣"));
         assert!(ctx.volumes[0].0.contains("灯下"));
-        assert!(ctx.character_names.contains(&"阿澈".to_string()));
+        // 角色带职业摘要——身份是大纲防张冠李戴的关键上下文
+        assert!(ctx
+            .characters
+            .iter()
+            .any(|(n, o)| n == "阿澈" && o.contains("守灯学徒")));
         // 地点：名称/类型/上级（parent 由 StableId 换算回名称）
         assert!(ctx.locations.iter().any(|(n, k, _)| n == "云隐洲" && k == "continent"));
         assert!(ctx
@@ -1652,11 +1678,12 @@ mod tests {
             .organizations
             .iter()
             .any(|(n, k)| n == "守灯阁" && k == "sect"));
-        // 大纲 prompt 必须带清单与硬约束，防止另起地名
+        // 大纲 prompt 必须带身份括注、实体清单与一致性硬约束
         let prompt = outline_prompt(&ctx, 3);
+        assert!(prompt.contains("阿澈（守灯学徒）"));
         assert!(prompt.contains("【已建档的地点与势力】"));
         assert!(prompt.contains("长明镇（城市，属云隐洲）"));
-        assert!(prompt.contains("命名一致性"));
+        assert!(prompt.contains("张冠李戴"));
 
         // 第二批：追加 1 章 + 新卷（order=2）
         let draft2 = ai_book_outline_batch(root, 1, scripted(vec![OUTLINE_BATCH2_JSON.into()]))
@@ -1749,7 +1776,7 @@ mod tests {
             style: None,
             audience: None,
             chapter_words: None,
-            character_names: vec!["阿澈".into()],
+            characters: vec![("阿澈".into(), "守灯学徒".into())],
             locations: vec![
                 ("云隐洲".into(), "continent".into(), String::new()),
                 ("长明镇".into(), "city".into(), "云隐洲".into()),
@@ -1763,21 +1790,32 @@ mod tests {
         };
         let op = outline_prompt(&ctx, 5);
         assert!(op.contains("第 4 章起，请排 5 章的脉络"));
-        assert!(op.contains("【主要角色】阿澈"));
+        // 角色带身份括注，防止大纲张冠李戴
+        assert!(op.contains("【主要角色（括注为身份，排大纲必须遵守）】阿澈（守灯学徒）"));
         assert!(op.contains("【叙事线索】（尚未建线索）"));
         assert!(op.contains("已排 3 章"));
-        // 已建档清单 + 命名一致性硬约束
+        // 已建档清单 + 一致性硬约束
         assert!(op.contains("【已建档的地点与势力】"));
         assert!(op.contains("- 云隐洲（大陆）"));
         assert!(op.contains("- 长明镇（城市，属云隐洲）"));
         assert!(op.contains("- 守灯阁（门派）"));
-        assert!(op.contains("【命名一致性（硬性要求）】"));
+        assert!(op.contains("【一致性（硬性要求）】"));
+        assert!(op.contains("张冠李戴"));
 
-        // 尚无实体时不输出清单与约束块（早期打开、未建设定的项目）
+        // 只有角色、无地点/势力：清单省略但身份约束仍在
+        let mut chars_only = ctx.clone();
+        chars_only.locations = Vec::new();
+        chars_only.organizations = Vec::new();
+        let cop = outline_prompt(&chars_only, 5);
+        assert!(!cop.contains("【已建档的地点与势力】"));
+        assert!(cop.contains("张冠李戴"));
+
+        // 尚无任何实体时不输出约束块（早期打开、未建设定的项目）
         let mut bare = ctx.clone();
+        bare.characters = Vec::new();
         bare.locations = Vec::new();
         bare.organizations = Vec::new();
-        assert!(!outline_prompt(&bare, 5).contains("命名一致性"));
+        assert!(!outline_prompt(&bare, 5).contains("一致性（硬性要求）"));
     }
 
     #[test]

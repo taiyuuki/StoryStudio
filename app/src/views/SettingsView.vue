@@ -172,6 +172,37 @@ function emptyProfileWithId(): AiProfileDto {
   return p
 }
 
+/** 复刻当前编辑的档案：以编辑中的内容为准（所见即所得），改名换 id 后立即可微调 */
+async function duplicateProfile() {
+  if (!editingId.value) return
+  let extraBody: Record<string, unknown> | null
+  let extraHeaders: Record<string, string> | null
+  try {
+    extraBody = parseJsonField(extraBodyText.value, '私有参数')
+    extraHeaders = parseJsonField(extraHeadersText.value, '自定义请求头') as Record<string, string> | null
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+    return
+  }
+  const clone: AiProfileDto = {
+    ...JSON.parse(JSON.stringify(draft)),
+    extraBody,
+    extraHeaders,
+    timeoutSecs: normTimeout(),
+    maxTokens: normMaxTokens(),
+    lastTest: null,
+  }
+  clone.id = crypto.randomUUID()
+  // 连续复刻不叠「副本 副本」：先剥掉源名尾部的副本标记，再找不重名的编号
+  const base = draft.name.replace(/\s*副本(\s*\d+)?$/, '').trim() || '未命名'
+  const names = new Set(config.value.profiles.map((p) => p.name))
+  clone.name = `${base} 副本`
+  for (let i = 2; names.has(clone.name); i++) clone.name = `${base} 副本 ${i}`
+  config.value.profiles.push(clone)
+  edit(clone)
+  await persist(`已复刻为「${clone.name}」，可微调后保存`)
+}
+
 function pickActive(id: string) {
   config.value.activeProfile = id
   const p = config.value.profiles.find((x) => x.id === id)
@@ -508,6 +539,14 @@ function goBack() {
                 @click="pickActive(editingId)"
               >
                 设为默认
+              </button>
+              <button
+                class="ink-btn ink-btn--sm sv-head-btn"
+                title="以当前档案为底本复制一份新档案，可微调参数后另存"
+                @click="duplicateProfile"
+              >
+                <i class="fa-regular fa-clone" />
+                复刻
               </button>
             </div>
 

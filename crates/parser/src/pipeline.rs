@@ -493,7 +493,7 @@ fn build_semantic_node(file: &EntityFile, id: StableId) -> SemanticNode {
                 display_name,
                 aliases,
                 location: org.and_then(|o| o.location.as_ref().map(StableId::new_unchecked)),
-                attributes: Default::default(),
+                attributes: org_attributes(file),
             });
         }
         "l" => {
@@ -529,8 +529,43 @@ fn build_semantic_node(file: &EntityFile, id: StableId) -> SemanticNode {
         symbol,
         display_name,
         aliases,
-        attributes: Default::default(),
+        attributes: character_attributes(file),
     })
+}
+
+/// 角色档案关键字段平铺进 attributes——正文角色卡与 AI 上下文靠它拿身份信息
+fn character_attributes(file: &EntityFile) -> story_ir::EntityAttributes {
+    let mut attrs = story_ir::EntityAttributes::default();
+    if let Some(p) = &file.profile {
+        let mut put = |k: &str, v: &Option<String>| {
+            if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
+                attrs
+                    .custom
+                    .insert(k.to_string(), story_ir::AttributeValue::String(v.to_string()));
+            }
+        };
+        put("职业", &p.occupation);
+        put("性别", &p.gender);
+        put("性格", &p.personality);
+        put("背景", &p.background);
+        put("种族", &p.race);
+    }
+    attrs
+}
+
+/// 组织关键信息平铺进 attributes
+fn org_attributes(file: &EntityFile) -> story_ir::EntityAttributes {
+    let mut attrs = story_ir::EntityAttributes::default();
+    if let Some(o) = &file.org {
+        for (k, v) in [("类型", &o.kind), ("理念", &o.ideology), ("简介", &o.summary)] {
+            if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
+                attrs
+                    .custom
+                    .insert(k.to_string(), story_ir::AttributeValue::String(v.to_string()));
+            }
+        }
+    }
+    attrs
 }
 
 // ============================================================================
@@ -997,6 +1032,11 @@ race = "human"
             .unwrap();
         assert_eq!(char_node.display_name, "林风");
         assert_eq!(char_node.aliases, vec!["林少侠"]);
+        // [profile] 关键字段平铺进 attributes——正文角色卡靠它拿身份信息
+        assert_eq!(
+            char_node.attributes.custom.get("种族"),
+            Some(&story_ir::AttributeValue::String("human".to_string()))
+        );
 
         // SymbolTable：此测试的 Character 没有 symbol，所以表为空
         assert!(output.ir.symbol_table.is_empty());
