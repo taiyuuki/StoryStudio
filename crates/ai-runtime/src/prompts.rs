@@ -4,13 +4,13 @@
 //! 模板正文里的 JSON/YAML 示例可安全使用单花括号。
 
 /// 写片段（自然语言续写）的 system prompt 基底
-pub(crate) const WRITE_FRAGMENT: &str = include_str!("prompts/write_fragment.md");
+pub const WRITE_FRAGMENT: &str = include_str!("prompts/write_fragment.md");
 
 /// 整章正文生成（逐章流水线）的 system prompt
-pub(crate) const WRITE_CHAPTER: &str = include_str!("prompts/write_chapter.md");
+pub const WRITE_CHAPTER: &str = include_str!("prompts/write_chapter.md");
 
 /// 知识断言抽取的 system prompt（`{{predicates}}` / `{{known_characters}}`）
-pub(crate) const EXTRACT_ASSERTIONS: &str = include_str!("prompts/extract_assertions.md");
+pub const EXTRACT_ASSERTIONS: &str = include_str!("prompts/extract_assertions.md");
 
 /// 用 `{{name}}` 占位符填充模板
 ///

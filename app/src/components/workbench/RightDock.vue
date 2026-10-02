@@ -16,6 +16,7 @@ import GitPanel from './GitPanel.vue'
 import StatsPanel from './StatsPanel.vue'
 import WorldviewPanel from './WorldviewPanel.vue'
 import ChaptersPanel from './ChaptersPanel.vue'
+import PromptsPanel from './PromptsPanel.vue'
 
 const ui = useUiStore()
 const store = useWorkspaceStore()
@@ -59,6 +60,7 @@ const panels = computed(
         },
       ],
       ['git', { label: '版本', icon: 'fa-solid fa-code-branch', comp: GitPanel }],
+      ['prompts', { label: '提示词', icon: 'fa-solid fa-scroll', comp: PromptsPanel }],
       ['export', { label: '导出成书', icon: 'fa-solid fa-file-export', comp: ExportPanel }],
     ]),
 )

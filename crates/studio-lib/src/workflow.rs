@@ -424,7 +424,13 @@ fn run_workflow_inner(
             &partial,
             &rewrite_pause,
         )?;
-        let task = WriteChapterTask { materials };
+        let task = WriteChapterTask {
+            materials,
+            system_template: crate::prompt_custom::resolve_opt(
+                &crate::prompt_custom::WRITE_CHAPTER,
+                Some(dir),
+            ),
+        };
         let ctx = task.build_context(&compile_result.ir);
         let request = GenerateRequest {
             system: ctx.system,

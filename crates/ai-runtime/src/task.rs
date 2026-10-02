@@ -201,6 +201,8 @@ pub struct WriteFragmentTask {
     pub pov_name: Option<String>,
     /// 场景标题
     pub scene_title: Option<String>,
+    /// 项目级提示词覆盖（`None` 用内置模板；由编排层解析后注入）
+    pub system_template: Option<String>,
 }
 
 impl Task for WriteFragmentTask {
@@ -212,7 +214,10 @@ impl Task for WriteFragmentTask {
     }
 
     fn build_context(&self, _ir: &StoryIR) -> TaskContext {
-        let mut system = String::from(crate::prompts::WRITE_FRAGMENT);
+        let mut system = self
+            .system_template
+            .clone()
+            .unwrap_or_else(|| crate::prompts::WRITE_FRAGMENT.to_string());
 
         if let Some(ref pov) = self.pov_name {
             system.push_str(&format!("\n本场景视角：{pov}。"));
@@ -272,6 +277,8 @@ pub struct ChapterMaterials {
 #[derive(Debug, Default)]
 pub struct WriteChapterTask {
     pub materials: ChapterMaterials,
+    /// 项目级提示词覆盖（`None` 用内置模板；由编排层解析后注入）
+    pub system_template: Option<String>,
 }
 
 impl Task for WriteChapterTask {
@@ -284,7 +291,10 @@ impl Task for WriteChapterTask {
 
     fn build_context(&self, _ir: &StoryIR) -> TaskContext {
         let m = &self.materials;
-        let system = String::from(crate::prompts::WRITE_CHAPTER);
+        let system = self
+            .system_template
+            .clone()
+            .unwrap_or_else(|| crate::prompts::WRITE_CHAPTER.to_string());
 
         let mut user = String::new();
         if !m.outline_brief.is_empty() {
@@ -355,6 +365,8 @@ pub struct ExtractAssertionsTask {
     pub known_characters: Vec<String>,
     /// 要抽取的 predicate 类型（如 ["alive", "age"]）
     pub predicates: Vec<String>,
+    /// 项目级提示词覆盖（`None` 用内置模板；由编排层解析后注入）
+    pub system_template: Option<String>,
 }
 
 /// AI 抽取的断言草稿（尚未提交到 KB）
@@ -377,8 +389,12 @@ impl Task for ExtractAssertionsTask {
     }
 
     fn build_context(&self, _ir: &StoryIR) -> TaskContext {
+        let template = self
+            .system_template
+            .as_deref()
+            .unwrap_or(crate::prompts::EXTRACT_ASSERTIONS);
         let system = crate::prompts::render(
-            crate::prompts::EXTRACT_ASSERTIONS,
+            template,
             &[
                 ("predicates", &format!("{:?}", self.predicates)),
                 ("known_characters", &self.known_characters.join("、")),
@@ -475,6 +491,7 @@ mod tests {
             recent_text: "林风推开门。".to_string(),
             pov_name: Some("林风".to_string()),
             scene_title: Some("渡口".to_string()),
+            system_template: None,
         };
 
         let ir = StoryIR::new();
@@ -487,12 +504,42 @@ mod tests {
     }
 
     #[test]
+    fn system_template_overrides_builtin() {
+        // 项目级提示词覆盖注入后应替换内置基底，动态追加段仍保留
+        let task = WriteFragmentTask {
+            scene_id: StableId::new_unchecked("sc_01"),
+            recent_text: String::new(),
+            pov_name: Some("林风".to_string()),
+            scene_title: None,
+            system_template: Some("自定义续写指令".to_string()),
+        };
+        let ctx = task.build_context(&StoryIR::new());
+        assert!(ctx.system.starts_with("自定义续写指令"));
+        assert!(!ctx.system.contains("小说作者"));
+        assert!(ctx.system.contains("本场景视角：林风。"));
+
+        let task = ExtractAssertionsTask {
+            fragment_text: "正文".into(),
+            known_characters: vec!["林风".into()],
+            predicates: vec!["age".into()],
+            system_template: Some(
+                "只抽取这些类型的断言：{{predicates}}\n已知角色：{{known_characters}}".into(),
+            ),
+        };
+        let ctx = task.build_context(&StoryIR::new());
+        assert!(ctx.system.contains("[\"age\"]"));
+        assert!(ctx.system.contains("已知角色：林风"));
+        assert!(!ctx.system.contains("{{"));
+    }
+
+    #[test]
     fn parse_output_with_frontmatter() {
         let task = WriteFragmentTask {
             scene_id: StableId::new_unchecked("sc_01"),
             recent_text: String::new(),
             pov_name: None,
             scene_title: None,
+            system_template: None,
         };
 
         let ai_output = "---\nid: f_999\nanchors:\n  - entity: c_001\n    role: appears\n---\n\n林风走进客栈。\n";
@@ -511,6 +558,7 @@ mod tests {
             recent_text: String::new(),
             pov_name: None,
             scene_title: None,
+            system_template: None,
         };
 
         let drafts = task.parse_output("纯粹的正文文本。").unwrap();
@@ -525,6 +573,7 @@ mod tests {
             fragment_text: "林风今年十七岁。".to_string(),
             known_characters: vec!["林风".to_string()],
             predicates: vec!["alive".to_string(), "age".to_string()],
+            system_template: None,
         };
 
         let ir = StoryIR::new();
@@ -543,6 +592,7 @@ mod tests {
             fragment_text: String::new(),
             known_characters: vec![],
             predicates: vec![],
+            system_template: None,
         };
 
         let ai_output = "好的，以下是从文本中抽取的断言：\n\
@@ -568,6 +618,7 @@ mod tests {
             fragment_text: String::new(),
             known_characters: vec![],
             predicates: vec![],
+            system_template: None,
         };
 
         let drafts = task.parse_assertions("[]").unwrap();
@@ -587,6 +638,7 @@ mod tests {
                 partial_text: "林风踏进客栈。".into(),
                 rewrite_reference: "字数不足，原稿如下（不要照抄）。".into(),
             },
+            system_template: None,
         };
 
         let ctx = task.build_context(&StoryIR::new());
@@ -615,6 +667,7 @@ mod tests {
                 target_words: 10000,
                 ..ChapterMaterials::default()
             },
+            system_template: None,
         };
         let ctx = task.build_context(&StoryIR::new());
         // 目标字数超出下限时按 target×8 伸缩

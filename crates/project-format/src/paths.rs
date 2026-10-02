@@ -89,6 +89,19 @@ impl ProjectPaths {
         self.guides_dir().join(format!("{name}.md"))
     }
 
+    /// 提示词覆盖目录（项目级覆盖内置 AI 提示词用）
+    ///
+    /// 项目可在 `prompts/` 放置同名 `.md` 文件覆盖内置提示词，
+    /// 为本书定制专属的续写 / 妙笔 / 成书等指令模板。
+    pub fn prompts_dir(&self) -> PathBuf {
+        self.root.join("prompts")
+    }
+
+    /// 指定名称的提示词覆盖文件（`prompts/{id}.md`）
+    pub fn prompt_file(&self, id: &str) -> PathBuf {
+        self.prompts_dir().join(format!("{id}.md"))
+    }
+
     // —— 目录 ——
 
     pub fn fragments_dir(&self) -> PathBuf {

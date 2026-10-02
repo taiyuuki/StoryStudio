@@ -110,6 +110,10 @@ pub fn write_fragment(
         recent_text: user_prompt,
         pov_name: pov,
         scene_title: title,
+        system_template: crate::prompt_custom::resolve_opt(
+            &crate::prompt_custom::WRITE_FRAGMENT,
+            Some(dir),
+        ),
     };
 
     // 4. 调用 AI
@@ -200,6 +204,8 @@ pub fn extract_assertions(
         fragment_text: fragment.text.clone(),
         known_characters,
         predicates: predicates.to_vec(),
+        // 输出 YAML 被程序解析，不开放项目级提示词覆盖
+        system_template: None,
     };
 
     // 4. 调用 AI
@@ -289,6 +295,10 @@ pub fn write_fragment_streaming(
         recent_text: user_prompt,
         pov_name: pov,
         scene_title: title,
+        system_template: crate::prompt_custom::resolve_opt(
+            &crate::prompt_custom::WRITE_FRAGMENT,
+            Some(dir),
+        ),
     };
 
     // 4. 构建请求
@@ -416,13 +426,14 @@ fn tail_chars(text: &str, max_chars: usize) -> String {
 
 /// 组装行内补全的 system / user 提示词（纯函数，便于测试）
 fn build_complete_prompt(
+    dir: Option<&Path>,
     pov: Option<&str>,
     scene_title: Option<&str>,
     prev_fragments: &str,
     before: &str,
     after: Option<&str>,
 ) -> (String, String) {
-    let mut system = String::from(crate::prompts::COMPLETE_FRAGMENT);
+    let mut system = crate::prompt_custom::resolve(&crate::prompt_custom::COMPLETE_FRAGMENT, dir);
     if let Some(pov) = pov {
         system.push_str(&format!("\n本场景视角：{pov}。"));
     }
@@ -506,6 +517,7 @@ pub fn complete_fragment_streaming(
 
     // 3. 请求（短输出；思考型模型的 reasoning 计入 max_tokens，见 complete_with_fallback）
     let (system, user) = build_complete_prompt(
+        Some(dir),
         pov.as_deref(),
         scene_title.as_deref(),
         &prev,
@@ -1428,6 +1440,7 @@ mod purpose_tests {
     #[test]
     fn build_complete_prompt_sections() {
         let (system, user) = build_complete_prompt(
+            None,
             Some("林风（林少侠）"),
             Some("渡口"),
             "前一段的正文。",
@@ -1447,11 +1460,12 @@ mod purpose_tests {
 
     #[test]
     fn build_complete_prompt_includes_after_when_present() {
-        let (_, user) = build_complete_prompt(None, None, "", "开头", Some("，后面还有半句。"));
+        let (_, user) =
+            build_complete_prompt(None, None, None, "", "开头", Some("，后面还有半句。"));
         assert!(user.contains("【光标后正文】"));
         assert!(user.contains("，后面还有半句。"));
         // 空白 after 视为没有
-        let (_, user) = build_complete_prompt(None, None, "", "开头", Some("   "));
+        let (_, user) = build_complete_prompt(None, None, None, "", "开头", Some("   "));
         assert!(!user.contains("【光标后正文】"));
     }
 

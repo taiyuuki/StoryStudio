@@ -82,6 +82,10 @@ pub fn run() {
             // 世界观
             commands::get_worldview,
             commands::save_worldview,
+            // 提示词自定义
+            commands::list_prompts,
+            commands::save_prompt,
+            commands::reset_prompt,
             // 章节脉络
             commands::get_chapter_outline,
             commands::save_chapter_outline,

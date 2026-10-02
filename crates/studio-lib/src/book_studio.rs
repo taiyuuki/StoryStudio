@@ -1634,7 +1634,8 @@ mod tests {
         let root = Path::new(&root);
 
         // 先落设定（角色供续排上下文引用）
-        let world = ai_book_world(&concept, &options(), scripted(vec![WORLD_JSON.into()])).unwrap();
+        let world =
+            ai_book_world(&concept, &options(), scripted(vec![WORLD_JSON.into()])).unwrap();
         save_book_world(root, &world).unwrap();
 
         // 第一批：3 章 + 1 卷

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { api } from '@/api/backend'
@@ -10,6 +10,15 @@ const store = useWorkspaceStore()
 const loading = ref(true)
 const saving = ref(false)
 const wv = reactive<WorldviewDto>({ concepts: [], systems: [], eras: [] })
+
+// —— 分栏：概念 / 体系 / 纪元 ——
+type Tab = 'concepts' | 'systems' | 'eras'
+const tabs = computed(() => [
+  { key: 'concepts' as const, label: '概念', icon: 'fa-solid fa-lightbulb', count: wv.concepts.length },
+  { key: 'systems' as const, label: '体系', icon: 'fa-solid fa-bolt', count: wv.systems.length },
+  { key: 'eras' as const, label: '纪元', icon: 'fa-solid fa-hourglass-half', count: wv.eras.length },
+])
+const activeTab = ref<Tab>('concepts')
 
 // —— 基础概念 ——
 const conceptCreating = ref(false)
@@ -198,15 +207,28 @@ function moveEra(i: number, dir: -1 | 1) {
         <span v-if="saving" class="wp-saving"><i class="fa-solid fa-floppy-disk" /> 保存中…</span>
       </p>
 
+      <!-- 分栏 tab -->
+      <div class="wp-tabs">
+        <button
+          v-for="t in tabs"
+          :key="t.key"
+          class="wp-tab"
+          :class="{ 'is-active': activeTab === t.key }"
+          @click="activeTab = t.key"
+        >
+          <i class="fa-solid" :class="t.icon" />
+          {{ t.label }}
+          <span class="num wp-tab-count">{{ t.count }}</span>
+        </button>
+      </div>
+
       <!-- 基础概念 -->
-      <section>
-        <div class="wp-sec">
-          <i class="fa-solid fa-lightbulb" />
-          <span>基础概念</span>
-          <span class="num">{{ wv.concepts.length }}</span>
+      <section v-show="activeTab === 'concepts'">
+        <div class="wp-toolbar">
+          <span class="wp-count-hint num">世界规则、纪元、种族等基本设定</span>
           <span style="flex: 1" />
           <button class="wp-mini-btn" @click="conceptCreating = true">
-            <i class="fa-solid fa-plus" /> 概念
+            <i class="fa-solid fa-plus" /> 新增概念
           </button>
         </div>
 
@@ -258,14 +280,12 @@ function moveEra(i: number, dir: -1 | 1) {
       </section>
 
       <!-- 力量体系 -->
-      <section>
-        <div class="wp-sec">
-          <i class="fa-solid fa-bolt" />
-          <span>力量体系</span>
-          <span class="num">{{ wv.systems.length }}</span>
+      <section v-show="activeTab === 'systems'">
+        <div class="wp-toolbar">
+          <span class="wp-count-hint num">修炼、魔法、异能的等级与规则</span>
           <span style="flex: 1" />
           <button class="wp-mini-btn" @click="systemCreating = true">
-            <i class="fa-solid fa-plus" /> 体系
+            <i class="fa-solid fa-plus" /> 新增体系
           </button>
         </div>
 
@@ -324,12 +344,7 @@ function moveEra(i: number, dir: -1 | 1) {
       </section>
 
       <!-- 纪元 -->
-      <section>
-        <div class="wp-sec">
-          <i class="fa-solid fa-hourglass-half" />
-          <span>纪元（历法）</span>
-          <span class="num">{{ wv.eras.length }}</span>
-        </div>
+      <section v-show="activeTab === 'eras'">
         <p class="wp-era-hint">先后顺序即时间顺序；场景时间锚（如「灵历3217年」）按此折算比较。</p>
 
         <div v-if="wv.eras.length" class="wp-eras">
@@ -390,24 +405,67 @@ function moveEra(i: number, dir: -1 | 1) {
   color: var(--ink-accent);
 }
 
-.wp-sec {
+// ── 分栏 tab（与实体面板同款分段样式） ────────────────────
+.wp-tabs {
   display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.wp-tab {
+  flex: 1;
+  display: inline-flex;
   align-items: center;
-  gap: 7px;
-  margin-bottom: 9px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--ink-main);
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-sec);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
 
   i {
-    color: var(--ink-accent);
-    font-size: 12px;
+    font-size: 11.5px;
   }
 
-  .num {
-    font-weight: 400;
-    color: var(--ink-disabled);
+  &:hover {
+    color: var(--ink-main);
   }
+
+  &.is-active {
+    background: var(--surface-solid);
+    color: var(--ink-accent);
+    box-shadow: var(--ui-shadow);
+  }
+}
+
+.wp-tab-count {
+  font-size: 10.5px;
+  color: var(--ink-disabled);
+
+  .is-active & {
+    color: var(--ink-accent);
+    opacity: 0.75;
+  }
+}
+
+.wp-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.wp-count-hint {
+  font-size: 11px;
+  color: var(--ink-disabled);
+  letter-spacing: 0.03em;
 }
 
 .wp-mini-btn {
@@ -575,7 +633,7 @@ function moveEra(i: number, dir: -1 | 1) {
 }
 
 .wp-era-hint {
-  margin: -4px 0 8px;
+  margin: 0 0 10px;
   font-size: 11px;
   line-height: 1.7;
   color: var(--ink-muted);

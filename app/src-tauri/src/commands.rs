@@ -415,6 +415,31 @@ pub fn save_worldview(root: String, worldview: WorldviewDto) -> R<()> {
 }
 
 // ============================================================================
+// 提示词自定义（项目级覆盖，prompts/{id}.md）
+// ============================================================================
+
+/// 列出全部可自定义提示词（meta + 内置全文 + 当前覆盖）
+#[tauri::command]
+pub fn list_prompts(root: String) -> R<Vec<PromptDto>> {
+    Ok(lib::prompt_custom::list(Path::new(&root))
+        .into_iter()
+        .map(PromptDto::from)
+        .collect())
+}
+
+/// 保存项目覆盖（校验 id 在册、内容非空、必需占位符齐全）
+#[tauri::command]
+pub fn save_prompt(root: String, id: String, content: String) -> R<()> {
+    lib::prompt_custom::save(Path::new(&root), &id, &content).map_err(e)
+}
+
+/// 删除项目覆盖恢复内置；返回覆盖文件是否原本存在
+#[tauri::command]
+pub fn reset_prompt(root: String, id: String) -> R<bool> {
+    lib::prompt_custom::reset(Path::new(&root), &id).map_err(e)
+}
+
+// ============================================================================
 // 章节脉络（chapters.toml：卷分组 + 逐章脉络）
 // ============================================================================
 

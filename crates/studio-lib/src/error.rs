@@ -38,6 +38,10 @@ pub enum StudioError {
     /// 配置错误（如缺少 API Key）
     #[error("配置错误: {0}")]
     Config(String),
+
+    /// 提示词自定义错误（未知提示词、占位符缺失等）
+    #[error("提示词错误: {0}")]
+    Prompt(String),
 }
 
 impl From<std::io::Error> for StudioError {

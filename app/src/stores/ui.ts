@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 
 export type ThemeName = 'theme-ink' | 'theme-dark'
-export type DockPanel = 'miao' | 'stats' | 'book' | 'chapters' | 'entities' | 'anchoring' | 'worldview' | 'threads' | 'diagnostics' | 'export' | 'git' | null
+export type DockPanel = 'miao' | 'stats' | 'book' | 'chapters' | 'entities' | 'anchoring' | 'worldview' | 'threads' | 'diagnostics' | 'prompts' | 'export' | 'git' | null
 
 export interface RecentProject {
   root: string

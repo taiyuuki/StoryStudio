@@ -212,7 +212,11 @@ fn project_agent_factory(dir: PathBuf, provider: Arc<dyn AiProvider>) -> AgentFa
     let tools = Arc::new(create_tool_registry(&dir, provider.clone()));
     Box::new(move || {
         Agent::new(
-            crate::prompts::AGENT_PROJECT,
+            // 每轮重建都重新解析项目覆盖，改提示词对下一轮对话生效
+            crate::prompt_custom::resolve(
+                &crate::prompt_custom::AGENT_PROJECT,
+                Some(dir.as_path()),
+            ),
             default_agent_config(),
             provider.clone(),
             tools.clone(),

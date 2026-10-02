@@ -111,6 +111,21 @@ export interface WorldviewDto {
   eras: string[]
 }
 
+// ── 提示词自定义（项目级覆盖，prompts/{id}.md） ──────────────
+
+export interface PromptDto {
+  id: string
+  label: string
+  group: string
+  description: string
+  /** 必需占位符（保存时校验齐全） */
+  placeholders: string[]
+  /** 内置提示词全文 */
+  builtin: string
+  /** 项目覆盖内容（存在且非空时） */
+  custom: string | null
+}
+
 // ── 章节脉络（chapters.toml：卷分组 + 逐章脉络） ─────────────
 
 export interface VolumeGroupDto {
@@ -856,6 +871,20 @@ export const api = {
   },
   saveWorldview(root: string, worldview: WorldviewDto) {
     return call<void>('save_worldview', { root, worldview })
+  },
+
+  // ── 提示词自定义 ─────────────────────────────────────
+  /** 列出全部可自定义提示词（meta + 内置全文 + 当前覆盖） */
+  listPrompts(root: string) {
+    return call<PromptDto[]>('list_prompts', { root })
+  },
+  /** 保存项目覆盖（后端校验 id / 占位符） */
+  savePrompt(root: string, id: string, content: string) {
+    return call<void>('save_prompt', { root, id, content })
+  },
+  /** 删除覆盖恢复内置；返回覆盖文件是否原本存在 */
+  resetPrompt(root: string, id: string) {
+    return call<boolean>('reset_prompt', { root, id })
   },
 
   // ── 章节脉络 ──────────────────────────────────────────

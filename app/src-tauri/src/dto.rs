@@ -1039,6 +1039,39 @@ pub fn load_chapter_dtos(root: &Path) -> Result<Vec<ChapterDto>, String> {
     Ok(chapters)
 }
 
+// ============================================================================
+// 提示词自定义（项目级覆盖，prompts/{id}.md）
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptDto {
+    pub id: String,
+    pub label: String,
+    pub group: String,
+    pub description: String,
+    /// 必需占位符（保存时前后端都校验齐全）
+    pub placeholders: Vec<String>,
+    /// 内置提示词全文
+    pub builtin: String,
+    /// 项目覆盖内容（prompts/{id}.md 存在且非空时）
+    pub custom: Option<String>,
+}
+
+impl From<story_studio_lib::prompt_custom::PromptEntry> for PromptDto {
+    fn from(entry: story_studio_lib::prompt_custom::PromptEntry) -> Self {
+        Self {
+            id: entry.id,
+            label: entry.label,
+            group: entry.group,
+            description: entry.description,
+            placeholders: entry.placeholders,
+            builtin: entry.builtin,
+            custom: entry.custom,
+        }
+    }
+}
+
 #[cfg(test)]
 mod worldview_tests {
     use super::*;

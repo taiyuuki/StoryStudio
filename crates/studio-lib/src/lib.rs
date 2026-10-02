@@ -23,6 +23,7 @@ pub mod stats;
 pub mod timeline;
 pub mod mutations;
 pub mod project;
+pub mod prompt_custom;
 mod prompts;
 pub mod tools;
 pub mod workflow;
@@ -57,6 +58,7 @@ pub use git::{
 };
 pub use mutations::EntityKind;
 pub use mutations::{repair_project, RepairReport};
+pub use prompt_custom::{PromptEntry, PromptSpec, PROMPT_SPECS};
 pub use project::{
     create_project, init_project, open_project, peek, peek_projects, project_info, FileCounts,
     PeekEntry, Project, ProjectInfo, ProjectPeek,

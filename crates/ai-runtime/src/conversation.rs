@@ -291,6 +291,7 @@ mod tests {
             recent_text: String::new(),
             pov_name: None,
             scene_title: None,
+            system_template: None,
         };
 
         let mut conv = Conversation::new(&ir, None, None, &registry, "你是小说作者");
@@ -311,6 +312,7 @@ mod tests {
             recent_text: String::new(),
             pov_name: None,
             scene_title: None,
+            system_template: None,
         };
 
         let mut conv = Conversation::new(&ir, None, None, &registry, "你是小说作者");
@@ -332,6 +334,7 @@ mod tests {
             recent_text: String::new(),
             pov_name: None,
             scene_title: None,
+            system_template: None,
         };
 
         let mut conv = Conversation::new(&ir, None, None, &registry, "system");
@@ -355,6 +358,7 @@ mod tests {
             recent_text: String::new(),
             pov_name: None,
             scene_title: None,
+            system_template: None,
         };
 
         let mut conv = Conversation::new(&ir, None, None, &registry, "system");
@@ -375,6 +379,7 @@ mod tests {
             recent_text: String::new(),
             pov_name: None,
             scene_title: None,
+            system_template: None,
         };
 
         let mut conv = Conversation::new(&ir, None, None, &registry, "系统指令");

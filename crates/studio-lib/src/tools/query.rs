@@ -364,10 +364,13 @@ impl GetStoryRecapTool {
 
         // 调 LLM 生成摘要
         let truncated = format_brief(&text, SUMMARIZE_TEXT_MAX_CHARS);
-        let system = crate::prompts::SCENE_SUMMARY;
+        let system = crate::prompt_custom::resolve(
+            &crate::prompt_custom::SCENE_SUMMARY,
+            Some(self.ctx.project_dir.as_path()),
+        );
         let user = format!("场景正文：\n\n{truncated}");
         let request = GenerateRequest {
-            system: system.to_string(),
+            system,
             messages: vec![Message::user(user)],
             model: String::new(),
             temperature: 0.2,
