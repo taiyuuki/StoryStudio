@@ -1072,6 +1072,56 @@ impl From<story_studio_lib::prompt_custom::PromptEntry> for PromptDto {
     }
 }
 
+// ============================================================================
+// 书籍信息（outline.toml [story] 段；title/setting/time_span 由后端保留，不在此 DTO）
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BookMetaDto {
+    pub genre: Option<String>,
+    pub premise: Option<String>,
+    pub theme: Option<String>,
+    pub audience: Option<String>,
+    pub pov: Option<String>,
+    pub style: Option<String>,
+    pub target_words: Option<u64>,
+    pub chapter_words: Option<u64>,
+}
+
+impl From<story_project_format::StoryMeta> for BookMetaDto {
+    fn from(m: story_project_format::StoryMeta) -> Self {
+        Self {
+            genre: m.genre,
+            premise: m.premise,
+            theme: m.theme,
+            audience: m.audience,
+            pov: m.pov,
+            style: m.style,
+            target_words: m.target_words,
+            chapter_words: m.chapter_words,
+        }
+    }
+}
+
+impl From<BookMetaDto> for story_project_format::StoryMeta {
+    fn from(m: BookMetaDto) -> Self {
+        Self {
+            title: None,
+            genre: m.genre,
+            premise: m.premise,
+            theme: m.theme,
+            setting: None,
+            time_span: None,
+            audience: m.audience,
+            target_words: m.target_words,
+            chapter_words: m.chapter_words,
+            pov: m.pov,
+            style: m.style,
+        }
+    }
+}
+
 #[cfg(test)]
 mod worldview_tests {
     use super::*;

@@ -126,6 +126,19 @@ export interface PromptDto {
   custom: string | null
 }
 
+// ── 书籍信息（outline.toml [story] 段的表单字段） ────────────
+
+export interface BookMetaDto {
+  genre: string | null
+  premise: string | null
+  theme: string | null
+  audience: string | null
+  pov: string | null
+  style: string | null
+  targetWords: number | null
+  chapterWords: number | null
+}
+
 // ── 章节脉络（chapters.toml：卷分组 + 逐章脉络） ─────────────
 
 export interface VolumeGroupDto {
@@ -885,6 +898,16 @@ export const api = {
   /** 删除覆盖恢复内置；返回覆盖文件是否原本存在 */
   resetPrompt(root: string, id: string) {
     return call<boolean>('reset_prompt', { root, id })
+  },
+
+  // ── 书籍信息 ─────────────────────────────────────────
+  /** 读取书籍信息（手动项目无 outline.toml 时返回空值） */
+  getBookMeta(root: string) {
+    return call<BookMetaDto>('get_book_meta', { root })
+  },
+  /** 保存书籍信息（仅替换表单字段，其余保留） */
+  saveBookMeta(root: string, meta: BookMetaDto) {
+    return call<void>('save_book_meta', { root, meta })
   },
 
   // ── 章节脉络 ──────────────────────────────────────────

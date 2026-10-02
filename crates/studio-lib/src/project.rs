@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use story_project_format::{slugify, InitError, OutlineFile, ProjectConfig, ProjectPaths, StructureFile};
+use story_project_format::{slugify, InitError, OutlineFile, ProjectConfig, ProjectPaths, StoryMeta, StructureFile};
 
 use crate::error::StudioError;
 
@@ -238,6 +238,58 @@ pub fn peek_projects(roots: &[String]) -> Vec<PeekEntry> {
 }
 
 // ============================================================================
+// 书籍信息（outline.toml [story] 段）— 手动项目与建书项目共用的创作约束
+// ============================================================================
+
+/// 读取书籍信息（题材 / 主线 / 受众 / 视角 / 文风 / 目标字数等）
+///
+/// outline.toml 不存在（手动新建的空项目）视为未设置，返回空值；
+/// 文件存在但解析失败则报错（用户需要知道文件改坏了）。
+pub fn get_book_meta(dir: &Path) -> Result<StoryMeta, StudioError> {
+    let paths = open_project(dir)?.paths();
+    match std::fs::read_to_string(paths.outline_toml()) {
+        Ok(content) => OutlineFile::from_toml_str(&content)
+            .map(|o| o.story)
+            .map_err(|e| StudioError::Config(format!("outline.toml 解析失败: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StoryMeta::default()),
+        Err(e) => Err(StudioError::Io(format!("读取 outline.toml 失败: {e}"))),
+    }
+}
+
+/// 保存书籍信息
+///
+/// 只替换表单管辖的字段；`title / setting / time_span` 保留旧值
+/// （分别由建书流程与世界观维护，不在书籍信息表单里）。
+/// outline.toml 的其余段（volumes / arcs / storylines / conflicts）原样保留；
+/// 文件不存在时创建——手动项目补填书籍信息后即可使用续排大纲。
+pub fn save_book_meta(dir: &Path, meta: &StoryMeta) -> Result<(), StudioError> {
+    let paths = open_project(dir)?.paths();
+
+    let mut file = match std::fs::read_to_string(paths.outline_toml()) {
+        Ok(content) => OutlineFile::from_toml_str(&content)
+            .map_err(|e| StudioError::Config(format!("outline.toml 解析失败: {e}")))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OutlineFile::default(),
+        Err(e) => return Err(StudioError::Io(format!("读取 outline.toml 失败: {e}"))),
+    };
+
+    let mut next = meta.clone();
+    next.title = file.story.title.clone();
+    next.setting = file.story.setting.clone();
+    next.time_span = file.story.time_span.clone();
+    // 0 视为未设置；单章字数与建书归一一致（1000..=10000）
+    if next.target_words == Some(0) {
+        next.target_words = None;
+    }
+    next.chapter_words = next.chapter_words.map(|w| w.clamp(1000, 10000));
+
+    file.story = next;
+    let content = file.to_toml_string().map_err(|e| {
+        StudioError::Config(format!("outline.toml 序列化失败: {e}"))
+    })?;
+    crate::journal::write_verified(dir, "save_book_meta", &paths.outline_toml(), &content)
+}
+
+// ============================================================================
 // 内部辅助
 // ============================================================================
 
@@ -318,5 +370,70 @@ mod tests {
         assert!(entries[0].peek.is_some());
         assert_eq!(entries[0].peek.as_ref().unwrap().name, "好书");
         assert!(entries[1].peek.is_none());
+    }
+
+    #[test]
+    fn book_meta_missing_file_is_empty_then_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("shou-xie-shu");
+        init_project(&root, "手写书").unwrap();
+
+        // 手动项目无 outline.toml → 空值
+        let meta = get_book_meta(&root).unwrap();
+        assert!(meta.genre.is_none() && meta.target_words.is_none());
+
+        // 保存后读回
+        let next = StoryMeta {
+            genre: Some("武侠悬疑".into()),
+            premise: Some("剑客寻旧案".into()),
+            audience: Some("男频".into()),
+            pov: Some("第三人称限知".into()),
+            style: Some("热血".into()),
+            target_words: Some(1_200_000),
+            chapter_words: Some(3_000),
+            ..Default::default()
+        };
+        save_book_meta(&root, &next).unwrap();
+        let got = get_book_meta(&root).unwrap();
+        assert_eq!(got.genre.as_deref(), Some("武侠悬疑"));
+        assert_eq!(got.premise.as_deref(), Some("剑客寻旧案"));
+        assert_eq!(got.target_words, Some(1_200_000));
+        assert_eq!(got.chapter_words, Some(3_000));
+
+        // peek 目标字数从此可用
+        assert_eq!(peek(&root).unwrap().target_words, Some(1_200_000));
+    }
+
+    #[test]
+    fn book_meta_save_preserves_untouched_fields_and_sections() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("bao-liu");
+        let paths = init_project(&root, "保留").unwrap();
+        // 建书流程写过的 outline.toml：title/setting + volumes
+        std::fs::write(
+            paths.outline_toml(),
+            "[story]\ntitle = \"拾灯录\"\nsetting = \"云隐洲\"\n\n[[volumes]]\nname = \"第一卷\"\n",
+        )
+        .unwrap();
+
+        let next = StoryMeta {
+            genre: Some("玄幻".into()),
+            target_words: Some(0), // 0 → 未设置
+            chapter_words: Some(500), // clamp 到 1000
+            ..Default::default()
+        };
+        save_book_meta(&root, &next).unwrap();
+
+        let file = OutlineFile::from_toml_str(&std::fs::read_to_string(paths.outline_toml()).unwrap())
+            .unwrap();
+        // 表单字段生效
+        assert_eq!(file.story.genre.as_deref(), Some("玄幻"));
+        assert_eq!(file.story.target_words, None);
+        assert_eq!(file.story.chapter_words, Some(1000));
+        // 不管辖的字段与其它段保留
+        assert_eq!(file.story.title.as_deref(), Some("拾灯录"));
+        assert_eq!(file.story.setting.as_deref(), Some("云隐洲"));
+        assert_eq!(file.volumes.len(), 1);
+        assert_eq!(file.volumes[0].name, "第一卷");
     }
 }

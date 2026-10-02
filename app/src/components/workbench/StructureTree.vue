@@ -2,13 +2,64 @@
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { ChapterDto, SceneDto } from '@/api/backend'
+import { api } from '@/api/backend'
+import type { BookMetaDto, ChapterDto, SceneDto } from '@/api/backend'
+import { normalizeBookMeta } from '@/constants/bookMeta'
+import BookMetaForm from '@/components/BookMetaForm.vue'
 
 const store = useWorkspaceStore()
 
 const query = ref('')
 const collapsed = ref<Set<string>>(new Set())
 const renaming = ref<{ kind: 'chapter' | 'scene'; id: string; value: string } | null>(null)
+
+// ── 书籍信息（outline.toml [story] 段的编辑入口） ───────────
+// meta 用 ref：BookMetaForm 的 v-model 是整体替换赋值，reactive 常量接不住
+const metaVisible = ref(false)
+const metaLoading = ref(false)
+const metaSaving = ref(false)
+const meta = ref<BookMetaDto>({
+  genre: null,
+  premise: null,
+  theme: null,
+  audience: null,
+  pov: null,
+  style: null,
+  targetWords: null,
+  chapterWords: null,
+})
+
+async function openMeta() {
+  metaVisible.value = true
+  if (!store.root) return
+  metaLoading.value = true
+  try {
+    meta.value = await api.getBookMeta(store.root)
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    metaLoading.value = false
+  }
+}
+
+async function saveMeta() {
+  if (!store.root || metaSaving.value) return
+  const next = normalizeBookMeta(meta.value)
+  metaSaving.value = true
+  try {
+    await api.saveBookMeta(store.root, next)
+    meta.value = next
+    metaVisible.value = false
+    ElMessage.success('书籍信息已保存')
+    if (!next.premise) {
+      ElMessage.info('续排大纲需要「一句话主线」，建议补上')
+    }
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    metaSaving.value = false
+  }
+}
 
 interface TreeScene extends SceneDto {
   chapterTitle: string
@@ -115,10 +166,41 @@ function sceneTitle(s: SceneDto): string {
         <i class="fa-solid fa-magnifying-glass" />
         <input v-model="query" placeholder="搜索章节 / 场景" />
       </div>
+      <button class="ink-icon-btn" title="书籍信息（题材 / 主线 / 体量……）" @click="openMeta">
+        <i class="fa-solid fa-circle-info" />
+      </button>
       <button class="ink-icon-btn" title="新建章节" @click="startCreateChapter">
         <i class="fa-solid fa-plus" />
       </button>
     </div>
+
+    <!-- 书籍信息编辑 -->
+    <ElDialog
+      v-model="metaVisible"
+      title="书籍信息"
+      width="560px"
+      align-center
+      append-to-body
+      :close-on-click-modal="false"
+    >
+      <div v-if="metaLoading" class="meta-loading">
+        <i class="fa-solid fa-circle-notch fa-spin" />
+      </div>
+      <template v-else>
+        <BookMetaForm v-model="meta" />
+        <p class="meta-hint">
+          题材、主线与体量会传给续排大纲与逐章成书，作为走向与篇幅基准；填写后随时可改。
+        </p>
+      </template>
+      <template #footer>
+        <button class="ink-btn" :disabled="metaSaving" @click="metaVisible = false">取消</button>
+        <button
+          class="ink-btn ink-btn--primary"
+          :disabled="metaLoading || metaSaving"
+          @click="saveMeta"
+        >{{ metaSaving ? '保存中…' : '保存' }}</button>
+      </template>
+    </ElDialog>
 
     <div v-if="creating === 'chapter'" class="new-chapter-row">
       <i class="fa-solid fa-layer-group" />
@@ -227,6 +309,20 @@ function sceneTitle(s: SceneDto): string {
   background: var(--surface-1);
   backdrop-filter: blur(12px);
   min-height: 0;
+}
+
+.meta-loading {
+  display: flex;
+  justify-content: center;
+  padding: 30px 0;
+  color: var(--ink-muted);
+}
+
+.meta-hint {
+  margin: 14px 0 0;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-muted);
 }
 
 .tree-head {

@@ -415,6 +415,22 @@ pub fn save_worldview(root: String, worldview: WorldviewDto) -> R<()> {
 }
 
 // ============================================================================
+// 书籍信息（outline.toml [story] 段）
+// ============================================================================
+
+/// 读取书籍信息（手动项目无 outline.toml 时返回空值）
+#[tauri::command]
+pub fn get_book_meta(root: String) -> R<BookMetaDto> {
+    lib::get_book_meta(Path::new(&root)).map(BookMetaDto::from).map_err(e)
+}
+
+/// 保存书籍信息（仅替换表单字段，title/setting/time_span 与其它段保留）
+#[tauri::command]
+pub fn save_book_meta(root: String, meta: BookMetaDto) -> R<()> {
+    lib::save_book_meta(Path::new(&root), &meta.into()).map_err(e)
+}
+
+// ============================================================================
 // 提示词自定义（项目级覆盖，prompts/{id}.md）
 // ============================================================================
 

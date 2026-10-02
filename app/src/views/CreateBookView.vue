@@ -13,42 +13,13 @@ import {
   type WorldSaveReportDto,
 } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { AUDIENCES, GENRES, POVS, SCALES, STYLES, WORD_OPTIONS } from '@/constants/bookMeta'
 import ConceptForm from '@/components/start/aiBook/ConceptForm.vue'
 import WorldForm from '@/components/start/aiBook/WorldForm.vue'
 import OutlineForm from '@/components/start/aiBook/OutlineForm.vue'
 
 const router = useRouter()
 const store = useWorkspaceStore()
-
-// ── 第 0 步表单 ─────────────────────────────────────────
-const GENRES: { name: string; icon: string }[] = [
-  { name: '自动', icon: 'fa-wand-magic-sparkles' },
-  { name: '玄幻', icon: 'fa-hat-wizard' },
-  { name: '仙侠', icon: 'fa-yin-yang' },
-  { name: '武侠', icon: 'fa-khanda' },
-  { name: '奇幻', icon: 'fa-dragon' },
-  { name: '科幻', icon: 'fa-rocket' },
-  { name: '都市', icon: 'fa-city' },
-  { name: '言情', icon: 'fa-heart' },
-  { name: '悬疑', icon: 'fa-magnifying-glass' },
-  { name: '历史', icon: 'fa-landmark' },
-  { name: '军事', icon: 'fa-shield-halved' },
-  { name: '游戏', icon: 'fa-gamepad' },
-  { name: '竞技', icon: 'fa-trophy' },
-  { name: '灵异', icon: 'fa-ghost' },
-  { name: '轻小说', icon: 'fa-feather' },
-  { name: '现实', icon: 'fa-seedling' },
-  { name: '职场', icon: 'fa-briefcase' },
-]
-const AUDIENCES = ['男频', '女频', '全年龄']
-const POVS = ['第三人称限知', '第三人称全知', '第一人称']
-const STYLES = ['热血', '轻松', '暗黑', '细腻', '快节奏爽文', '慢热文艺']
-const SCALES: [string, number][] = [
-  ['短篇（30 万字内）', 300_000],
-  ['标准（100 万字）', 1_000_000],
-  ['长跑（200 万字+）', 2_000_000],
-]
-const WORD_OPTIONS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000]
 
 const idea = ref('')
 const genre = ref('自动')

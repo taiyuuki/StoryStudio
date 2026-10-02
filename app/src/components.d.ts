@@ -16,6 +16,7 @@ declare module 'vue' {
     AiWriteDialog: typeof import('./components/workbench/AiWriteDialog.vue')['default']
     AnchoringReviewPanel: typeof import('./components/workbench/AnchoringReviewPanel.vue')['default']
     AppTitleBar: typeof import('./components/AppTitleBar.vue')['default']
+    BookMetaForm: typeof import('./components/BookMetaForm.vue')['default']
     BookPanel: typeof import('./components/workbench/BookPanel.vue')['default']
     ChaptersPanel: typeof import('./components/workbench/ChaptersPanel.vue')['default']
     ConceptForm: typeof import('./components/start/aiBook/ConceptForm.vue')['default']

@@ -86,6 +86,9 @@ pub fn run() {
             commands::list_prompts,
             commands::save_prompt,
             commands::reset_prompt,
+            // 书籍信息
+            commands::get_book_meta,
+            commands::save_book_meta,
             // 章节脉络
             commands::get_chapter_outline,
             commands::save_chapter_outline,

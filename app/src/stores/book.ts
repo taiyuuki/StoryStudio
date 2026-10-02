@@ -85,10 +85,21 @@ export const useBookStore = defineStore('book', () => {
   // 换项目：取消在途流水线（避免写进旧目录）→ 重置 → 重新加载
   watch(
     () => store.root,
-    () => {
+    async (root) => {
       if (running.value) void api.workflowCancel()
       resetTransients()
       void reload()
+      if (!root) return
+      // 目标字数仍是默认值（无运行状态恢复、用户也没改过）时，
+      // 采用书籍信息的单章字数（outline.toml [story] chapter_words）
+      try {
+        const meta = await api.getBookMeta(root)
+        if (meta.chapterWords && targetWords.value === 2000) {
+          targetWords.value = meta.chapterWords
+        }
+      } catch {
+        // 拉不到书籍信息就保持默认
+      }
     },
     { immediate: true },
   )

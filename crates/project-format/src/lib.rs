@@ -28,7 +28,7 @@ pub use entity_file::{EntityFile, EntityFileError};
 pub use fragment_file::{FragmentFile, FragmentFileError, FragmentFrontmatter};
 pub use init::{init_project, InitError};
 pub use knowledge_file::{AssertionsFile, EvidenceFile, KnowledgeFileError};
-pub use outline_file::{ConflictDef, OutlineFile, OutlineFileError, VolumeDef};
+pub use outline_file::{ConflictDef, OutlineFile, OutlineFileError, StoryMeta, VolumeDef};
 pub use paths::ProjectPaths;
 pub use project_toml::{AiConfig, KnowledgeConfig, ProjectConfig};
 pub use relation_file::{RelationDef, RelationFileError, RelationsFile};

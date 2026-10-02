@@ -60,9 +60,10 @@ pub use mutations::EntityKind;
 pub use mutations::{repair_project, RepairReport};
 pub use prompt_custom::{PromptEntry, PromptSpec, PROMPT_SPECS};
 pub use project::{
-    create_project, init_project, open_project, peek, peek_projects, project_info, FileCounts,
-    PeekEntry, Project, ProjectInfo, ProjectPeek,
+    create_project, get_book_meta, init_project, open_project, peek, peek_projects, project_info,
+    save_book_meta, FileCounts, PeekEntry, Project, ProjectInfo, ProjectPeek,
 };
+pub use story_project_format::StoryMeta;
 pub use story_ai_runtime::ApiMode;
 pub use story_exporter::ChapterFile;
 pub use tools::{

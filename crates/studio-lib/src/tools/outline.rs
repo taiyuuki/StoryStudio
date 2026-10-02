@@ -359,7 +359,10 @@ impl Tool for SetOutlineItemTool {
                 ("setting", "string", "背景设定（section=story）", false),
                 ("time_span", "string", "时间跨度（section=story）", false),
                 ("audience", "string", "目标读者（section=story）", false),
+                ("pov", "string", "叙事视角，如：第三人称限知（section=story）", false),
+                ("style", "string", "文风基调，如：热血 / 轻松（section=story）", false),
                 ("target_words", "string", "目标字数（section=story，如 800000 表示约 80 万字）", false),
+                ("chapter_words", "string", "单章字数（section=story，1000-10000，超出会收敛到边界）", false),
                 ("name", "string", "名称（section=volume/arc/storyline/conflict）", false),
                 ("summary", "string", "摘要（section=volume/arc/storyline/conflict）", false),
                 ("character", "string", "角色 ID（section=arc）", false),
@@ -467,11 +470,23 @@ fn apply_outline_item(
             if let Some(v) = get_str_opt(item, "audience") {
                 outline.story.audience = Some(v);
             }
+            if let Some(v) = get_str_opt(item, "pov") {
+                outline.story.pov = Some(v);
+            }
+            if let Some(v) = get_str_opt(item, "style") {
+                outline.story.style = Some(v);
+            }
             if let Some(v) = get_str_opt(item, "target_words") {
                 let n: u64 = v
                     .parse()
                     .map_err(|_| format!("target_words 必须是正整数，收到 '{v}'"))?;
                 outline.story.target_words = Some(n);
+            }
+            if let Some(v) = get_str_opt(item, "chapter_words") {
+                let n: u64 = v
+                    .parse()
+                    .map_err(|_| format!("chapter_words 必须是正整数，收到 '{v}'"))?;
+                outline.story.chapter_words = Some(n.clamp(1000, 10000));
             }
         }
         "volume" => {
