@@ -3877,6 +3877,7 @@ dependencies = [
  "serde_yaml",
  "story-ir",
  "story-knowledge",
+ "tempfile",
  "thiserror 2.0.19",
  "toml 0.8.2",
 ]

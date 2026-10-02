@@ -191,8 +191,10 @@ fn load_structure(paths: &ProjectPaths) -> Result<StructureFile, StudioError> {
 }
 
 /// 读取 chapters.toml，文件不存在或为空时返回 default。
+/// 卷的唯一真相源在 outline.toml：读取时顺带完成遗留卷副本的合并迁移。
 pub fn load_chapters_file(paths: &ProjectPaths) -> Result<ChaptersFile, StudioError> {
-    ChaptersFile::load_or_default(&paths.chapters_toml())
+    let (file, _) = story_project_format::load_chapters_unified(paths);
+    Ok(file)
 }
 
 /// 将 ChaptersFile 写回 chapters.toml。

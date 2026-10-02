@@ -7,7 +7,10 @@
 use std::path::Path;
 
 use story_ai_runtime::{Tool, ToolDef};
-use story_project_format::{is_valid_status, ChapterOutlineDef, ChaptersFile, VolumeGroupDef};
+use story_project_format::{
+    is_valid_status, load_chapters_unified, save_outline_volumes, ChapterOutlineDef, ChaptersFile,
+    VolumeGroupDef,
+};
 
 use super::{check_index, get_str, get_str_opt, object_schema, ToolContext};
 
@@ -28,10 +31,10 @@ impl Tool for DesignChaptersTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "design_chapters".into(),
-            description: "根据大纲和卷结构设计章节脉络，一次性追加多章到 chapters.toml。每章含标题、所属卷序号、梗概、目标、节拍、涉及角色/线索、章末钩子等。可选同时设置卷分组。设计阶段无需 chapter_id（虚拟章），动笔时再 create_chapter 落实。".into(),
+            description: "根据大纲和卷结构设计章节脉络，一次性追加多章到 chapters.toml。每章含标题、所属卷序号、梗概、目标、节拍、涉及角色/线索、章末钩子等。设计阶段无需 chapter_id（虚拟章），动笔时再 create_chapter 落实。卷分组通常无需提供：章节按 volume_order 自动归卷，卷分组为空时自动从 outline.toml 的卷大纲导入。".into(),
             parameters: object_schema(vec![
                 ("chapters", "string", "章节数组的 JSON 字符串，每项: {title, volume_order(1-based,0=未分卷), summary?, goal?, beats?:[...], characters?:[...], threads?:[...], hook?, notes?}", true),
-                ("volumes", "string", "可选：卷分组数组的 JSON 字符串，每项: {name, order(1-based), theme?, summary?}。若提供则覆盖现有卷分组", false),
+                ("volumes", "string", "可选：卷分组数组的 JSON 字符串，每项: {name, order(1-based), theme?, summary?}。若提供则整体替换大纲卷结构（写入 outline.toml）。项目已有卷时无需传，章节按 volume_order 直接归卷", false),
                 ("replace", "boolean", "是否替换现有章节脉络（默认 false=追加）。传 true 会清空已有章节，慎用", false),
             ]),
         }
@@ -52,9 +55,9 @@ impl Tool for DesignChaptersTool {
             return Err("chapters 不能为空数组".into());
         }
 
-        let (mut file, path) = load_chapters(&self.ctx)?;
+        let (mut file, mut volumes, path) = load_chapters(&self.ctx)?;
 
-        // 可选：替换卷分组
+        // 可选：替换卷分组（唯一真相源在 outline.toml）
         let mut volume_note = String::new();
         if let Some(vol_str) = volumes_json {
             let vol_inputs = parse_json_array_lenient(&vol_str, "volumes")?;
@@ -70,8 +73,15 @@ impl Tool for DesignChaptersTool {
                     summary: get_str_opt(v, "summary"),
                 });
             }
-            file.volumes = vols;
-            volume_note = format!("，卷分组 {} 个", file.volumes.len());
+            // 卷序号 = 排序后的数组序（保持连续），落盘到 outline.toml
+            vols.sort_by_key(|v| v.order);
+            for (i, v) in vols.iter_mut().enumerate() {
+                v.order = (i + 1) as u32;
+            }
+            save_outline_volumes(&self.ctx.paths(), &vols)
+                .map_err(|e| format!("写入卷结构失败: {e}"))?;
+            volumes = vols;
+            volume_note = format!("，卷分组 {} 个（已写入大纲）", volumes.len());
         }
 
         if replace {
@@ -107,7 +117,10 @@ impl Tool for DesignChaptersTool {
 
         let added = chapter_inputs.len();
         let end_index = file.chapters.len();
-        save_chapters(&path, &file)?;
+        let ensure_note = save_chapters(&self.ctx, &path, &mut file, &mut volumes)?;
+        if volume_note.is_empty() && !ensure_note.is_empty() {
+            volume_note = format!("，{ensure_note}");
+        }
 
         Ok(format!(
             "已设计 {} 个章节脉络（序号 {}-{}），已写入 chapters.toml{}。各章状态为 planned，动笔时用 update_chapter_outline(index, status=\"writing\") 标记。",
@@ -162,15 +175,15 @@ impl Tool for GetChapterOutlineTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let (file, _path) = load_chapters(&self.ctx)?;
+        let (file, volumes, _path) = load_chapters(&self.ctx)?;
 
-        if file.chapters.is_empty() && file.volumes.is_empty() {
+        if file.chapters.is_empty() && volumes.is_empty() {
             return Ok("章节脉络为空。使用 design_chapters 根据大纲设计章节脉络。".to_string());
         }
 
         // 卷序号 → 卷名
         let volume_name = |order: u32| -> String {
-            file.volumes
+            volumes
                 .iter()
                 .find(|v| v.order == order)
                 .map(|v| v.name.clone())
@@ -180,9 +193,9 @@ impl Tool for GetChapterOutlineTool {
         let mut result = String::new();
 
         // 卷分组概览
-        if !file.volumes.is_empty() {
+        if !volumes.is_empty() {
             result.push_str("## 卷分组\n");
-            for v in &file.volumes {
+            for v in &volumes {
                 result.push_str(&format!("{}. {}", v.order, v.name));
                 if let Some(ref t) = v.theme {
                     result.push_str(&format!(" [主题: {t}]"));
@@ -383,7 +396,7 @@ impl Tool for UpdateChapterOutlineTool {
             return Err("index 从 1 开始计数".into());
         }
 
-        let (mut file, path) = load_chapters(&self.ctx)?;
+        let (mut file, mut volumes, path) = load_chapters(&self.ctx)?;
         check_index("章节", index, file.chapters.len())?;
         let item = &mut file.chapters[index - 1];
 
@@ -466,13 +479,17 @@ impl Tool for UpdateChapterOutlineTool {
             return Ok("未提供任何需要更新的字段。".to_string());
         }
 
-        save_chapters(&path, &file)?;
+        let ensure_note = save_chapters(&self.ctx, &path, &mut file, &mut volumes)?;
 
-        Ok(format!(
+        let mut msg = format!(
             "章节脉络已修改: index={index}「{}」, 更新字段: {}",
             file.chapters[index - 1].title,
             changes.join(", ")
-        ))
+        );
+        if !ensure_note.is_empty() {
+            msg.push_str(&format!("；{ensure_note}"));
+        }
+        Ok(msg)
     }
 }
 
@@ -508,16 +525,20 @@ impl Tool for DeleteChapterOutlineTool {
             return Err("index 从 1 开始计数".into());
         }
 
-        let (mut file, path) = load_chapters(&self.ctx)?;
+        let (mut file, mut volumes, path) = load_chapters(&self.ctx)?;
         check_index("章节", index, file.chapters.len())?;
         let removed = file.chapters.remove(index - 1);
-        save_chapters(&path, &file)?;
+        let ensure_note = save_chapters(&self.ctx, &path, &mut file, &mut volumes)?;
 
-        Ok(format!(
+        let mut msg = format!(
             "已删除章节脉络: index={index}「{}」，剩余 {} 个（注意：未触碰 structure.toml）",
             removed.title,
             file.chapters.len()
-        ))
+        );
+        if !ensure_note.is_empty() {
+            msg.push_str(&format!("；{ensure_note}"));
+        }
+        Ok(msg)
     }
 }
 
@@ -525,28 +546,72 @@ impl Tool for DeleteChapterOutlineTool {
 // helpers
 // ============================================================================
 
-/// 读取 chapters.toml，返回 (ChaptersFile, path)。文件不存在或为空时返回 default。
-fn load_chapters(ctx: &ToolContext) -> Result<(ChaptersFile, std::path::PathBuf), String> {
+/// 读取 chapters.toml，返回 (ChaptersFile, 统一卷列表, path)。
+/// 卷的唯一真相源是 outline.toml：读取时经 load_chapters_unified
+/// 完成遗留副本的合并迁移（含章节 volume_order 与线索 due_volume 重映射）。
+/// 文件不存在或为空时返回 default。
+fn load_chapters(
+    ctx: &ToolContext,
+) -> Result<(ChaptersFile, Vec<VolumeGroupDef>, std::path::PathBuf), String> {
     let path = ctx.paths().chapters_toml();
-    let file = if path.exists() {
-        let content = std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
-        if content.trim().is_empty() {
-            ChaptersFile::default()
-        } else {
-            ChaptersFile::from_toml_str(&content).map_err(|e| format!("解析失败: {e}"))?
-        }
-    } else {
-        ChaptersFile::default()
-    };
-    Ok((file, path))
+    let (file, volumes) = load_chapters_unified(&ctx.paths());
+    Ok((file, volumes, path))
 }
 
-/// 将 ChaptersFile 写回 chapters.toml
-fn save_chapters(path: &Path, file: &ChaptersFile) -> Result<(), String> {
+/// 卷占位兜底（保存前调用）：章节引用的卷序号超出大纲卷结构时，
+/// 补齐「第N卷」占位卷（统一卷序连续，中间缺号也一并补上），
+/// 避免 AI 的归属意图静默沉入「未分卷」。用户可在脉络面板改名。
+/// 返回 (给 AI 的说明文字, 是否修改了卷列表)。
+fn ensure_volume_groups(volumes: &mut Vec<VolumeGroupDef>, file: &ChaptersFile) -> (String, bool) {
+    let max_ref = file
+        .chapters
+        .iter()
+        .map(|c| c.volume_order)
+        .filter(|o| *o > 0)
+        .max()
+        .unwrap_or(0);
+    let have = volumes.len() as u32;
+    if max_ref <= have {
+        return (String::new(), false);
+    }
+
+    let mut added = Vec::new();
+    for order in (have + 1)..=max_ref {
+        added.push(format!("第{order}卷"));
+        volumes.push(VolumeGroupDef {
+            name: format!("第{order}卷"),
+            order,
+            theme: None,
+            summary: None,
+        });
+    }
+    (
+        format!(
+            "章节引用了未定义的卷，已补建占位卷: {}",
+            added.join("、")
+        ),
+        true,
+    )
+}
+
+/// 将 ChaptersFile 写回 chapters.toml；卷列表若有补齐则同步落盘 outline.toml。
+/// 返回兜底说明文字（无动作时为空串）。
+fn save_chapters(
+    ctx: &ToolContext,
+    path: &Path,
+    file: &mut ChaptersFile,
+    volumes: &mut Vec<VolumeGroupDef>,
+) -> Result<String, String> {
+    let (note, volumes_dirty) = ensure_volume_groups(volumes, file);
+    if volumes_dirty {
+        save_outline_volumes(&ctx.paths(), volumes)
+            .map_err(|e| format!("写入卷结构失败: {e}"))?;
+    }
     let toml_content = file
         .to_toml_string()
         .map_err(|e| format!("序列化失败: {e}"))?;
-    std::fs::write(path, toml_content).map_err(|e| format!("写入失败: {e}"))
+    std::fs::write(path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(note)
 }
 
 /// 从 JSON Value 中读取字符串数组字段
@@ -789,6 +854,76 @@ mod tests {
         // 7. 验证 chapters.toml 落盘内容正确
         let out = get.execute(&serde_json::json!({})).unwrap();
         assert!(out.contains("进度: 1/1 完成"));
+    }
+
+    #[test]
+    fn design_chapters_reference_outline_volumes_without_passing_them() {
+        let (_tmp, ctx) = setup();
+        // 大纲层已有卷结构（唯一真相源），妙笔只传章节不传 volumes
+        std::fs::write(
+            ctx.paths().outline_toml(),
+            "[[volumes]]\nname = \"第一卷 风起\"\nsummary = \"离乡\"\ntheme = \"离别\"\n\n\
+             [[volumes]]\nname = \"第二卷 潮生\"\n",
+        )
+        .unwrap();
+
+        let design = DesignChaptersTool::new(ctx.clone());
+        design
+            .execute(&serde_json::json!({
+                "chapters": r#"[{"title":"雨夜","volume_order":1},{"title":"渡河","volume_order":2}]"#,
+            }))
+            .unwrap();
+
+        // 章节直接按 volume_order 引用大纲卷，无需导入提示
+        let (file, vols, _) = load_chapters(&ctx).unwrap();
+        assert_eq!(vols.len(), 2);
+        assert_eq!(vols[0].name, "第一卷 风起");
+        assert_eq!(file.chapters[0].volume_order, 1);
+        assert_eq!(file.chapters[1].volume_order, 2);
+        // 卷只存大纲，chapters.toml 不再有副本
+        let content = std::fs::read_to_string(ctx.paths().chapters_toml()).unwrap();
+        assert!(!content.contains("[[volumes]]"), "{content}");
+
+        // 妙笔读取脉络时能看到卷分组
+        let get = GetChapterOutlineTool::new(ctx.clone());
+        let out = get.execute(&serde_json::json!({})).unwrap();
+        assert!(out.contains("第一卷 风起"), "{out}");
+        assert!(out.contains("第二卷 潮生"), "{out}");
+    }
+
+    #[test]
+    fn design_chapters_placeholder_volume_without_outline() {
+        let (_tmp, ctx) = setup();
+        // 无大纲卷结构，章节引用卷 1/3 → 补齐连续占位卷（1、2、3）
+        let design = DesignChaptersTool::new(ctx.clone());
+        let res = design
+            .execute(&serde_json::json!({
+                "chapters": r#"[{"title":"雨夜","volume_order":1},{"title":"远行","volume_order":3}]"#,
+            }))
+            .unwrap();
+        assert!(res.contains("占位卷"), "{res}");
+        assert!(res.contains("第1卷、第2卷、第3卷"), "{res}");
+
+        // 占位卷落盘到大纲（唯一真相源），chapters.toml 保持无卷副本
+        let (_, vols, _) = load_chapters(&ctx).unwrap();
+        let orders: Vec<u32> = vols.iter().map(|v| v.order).collect();
+        assert_eq!(orders, vec![1, 2, 3], "{orders:?}");
+        assert!(vols.iter().any(|v| v.name == "第3卷"));
+    }
+
+    #[test]
+    fn all_unassigned_chapters_leave_volumes_empty() {
+        let (_tmp, ctx) = setup();
+        let design = DesignChaptersTool::new(ctx.clone());
+        design
+            .execute(&serde_json::json!({
+                "chapters": r#"[{"title":"雨夜","volume_order":0},{"title":"渡河"}]"#,
+            }))
+            .unwrap();
+        let content = std::fs::read_to_string(ctx.paths().chapters_toml()).unwrap();
+        assert!(!content.contains("[[volumes]]"), "{content}");
+        let (file, _vols, _) = load_chapters(&ctx).unwrap();
+        assert!(file.volumes.is_empty());
     }
 
     #[test]

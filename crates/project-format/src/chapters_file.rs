@@ -18,8 +18,9 @@ use thiserror::Error;
 /// chapters.toml 的完整内容
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChaptersFile {
-    /// 卷分组（章-卷映射的来源）
-    #[serde(default, rename = "volumes")]
+    /// 卷分组 —【遗留副本】卷的唯一真相源是 outline.toml 的 [[volumes]]。
+    /// 读取时经 volumes::unify_volumes 合并迁移后清空本字段；新写入不再含卷。
+    #[serde(default, rename = "volumes", skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<VolumeGroupDef>,
     /// 章节脉络（顺序数组即章序）
     #[serde(default, rename = "chapters")]

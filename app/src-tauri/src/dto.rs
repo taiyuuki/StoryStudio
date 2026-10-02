@@ -802,13 +802,13 @@ pub struct ChapterOutlineItemDto {
     pub status: String,
 }
 
-/// 读取章节脉络（chapters.toml，文件缺失按空处理）
+/// 读取章节脉络（chapters.toml 章节列表 + outline.toml 统一卷结构，
+/// 读取时完成遗留卷副本的合并迁移；文件缺失按空处理）
 pub fn build_chapters_outline(root: &Path) -> Result<ChaptersOutlineDto, String> {
     let paths = story_project_format::ProjectPaths::new(root);
-    let file = load_toml::<ChaptersFile>(&paths.chapters_toml())?;
+    let (file, volumes) = story_project_format::load_chapters_unified(&paths);
     Ok(ChaptersOutlineDto {
-        volumes: file
-            .volumes
+        volumes: volumes
             .iter()
             .map(|v| VolumeGroupDto {
                 name: v.name.clone(),
@@ -870,7 +870,17 @@ pub fn save_chapters_outline(root: &Path, dto: &ChaptersOutlineDto) -> Result<()
             summary: clean(&v.summary),
         });
     }
-    let valid_orders: Vec<u32> = volumes.iter().map(|v| v.order).collect();
+    // 统一卷序连续（数组序 1..n）：前端删除中间卷后 order 会跳跃，
+    // 压缩重编的同时把章节的卷引用一并重映射，避免断链
+    volumes.sort_by_key(|v| v.order);
+    let order_remap: std::collections::HashMap<u32, u32> = volumes
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.order, (i + 1) as u32))
+        .collect();
+    for (i, v) in volumes.iter_mut().enumerate() {
+        v.order = (i + 1) as u32;
+    }
 
     let mut chapters: Vec<ChapterOutlineDef> = Vec::new();
     for c in &dto.chapters {
@@ -881,11 +891,7 @@ pub fn save_chapters_outline(root: &Path, dto: &ChaptersOutlineDto) -> Result<()
         chapters.push(ChapterOutlineDef {
             chapter_id: clean(&c.chapter_id),
             title: title.to_string(),
-            volume_order: if valid_orders.contains(&c.volume_order) {
-                c.volume_order
-            } else {
-                0
-            },
+            volume_order: order_remap.get(&c.volume_order).copied().unwrap_or(0),
             summary: clean(&c.summary),
             goal: clean(&c.goal),
             beats: clean_list(&c.beats),
@@ -902,11 +908,18 @@ pub fn save_chapters_outline(root: &Path, dto: &ChaptersOutlineDto) -> Result<()
         });
     }
 
-    let file = ChaptersFile { volumes, chapters };
+    // 卷结构写入唯一真相源 outline.toml；chapters.toml 只存章节（卷副本不再保留）
+    let paths = story_project_format::ProjectPaths::new(root);
+    story_project_format::save_outline_volumes(&paths, &volumes)
+        .map_err(|e| format!("写入卷结构失败: {e}"))?;
+    let file = ChaptersFile {
+        volumes: Vec::new(),
+        chapters,
+    };
     let content = file
         .to_toml_string()
         .map_err(|e| format!("序列化 chapters.toml 失败: {e}"))?;
-    let path = story_project_format::ProjectPaths::new(root).chapters_toml();
+    let path = paths.chapters_toml();
     std::fs::write(&path, content).map_err(|e| format!("写入 chapters.toml 失败: {e}"))
 }
 
@@ -1304,5 +1317,49 @@ mod chapters_outline_tests {
         let loaded = build_chapters_outline(&root).unwrap();
         assert!(loaded.volumes.is_empty());
         assert!(loaded.chapters.is_empty());
+    }
+
+    #[test]
+    fn legacy_chapters_volumes_migrate_to_outline() {
+        // 旧格式：卷副本存在 chapters.toml、outline.toml 为空
+        let root = temp_root("legacy");
+        std::fs::write(
+            root.join("chapters.toml"),
+            r#"
+[[volumes]]
+name = "第一卷 风起"
+order = 1
+
+[[volumes]]
+name = "第二卷 潮生"
+order = 2
+
+[[chapters]]
+title = "雨夜"
+volume_order = 1
+
+[[chapters]]
+title = "渡河"
+volume_order = 2
+"#,
+        )
+        .unwrap();
+
+        let loaded = build_chapters_outline(&root).unwrap();
+        assert_eq!(loaded.volumes.len(), 2, "统一卷来自迁移结果");
+        assert_eq!(loaded.volumes[1].name, "第二卷 潮生");
+        assert_eq!(loaded.chapters[1].volume_order, 2);
+
+        // 迁移已落盘：chapters.toml 副本清空，卷归 outline.toml
+        let chapters_raw = std::fs::read_to_string(root.join("chapters.toml")).unwrap();
+        assert!(!chapters_raw.contains("[[volumes]]"), "{chapters_raw}");
+        let outline_raw = std::fs::read_to_string(root.join("outline.toml")).unwrap();
+        assert!(outline_raw.contains("第一卷 风起"), "{outline_raw}");
+        assert!(outline_raw.contains("第二卷 潮生"), "{outline_raw}");
+
+        // 再读取：结果一致（幂等），卷结构仍完整
+        let again = build_chapters_outline(&root).unwrap();
+        assert_eq!(again.volumes.len(), 2);
+        assert_eq!(again.chapters[1].volume_order, 2);
     }
 }

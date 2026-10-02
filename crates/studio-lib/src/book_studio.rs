@@ -867,14 +867,10 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
         .map(|f| f.threads.iter().map(|t| t.title.clone()).collect())
         .unwrap_or_default();
 
-    // 章节脉络
-    let chapters_file = std::fs::read_to_string(paths.chapters_toml())
-        .ok()
-        .and_then(|c| story_project_format::ChaptersFile::from_toml_str(&c).ok())
-        .unwrap_or_default();
+    // 章节脉络 + 统一卷结构（唯一真相源在 outline.toml）
+    let (chapters_file, unified_volumes) = story_project_format::load_chapters_unified(&paths);
 
-    let volumes: Vec<(String, u32, usize)> = chapters_file
-        .volumes
+    let volumes: Vec<(String, u32, usize)> = unified_volumes
         .iter()
         .map(|v| {
             let n = chapters_file
@@ -1187,41 +1183,34 @@ pub fn save_book_outline_batch(root: &Path, draft: &OutlineBatchDraft) -> Result
     }
     let paths = ProjectPaths::new(root);
     let chapters_path = paths.chapters_toml();
-    let mut file = std::fs::read_to_string(&chapters_path)
-        .ok()
-        .and_then(|c| story_project_format::ChaptersFile::from_toml_str(&c).ok())
-        .unwrap_or_default();
+    let (mut file, mut volumes) = story_project_format::load_chapters_unified(&paths);
 
-    // 追加新卷（order 冲突时顺延）
-    let mut max_volume = file.volumes.iter().map(|v| v.order).max().unwrap_or(0);
+    // 追加新卷到统一卷结构（重名跳过；统一卷序连续，order 即数组序）
     for v in &draft.volumes {
-        if v.name.is_empty() || file.volumes.iter().any(|x| x.name == v.name) {
+        if v.name.is_empty() || volumes.iter().any(|x| x.name == v.name) {
             continue;
         }
-        let order = if v.order > max_volume {
-            v.order
-        } else {
-            max_volume + 1
-        };
-        max_volume = order.max(max_volume);
-        file.volumes.push(story_project_format::VolumeGroupDef {
+        volumes.push(story_project_format::VolumeGroupDef {
             name: v.name.clone(),
-            order,
+            order: (volumes.len() + 1) as u32,
             theme: non_empty(&v.theme),
             summary: non_empty(&v.summary),
         });
     }
-    if file.volumes.is_empty() {
+    if volumes.is_empty() {
         // 无卷结构时兜底建第一卷
-        file.volumes.push(story_project_format::VolumeGroupDef {
+        volumes.push(story_project_format::VolumeGroupDef {
             name: "第一卷".to_string(),
             order: 1,
             theme: None,
             summary: None,
         });
     }
+    // 卷定义落盘到 outline.toml（唯一真相源）
+    story_project_format::save_outline_volumes(&paths, &volumes)
+        .map_err(|e| StudioError::Io(format!("写入卷结构失败: {e}")))?;
 
-    let valid_orders: Vec<u32> = file.volumes.iter().map(|v| v.order).collect();
+    let valid_orders: Vec<u32> = volumes.iter().map(|v| v.order).collect();
     // 向导表单收集的是角色名；workflow 按 StableId 解析 POV 与角色卡，这里统一映射为实体 ID
     //（名字或别名匹配，匹配不到的丢弃——避免写入悬空名字导致 POV 失效）
     let char_ids = character_id_map(&paths);
@@ -1696,7 +1685,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(file.chapters.len(), 4, "第二批应追加而非覆盖");
-        assert_eq!(file.volumes.len(), 2);
+        assert!(file.volumes.is_empty(), "卷唯一真相源在 outline.toml");
+        let outline = story_project_format::OutlineFile::from_toml_str(
+            &std::fs::read_to_string(paths.outline_toml()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(outline.volumes.len(), 2);
         assert_eq!(file.chapters[3].volume_order, 2);
         assert_eq!(file.chapters[3].status, "planned");
         // 角色名已映射为实体 ID（workflow 按 ID 解析 POV 与角色卡）

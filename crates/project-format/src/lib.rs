@@ -17,6 +17,7 @@ pub mod relation_file;
 pub mod slug;
 pub mod structure_toml;
 pub mod threads_file;
+pub mod volumes;
 pub mod worldview_file;
 
 pub use anchoring_file::{AnchoringFile, AnchoringFileError, UnresolvedRefDef};
@@ -35,6 +36,10 @@ pub use relation_file::{RelationDef, RelationFileError, RelationsFile};
 pub use slug::slugify;
 pub use structure_toml::{BookDef, ChapterDef, SceneDef, StructureFile};
 pub use threads_file::{ThreadsFile, ThreadsFileError};
+pub use volumes::{
+    load_chapters_unified, remap_due_volumes, save_outline_volumes, unify_volumes,
+    unified_groups, VolumeRemap, VolumeSyncError,
+};
 pub use worldview_file::{
     ConceptDef, ConceptsFile, SystemDef, SystemsFile, TimelineFile, WorldviewFileError,
     WorldviewSectionFile,

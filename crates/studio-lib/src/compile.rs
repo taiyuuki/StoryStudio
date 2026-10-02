@@ -147,7 +147,8 @@ fn grade_unused_thread_diagnostics(paths: &ProjectPaths, diagnostics: &mut Diagn
     }
 
     let threads = read_toml_if_exists::<ThreadsFile>(&paths.threads_toml()).unwrap_or_default();
-    let chapters = read_toml_if_exists::<ChaptersFile>(&paths.chapters_toml()).unwrap_or_default();
+    // 卷号语义依赖统一卷结构（outline.toml 为唯一真相源），走迁移读取
+    let chapters = crate::mutations::load_chapters_file(&paths).unwrap_or_default();
 
     // 已完稿章节的最大卷号（writing 的卷不算到期——还在写）
     let done_volume = chapters
