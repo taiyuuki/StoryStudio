@@ -129,7 +129,7 @@ pub fn write_fragment(
             crate::ai_ledger::record(
                 dir,
                 "续写",
-                provider.id(),
+                provider.id(), provider.model(),
                 resp.usage.total() as u64,
                 started.elapsed().as_millis() as u64,
                 true,
@@ -141,7 +141,7 @@ pub fn write_fragment(
             crate::ai_ledger::record(
                 dir,
                 "续写",
-                provider.id(),
+                provider.id(), provider.model(),
                 0,
                 started.elapsed().as_millis() as u64,
                 false,
@@ -219,7 +219,7 @@ pub fn extract_assertions(
             crate::ai_ledger::record(
                 dir,
                 "断言抽取",
-                provider.id(),
+                provider.id(), provider.model(),
                 resp.usage.total() as u64,
                 started.elapsed().as_millis() as u64,
                 true,
@@ -231,7 +231,7 @@ pub fn extract_assertions(
             crate::ai_ledger::record(
                 dir,
                 "断言抽取",
-                provider.id(),
+                provider.id(), provider.model(),
                 0,
                 started.elapsed().as_millis() as u64,
                 false,
@@ -344,7 +344,7 @@ pub fn write_fragment_streaming(
         Ok(()) => crate::ai_ledger::record(
             dir,
             "续写",
-            provider.id(),
+            provider.id(), provider.model(),
             tokens_used_ledger as u64,
             started.elapsed().as_millis() as u64,
             true,
@@ -353,7 +353,7 @@ pub fn write_fragment_streaming(
         Err(ref e) => crate::ai_ledger::record(
             dir,
             "续写",
-            provider.id(),
+            provider.id(), provider.model(),
             tokens_used_ledger as u64,
             started.elapsed().as_millis() as u64,
             false,
@@ -523,6 +523,7 @@ pub fn complete_fragment_streaming(
 
     // 4. 可取消的流式生成，增量原样转发
     let provider_id = provider.id().to_string();
+    let provider_model = provider.model().to_string();
     let on_delta = std::sync::Arc::clone(on_delta);
     let sink = std::sync::Arc::new(move |event: StreamEvent| {
         if let StreamEvent::Delta { delta } = event {
@@ -538,7 +539,7 @@ pub fn complete_fragment_streaming(
             crate::ai_ledger::record(
                 dir,
                 "行内补全",
-                &provider_id,
+                &provider_id, &provider_model,
                 0,
                 started.elapsed().as_millis() as u64,
                 false,
@@ -550,7 +551,7 @@ pub fn complete_fragment_streaming(
     crate::ai_ledger::record(
         dir,
         "行内补全",
-        &provider_id,
+        &provider_id, &provider_model,
         response.usage.total() as u64,
         started.elapsed().as_millis() as u64,
         true,

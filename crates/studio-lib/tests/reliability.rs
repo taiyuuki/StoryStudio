@@ -95,14 +95,15 @@ fn delete_fragment_leaves_history_snapshot() {
 #[test]
 fn ai_ledger_records_calls() {
     let (_dir, paths) = temp_project();
-    ai_ledger::record(paths.root(), "续写", "anthropic", 800, 2500, true, None);
-    ai_ledger::record(paths.root(), "妙笔对话", "openai", 300, 1200, false, Some("超时"));
+    ai_ledger::record(paths.root(), "续写", "anthropic", "claude-sonnet-4-5", 800, 2500, true, None);
+    ai_ledger::record(paths.root(), "妙笔对话", "openai", "gpt-5.2", 300, 1200, false, Some("超时"));
 
     let s = ai_ledger::summary(paths.root(), 10);
     assert_eq!(s.total_calls, 2);
     assert_eq!(s.total_tokens, 1100);
     assert_eq!(s.recent.len(), 2);
     assert_eq!(s.recent[0].scene, "妙笔对话");
+    assert_eq!(s.recent[0].model, "gpt-5.2");
 }
 
 #[test]

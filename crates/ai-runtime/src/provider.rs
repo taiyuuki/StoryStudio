@@ -17,6 +17,11 @@ pub trait AiProvider: Send + Sync + std::fmt::Debug {
     /// Provider 标识（如 "openai"、"anthropic"、"ollama"）
     fn id(&self) -> &str;
 
+    /// 模型名（账本展示用；自定义 provider 未实现时为空）
+    fn model(&self) -> &str {
+        ""
+    }
+
     /// 发送请求，返回生成的文本
     fn generate(&self, request: &GenerateRequest) -> Result<GenerateResponse, AiError>;
 

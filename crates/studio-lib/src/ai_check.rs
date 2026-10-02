@@ -118,12 +118,13 @@ pub fn check_fragment(
 ) -> Result<AiCheckReport, StudioError> {
     let started = std::time::Instant::now();
     let provider_id = provider.id().to_string();
+    let provider_model = provider.model().to_string();
     let result = check_fragment_inner(dir, fragment_id, provider);
     match &result {
         Ok(report) => crate::ai_ledger::record(
             dir,
             "AI 审校",
-            &provider_id,
+            &provider_id, &provider_model,
             report.tokens_used as u64,
             started.elapsed().as_millis() as u64,
             true,
@@ -132,7 +133,7 @@ pub fn check_fragment(
         Err(e) => crate::ai_ledger::record(
             dir,
             "AI 审校",
-            &provider_id,
+            &provider_id, &provider_model,
             0,
             started.elapsed().as_millis() as u64,
             false,
@@ -264,12 +265,13 @@ pub fn check_scope(
 ) -> Result<AiCheckBatchReport, StudioError> {
     let started = std::time::Instant::now();
     let provider_id = provider.id().to_string();
+    let provider_model = provider.model().to_string();
     let result = check_scope_inner(dir, scope, id, provider);
     match &result {
         Ok(report) => crate::ai_ledger::record(
             dir,
             "AI 审校",
-            &provider_id,
+            &provider_id, &provider_model,
             report.tokens_used as u64,
             started.elapsed().as_millis() as u64,
             true,
@@ -278,7 +280,7 @@ pub fn check_scope(
         Err(e) => crate::ai_ledger::record(
             dir,
             "AI 审校",
-            &provider_id,
+            &provider_id, &provider_model,
             0,
             started.elapsed().as_millis() as u64,
             false,

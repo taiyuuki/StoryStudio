@@ -10,16 +10,35 @@ const goalEditing = ref(false)
 const goalDraft = ref(2000)
 const ledger = ref<AiLedgerSummaryDto | null>(null)
 
+// AI 账本分页（后端返回全量保留条目）
+const PAGE_SIZE = 10
+const page = ref(1)
+
 onMounted(() => {
   void store.refreshStats()
   if (store.root) {
     api.aiLedgerSummary(store.root).then(
-      (v) => (ledger.value = v),
+      (v) => {
+        ledger.value = v
+        page.value = 1
+      },
       () => {},
     )
   }
   goalDraft.value = store.stats?.dailyGoal ?? 2000
 })
+
+const totalPages = computed(() =>
+  ledger.value ? Math.max(1, Math.ceil(ledger.value.recent.length / PAGE_SIZE)) : 1,
+)
+const pagedRecords = computed(() => {
+  const list = ledger.value?.recent ?? []
+  return list.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE)
+})
+
+function turnPage(delta: number) {
+  page.value = Math.min(totalPages.value, Math.max(1, page.value + delta))
+}
 
 const stats = computed(() => store.stats)
 const todayTotal = computed(() => (stats.value?.today.manual ?? 0) + (stats.value?.today.ai ?? 0))
@@ -136,7 +155,7 @@ function formatTime(ts: number): string {
           </div>
         </div>
         <ul class="ledger-list">
-          <li v-for="(r, i) in ledger.recent" :key="i">
+          <li v-for="(r, i) in pagedRecords" :key="`${page}-${i}`">
             <i
               class="fa-solid"
               :class="r.ok ? 'fa-circle-check text-success' : 'fa-circle-exclamation text-danger'"
@@ -144,12 +163,31 @@ function formatTime(ts: number): string {
             <div class="lr-main">
               <span class="lr-scene">{{ r.scene }}</span>
               <span class="lr-meta num">
-                {{ r.tokens.toLocaleString() }} tok · {{ formatDuration(r.durationMs) }} · {{ r.provider }}
+                {{ r.tokens.toLocaleString() }} tok · {{ formatDuration(r.durationMs) }} · {{ r.model || r.provider }}
               </span>
             </div>
             <span class="lr-time">{{ formatTime(r.ts) }}</span>
           </li>
         </ul>
+        <div v-if="totalPages > 1" class="ledger-pager">
+          <button
+            class="ink-icon-btn"
+            :disabled="page <= 1"
+            title="上一页"
+            @click="turnPage(-1)"
+          >
+            <i class="fa-solid fa-angle-left" />
+          </button>
+          <span class="pager-ind num">{{ page }} / {{ totalPages }}</span>
+          <button
+            class="ink-icon-btn"
+            :disabled="page >= totalPages"
+            title="下一页"
+            @click="turnPage(1)"
+          >
+            <i class="fa-solid fa-angle-right" />
+          </button>
+        </div>
       </div>
       <p v-else class="ledger-empty">还没有 AI 调用记录；续写、妙笔对话、逐章成书的花销会记在这里</p>
     </section>
@@ -416,6 +454,25 @@ function formatTime(ts: number): string {
     color: var(--ink-disabled);
     font-size: 10.5px;
   }
+}
+
+.ledger-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 10px;
+
+  .ink-icon-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+}
+
+.pager-ind {
+  font-size: 11px;
+  color: var(--ink-muted);
+  letter-spacing: 0.06em;
 }
 
 .ledger-empty {

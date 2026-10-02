@@ -1289,7 +1289,7 @@ fn llm_json(
             Ok(resp) => crate::ai_ledger::record(
                 root,
                 "AI 建书·大纲",
-                provider.id(),
+                provider.id(), provider.model(),
                 resp.usage.total() as u64,
                 started.elapsed().as_millis() as u64,
                 true,
@@ -1298,7 +1298,7 @@ fn llm_json(
             Err(ref e) => crate::ai_ledger::record(
                 root,
                 "AI 建书·大纲",
-                provider.id(),
+                provider.id(), provider.model(),
                 0,
                 started.elapsed().as_millis() as u64,
                 false,

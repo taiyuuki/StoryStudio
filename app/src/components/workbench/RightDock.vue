@@ -28,24 +28,17 @@ const busyPanels = computed<Record<string, boolean>>(() => ({
   book: book.running,
 }))
 
+// 轨道顺序按使用频率排：写作时高频查阅在前（妙笔/脉络/设定/统计），
+// 批量生产居中，质检维护靠后（有角标主动提醒，不依赖位置），里程碑动作垫底
 const panels = computed(
   () =>
     new Map<string, { label: string; icon: string; comp: Component; badge?: number }>([
       ['miao', { label: '妙笔', icon: 'fa-solid fa-feather-pointed', comp: AiPanel }],
-      ['stats', { label: '码字统计', icon: 'fa-solid fa-chart-simple', comp: StatsPanel }],
-      ['book', { label: '逐章成书', icon: 'fa-solid fa-book-open', comp: BookPanel }],
       ['chapters', { label: '章节脉络', icon: 'fa-solid fa-list-ol', comp: ChaptersPanel }],
       ['entities', { label: '设定', icon: 'fa-solid fa-users', comp: EntityPanel }],
-      [
-        'anchoring',
-        {
-          label: '锚定待审',
-          icon: 'fa-solid fa-anchor',
-          comp: AnchoringReviewPanel,
-          badge: store.ws?.unresolvedRefs.filter((r) => r.status === 'pending').length ?? 0,
-        },
-      ],
+      ['stats', { label: '码字统计', icon: 'fa-solid fa-chart-simple', comp: StatsPanel }],
       ['worldview', { label: '世界观', icon: 'fa-solid fa-globe', comp: WorldviewPanel }],
+      ['book', { label: '逐章成书', icon: 'fa-solid fa-book-open', comp: BookPanel }],
       ['threads', { label: '叙事线索', icon: 'fa-solid fa-route', comp: ThreadPanel }],
       [
         'diagnostics',
@@ -56,8 +49,17 @@ const panels = computed(
           badge: store.errorCount + store.warningCount,
         },
       ],
-      ['export', { label: '导出成书', icon: 'fa-solid fa-file-export', comp: ExportPanel }],
+      [
+        'anchoring',
+        {
+          label: '锚定待审',
+          icon: 'fa-solid fa-anchor',
+          comp: AnchoringReviewPanel,
+          badge: store.ws?.unresolvedRefs.filter((r) => r.status === 'pending').length ?? 0,
+        },
+      ],
       ['git', { label: '版本', icon: 'fa-solid fa-code-branch', comp: GitPanel }],
+      ['export', { label: '导出成书', icon: 'fa-solid fa-file-export', comp: ExportPanel }],
     ]),
 )
 

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::journal;
 
 /// 保留条数上限
-const MAX_ENTRIES: usize = 500;
+pub const MAX_ENTRIES: usize = 500;
 
 /// 单次调用记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +23,9 @@ pub struct AiCallRecord {
     pub scene: String,
     /// Provider 标识（anthropic / openai …）
     pub provider: String,
+    /// 模型名（旧账本无此字段，展示时回退 provider）
+    #[serde(default)]
+    pub model: String,
     /// token 消耗（不可得时为 0）
     pub tokens: u64,
     /// 耗时（毫秒）
@@ -64,6 +67,7 @@ pub fn record(
     root: &Path,
     scene: &str,
     provider: &str,
+    model: &str,
     tokens: u64,
     duration_ms: u64,
     ok: bool,
@@ -74,6 +78,7 @@ pub fn record(
         ts: journal::now_ms(),
         scene: scene.to_string(),
         provider: provider.to_string(),
+        model: model.to_string(),
         tokens,
         duration_ms,
         ok,
@@ -135,8 +140,8 @@ mod tests {
     #[test]
     fn records_and_summarizes() {
         let (_dir, paths) = temp_root();
-        record(&paths, "续写", "anthropic", 1200, 3400, true, None);
-        record(&paths, "妙笔对话", "openai", 0, 900, false, Some("401 未授权\n请检查 Key"));
+        record(&paths, "续写", "anthropic", "claude-sonnet-4-5", 1200, 3400, true, None);
+        record(&paths, "妙笔对话", "openai", "gpt-5.2", 0, 900, false, Some("401 未授权\n请检查 Key"));
 
         let s = summary(&paths, 10);
         assert_eq!(s.total_calls, 2);
@@ -151,7 +156,7 @@ mod tests {
     fn caps_entries() {
         let (_dir, paths) = temp_root();
         for i in 0..(MAX_ENTRIES + 20) {
-            record(&paths, &format!("场景{i}"), "openai", 1, 1, true, None);
+            record(&paths, &format!("场景{i}"), "openai", "gpt-5.2", 1, 1, true, None);
         }
         assert_eq!(load(&paths).entries.len(), MAX_ENTRIES);
         let s = summary(&paths, 1);

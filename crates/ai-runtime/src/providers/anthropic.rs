@@ -89,6 +89,10 @@ impl AiProvider for AnthropicProvider {
         "anthropic"
     }
 
+    fn model(&self) -> &str {
+        &self.model
+    }
+
     fn generate(&self, request: &GenerateRequest) -> Result<GenerateResponse, AiError> {
         let request = super::with_profile_max_tokens(self.max_tokens, request);
         let adapter = self.build_adapter(&request);

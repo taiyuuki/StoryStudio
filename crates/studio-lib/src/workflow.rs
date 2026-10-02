@@ -476,7 +476,7 @@ fn run_workflow_inner(
             Ok(resp) => crate::ai_ledger::record(
                 dir,
                 &chapter_label,
-                provider.id(),
+                provider.id(), provider.model(),
                 resp.usage.total() as u64,
                 chapter_gen_started.elapsed().as_millis() as u64,
                 true,
@@ -485,7 +485,7 @@ fn run_workflow_inner(
             Err(e) => crate::ai_ledger::record(
                 dir,
                 &chapter_label,
-                provider.id(),
+                provider.id(), provider.model(),
                 0,
                 chapter_gen_started.elapsed().as_millis() as u64,
                 false,

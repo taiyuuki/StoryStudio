@@ -294,6 +294,7 @@ pub fn agent_chat_streaming(
     on_step: StepCallback,
 ) -> Result<AgentTrace, StudioError> {
     let provider_id = provider.id().to_string();
+    let provider_model = provider.model().to_string();
     let started = std::time::Instant::now();
     let store = session_store();
     let factory = project_agent_factory(dir.to_path_buf(), provider);
@@ -312,7 +313,7 @@ pub fn agent_chat_streaming(
         Ok(trace) => crate::ai_ledger::record(
             dir,
             "妙笔对话",
-            &provider_id,
+            &provider_id, &provider_model,
             trace.total_tokens as u64,
             started.elapsed().as_millis() as u64,
             true,
@@ -321,7 +322,7 @@ pub fn agent_chat_streaming(
         Err(e) => crate::ai_ledger::record(
             dir,
             "妙笔对话",
-            &provider_id,
+            &provider_id, &provider_model,
             0,
             started.elapsed().as_millis() as u64,
             false,

@@ -400,6 +400,8 @@ export interface AiCallRecordDto {
   ts: number
   scene: string
   provider: string
+  /** 模型名（旧账本记录无此字段，展示时回退 provider） */
+  model: string
   tokens: number
   durationMs: number
   ok: boolean
@@ -410,7 +412,7 @@ export interface AiLedgerSummaryDto {
   totalCalls: number
   totalTokens: number
   totalDurationMs: number
-  /** 最近若干条（新 → 旧） */
+  /** 全部保留条目（新 → 旧，最多 500 条，前端分页展示） */
   recent: AiCallRecordDto[]
 }
 

@@ -252,7 +252,7 @@ pub fn stats_sync_clock(root: String, tz_offset_min: i32) -> R<()> {
 
 #[tauri::command]
 pub fn ai_ledger_summary(root: String) -> R<lib::ai_ledger::AiLedgerSummary> {
-    Ok(lib::ai_ledger::summary(Path::new(&root), 20))
+    Ok(lib::ai_ledger::summary(Path::new(&root), lib::ai_ledger::MAX_ENTRIES))
 }
 
 // ============================================================================
