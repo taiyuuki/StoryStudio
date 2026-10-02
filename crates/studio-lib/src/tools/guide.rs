@@ -16,6 +16,15 @@ const WUXIA_GUIDE: &str = include_str!("guides/wuxia.md");
 const MYSTERY_GUIDE: &str = include_str!("guides/mystery.md");
 const ROMANCE_GUIDE: &str = include_str!("guides/romance.md");
 const FANTASY_GUIDE: &str = include_str!("guides/fantasy.md");
+const URBAN_GUIDE: &str = include_str!("guides/urban.md");
+const SCIFI_GUIDE: &str = include_str!("guides/scifi.md");
+const HISTORY_GUIDE: &str = include_str!("guides/history.md");
+const GAMES_GUIDE: &str = include_str!("guides/games.md");
+const MILITARY_GUIDE: &str = include_str!("guides/military.md");
+const XIANXIA_GUIDE: &str = include_str!("guides/xianxia.md");
+const SUPERNATURAL_GUIDE: &str = include_str!("guides/supernatural.md");
+const LIGHTNOVEL_GUIDE: &str = include_str!("guides/lightnovel.md");
+const REALISM_GUIDE: &str = include_str!("guides/realism.md");
 
 /// 内置指导（name → 内容）
 fn builtin_guide(name: &str) -> Option<&'static str> {
@@ -24,6 +33,15 @@ fn builtin_guide(name: &str) -> Option<&'static str> {
         "mystery" => Some(MYSTERY_GUIDE),
         "romance" => Some(ROMANCE_GUIDE),
         "fantasy" => Some(FANTASY_GUIDE),
+        "urban" => Some(URBAN_GUIDE),
+        "scifi" => Some(SCIFI_GUIDE),
+        "history" => Some(HISTORY_GUIDE),
+        "games" => Some(GAMES_GUIDE),
+        "military" => Some(MILITARY_GUIDE),
+        "xianxia" => Some(XIANXIA_GUIDE),
+        "supernatural" => Some(SUPERNATURAL_GUIDE),
+        "lightnovel" => Some(LIGHTNOVEL_GUIDE),
+        "realism" => Some(REALISM_GUIDE),
         _ => None,
     }
 }
@@ -35,6 +53,15 @@ fn guide_display_name(name: &str) -> &str {
         "mystery" => "悬疑/推理",
         "romance" => "言情",
         "fantasy" => "奇幻/玄幻",
+        "urban" => "都市/异能",
+        "scifi" => "科幻",
+        "history" => "历史",
+        "games" => "游戏/电竞",
+        "military" => "军事",
+        "xianxia" => "仙侠/修真",
+        "supernatural" => "灵异/惊悚",
+        "lightnovel" => "轻小说",
+        "realism" => "现实",
         other => other,
     }
 }
@@ -52,11 +79,29 @@ fn normalize_genre(tag: &str) -> Option<&'static str> {
         "悬疑" | "推理" | "悬疑推理" | "悬疑/推理" => Some("mystery"),
         "言情" => Some("romance"),
         "奇幻" | "玄幻" | "奇幻玄幻" | "奇幻/玄幻" => Some("fantasy"),
+        "都市" | "都市异能" | "都市·异能" | "异能" => Some("urban"),
+        "科幻" => Some("scifi"),
+        "历史" | "历史架空" | "架空历史" | "历史古代" => Some("history"),
+        "游戏" | "电竞" | "游戏电竞" | "游戏·电竞" | "竞技" => Some("games"),
+        "军事" | "军旅" | "战争" => Some("military"),
+        "仙侠" | "修真" | "修仙" => Some("xianxia"),
+        "灵异" | "惊悚" | "志怪" => Some("supernatural"),
+        "轻小说" => Some("lightnovel"),
+        "现实" | "现实向" | "现实题材" | "温暖现实" => Some("realism"),
         _ => match lower.as_str() {
             "wuxia" => Some("wuxia"),
             "mystery" | "detective" => Some("mystery"),
             "romance" => Some("romance"),
-            "fantasy" | "xianxia" => Some("fantasy"),
+            "fantasy" => Some("fantasy"),
+            "urban" => Some("urban"),
+            "scifi" | "sci-fi" | "science-fiction" => Some("scifi"),
+            "history" => Some("history"),
+            "games" | "esports" => Some("games"),
+            "military" | "war" => Some("military"),
+            "xianxia" => Some("xianxia"),
+            "supernatural" | "horror" => Some("supernatural"),
+            "lightnovel" | "light-novel" => Some("lightnovel"),
+            "realism" => Some("realism"),
             _ => None,
         },
     }
@@ -131,10 +176,11 @@ impl Tool for GetWritingGuideTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "get_writing_guide".into(),
-            description: "获取指定作品类型的专项创作指导（武侠/悬疑推理/言情/奇幻玄幻），\
-                作为通用创作心法的补充。动笔前、遇到类型相关的叙事决策（如武侠的打斗写法、\
-                悬疑的线索铺排）时调用。支持多标签聚合：如 [\"武侠\",\"悬疑\"] 会返回两份指导。\
-                项目 guides/ 目录可放置同名 .md 覆盖内置内容。"
+            description: "获取指定作品类型的专项创作指导，作为通用创作心法的补充。\
+                内置类型：武侠/悬疑推理/言情/奇幻玄幻/都市异能/科幻/历史/游戏电竞/军事/仙侠修真/\
+                灵异惊悚/轻小说/现实题材。动笔前、遇到类型相关的叙事决策（如武侠的打斗写法、\
+                悬疑的线索铺排、都市文的打脸节奏）时调用。支持多标签聚合：\
+                如 [\"武侠\",\"悬疑\"] 会返回两份指导。项目 guides/ 目录可放置同名 .md 覆盖内置内容。"
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -142,7 +188,8 @@ impl Tool for GetWritingGuideTool {
                     "genres": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "作品类型标签。常用值：武侠、悬疑、推理、言情、奇幻、玄幻。\
+                        "description": "作品类型标签。常用值：武侠、悬疑、言情、奇幻、玄幻、仙侠、\
+                            都市、异能、科幻、历史、游戏、电竞、军事、灵异、轻小说、现实。\
                             可从 outline.story.genre 推断；混合类型传多个标签。"
                     }
                 },
@@ -235,16 +282,34 @@ mod tests {
         assert_eq!(normalize_genre("言情"), Some("romance"));
         assert_eq!(normalize_genre("奇幻"), Some("fantasy"));
         assert_eq!(normalize_genre("玄幻"), Some("fantasy"));
+        // 第二批内置类型
+        assert_eq!(normalize_genre("都市"), Some("urban"));
+        assert_eq!(normalize_genre("都市异能"), Some("urban"));
+        assert_eq!(normalize_genre("异能"), Some("urban"));
+        assert_eq!(normalize_genre("科幻"), Some("scifi"));
+        assert_eq!(normalize_genre("历史"), Some("history"));
+        assert_eq!(normalize_genre("架空历史"), Some("history"));
+        assert_eq!(normalize_genre("游戏"), Some("games"));
+        assert_eq!(normalize_genre("电竞"), Some("games"));
+        assert_eq!(normalize_genre("竞技"), Some("games"));
+        assert_eq!(normalize_genre("军事"), Some("military"));
+        assert_eq!(normalize_genre("仙侠"), Some("xianxia"));
+        assert_eq!(normalize_genre("修真"), Some("xianxia"));
+        assert_eq!(normalize_genre("灵异"), Some("supernatural"));
+        assert_eq!(normalize_genre("轻小说"), Some("lightnovel"));
+        assert_eq!(normalize_genre("现实"), Some("realism"));
+        assert_eq!(normalize_genre("现实题材"), Some("realism"));
         // 英文别名
         assert_eq!(normalize_genre("wuxia"), Some("wuxia"));
         assert_eq!(normalize_genre("Mystery"), Some("mystery"));
-        assert_eq!(normalize_genre("xianxia"), Some("fantasy"));
+        assert_eq!(normalize_genre("xianxia"), Some("xianxia"));
+        assert_eq!(normalize_genre("Sci-Fi"), Some("scifi"));
+        assert_eq!(normalize_genre("esports"), Some("games"));
     }
 
     #[test]
     fn normalize_genre_unknown_returns_none() {
-        assert_eq!(normalize_genre("科幻"), None);
-        assert_eq!(normalize_genre("历史"), None);
+        assert_eq!(normalize_genre("克苏鲁"), None);
         assert_eq!(normalize_genre("random"), None);
     }
 
@@ -254,6 +319,16 @@ mod tests {
         assert!(builtin_guide("mystery").unwrap().contains("线索公平性"));
         assert!(builtin_guide("romance").unwrap().contains("化学反应"));
         assert!(builtin_guide("fantasy").unwrap().contains("世界观沉浸"));
+        // 第二批内置指南各有实质内容
+        assert!(builtin_guide("urban").unwrap().contains("打脸"));
+        assert!(builtin_guide("scifi").unwrap().contains("设定"));
+        assert!(builtin_guide("history").unwrap().contains("时代质感"));
+        assert!(builtin_guide("games").unwrap().contains("比赛"));
+        assert!(builtin_guide("military").unwrap().contains("代价"));
+        assert!(builtin_guide("xianxia").unwrap().contains("境界"));
+        assert!(builtin_guide("supernatural").unwrap().contains("规则"));
+        assert!(builtin_guide("lightnovel").unwrap().contains("吐槽"));
+        assert!(builtin_guide("realism").unwrap().contains("行业"));
         assert!(builtin_guide("nonexistent").is_none());
     }
 
@@ -289,12 +364,12 @@ mod tests {
         let ctx = ToolContext::new(dir.path());
         let tool = GetWritingGuideTool::new(ctx);
 
-        let args = serde_json::json!({"genres": ["武侠", "科幻"]});
+        let args = serde_json::json!({"genres": ["武侠", "克苏鲁"]});
         let result = tool.execute(&args).unwrap();
         // 武侠部分有内容
         assert!(result.contains("江湖氛围"));
-        // 科幻缺失被提示
-        assert!(result.contains("科幻"));
+        // 克苏鲁缺失被提示
+        assert!(result.contains("克苏鲁"));
         assert!(result.contains("暂无内置指导"));
     }
 
@@ -337,18 +412,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let guides_dir = dir.path().join("guides");
         std::fs::create_dir_all(&guides_dir).unwrap();
+        // 克苏鲁无内置指导：验证按原始标签读取项目自定义文件
         std::fs::write(
-            guides_dir.join("科幻.md"),
-            "# 科幻创作指导\n\n硬科幻的设定自洽。",
+            guides_dir.join("克苏鲁.md"),
+            "# 克苏鲁创作指导\n\n不可名状的恐惧。",
         )
         .unwrap();
 
         let ctx = ToolContext::new(dir.path());
         let tool = GetWritingGuideTool::new(ctx);
 
-        let args = serde_json::json!({"genres": ["科幻"]});
+        let args = serde_json::json!({"genres": ["克苏鲁"]});
         let result = tool.execute(&args).unwrap();
-        assert!(result.contains("硬科幻"));
+        assert!(result.contains("不可名状"));
     }
 
     #[test]
