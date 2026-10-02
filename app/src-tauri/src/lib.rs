@@ -3,16 +3,69 @@
 pub mod commands;
 pub mod dto;
 
-use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri::{LogicalPosition, LogicalSize, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 use tauri::TitleBarStyle;
 
+/// 初始窗口的理想尺寸
+const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 960.0);
+/// 窗口最小尺寸（工作区塞不下默认值时同步放宽）
+const MIN_WINDOW_SIZE: (f64, f64) = (1100.0, 720.0);
+
+/// 把窗口钳进显示器工作区（排除任务栏 / Dock）并居中。
+///
+/// 固定 1440×960 在高 DPI 缩放或小屏笔记本上会超出可视高度，
+/// 底部压住任务栏；builder 的 `center()` 按整屏居中，任务栏在底部时
+/// 同样偏低。这里按工作区收缩尺寸、按工作区中心摆位。
+fn clamp_window_to_work_area(window: &tauri::WebviewWindow) {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return; // 拿不到显示器信息就维持 builder 的默认尺寸与居中
+    };
+
+    // 工作区是物理像素，窗口 API 用逻辑像素
+    let scale = monitor.scale_factor();
+    let wa = monitor.work_area();
+    let (wa_x, wa_y) = (
+        wa.position.x as f64 / scale,
+        wa.position.y as f64 / scale,
+    );
+    let (wa_w, wa_h) = (
+        wa.size.width as f64 / scale,
+        wa.size.height as f64 / scale,
+    );
+
+    // 给窗口阴影与边线留一点呼吸；下限保证极端小屏（低于最小尺寸的
+    // 工作区）仍能完整放下窗口，此时同步放宽最小尺寸约束
+    let margin = 12.0;
+    let target_w = DEFAULT_WINDOW_SIZE
+        .0
+        .min((wa_w - margin * 2.0).max(MIN_WINDOW_SIZE.0.min(wa_w)));
+    let target_h = DEFAULT_WINDOW_SIZE
+        .1
+        .min((wa_h - margin * 2.0).max(MIN_WINDOW_SIZE.1.min(wa_h)));
+
+    if target_w < MIN_WINDOW_SIZE.0 || target_h < MIN_WINDOW_SIZE.1 {
+        let _ = window.set_min_size(Some(LogicalSize::new(target_w, target_h)));
+    }
+
+    let _ = window.set_size(LogicalSize::new(target_w, target_h));
+    let _ = window.set_position(LogicalPosition::new(
+        wa_x + (wa_w - target_w) / 2.0,
+        wa_y + (wa_h - target_h) / 2.0,
+    ));
+}
+
 fn build_main_window(app: &mut tauri::App) -> Result<(), tauri::Error> {
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
         .title("StoryStudio")
-        .inner_size(1440.0, 960.0)
-        .min_inner_size(1100.0, 720.0)
+        .inner_size(DEFAULT_WINDOW_SIZE.0, DEFAULT_WINDOW_SIZE.1)
+        .min_inner_size(MIN_WINDOW_SIZE.0, MIN_WINDOW_SIZE.1)
         .center()
         .visible(false)
         .shadow(true);
@@ -27,6 +80,7 @@ fn build_main_window(app: &mut tauri::App) -> Result<(), tauri::Error> {
     let builder = builder.decorations(false);
 
     let window = builder.build()?;
+    clamp_window_to_work_area(&window);
     window.show()?;
     Ok(())
 }
