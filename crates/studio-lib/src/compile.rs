@@ -9,7 +9,7 @@ use story_ir::{LocationIndex, StoryIR};
 use story_knowledge::KnowledgeBase;
 use story_parser::{parse_project, ParseOutput};
 use story_project_format::{
-    AssertionsFile, ChaptersFile, EvidenceFile, ProjectPaths, ThreadsFile,
+    AssertionsFile, EvidenceFile, ProjectPaths, ThreadsFile,
 };
 
 use crate::error::StudioError;

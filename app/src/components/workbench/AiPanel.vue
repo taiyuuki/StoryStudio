@@ -471,6 +471,9 @@ onActivated(() => void scrollToBottom())
               {{ opt }}
             </button>
           </div>
+          <div v-if="!it.answered" class="ask-custom">
+            {{ it.options?.length ? '以上不合意时，可在下方输入框自定义回答' : '在下方输入框输入你的回答' }}
+          </div>
           <div v-else-if="it.answered" class="ask-done">已回答</div>
         </div>
 
@@ -591,7 +594,7 @@ onActivated(() => void scrollToBottom())
         <button
           v-else
           class="ink-btn ink-btn--primary ink-btn--sm miao-send"
-          :disabled="running || !input.trim()"
+          :disabled="(running && !answerMode) || !input.trim()"
           @click="send"
         >
           <i class="fa-solid fa-paper-plane" />
@@ -953,6 +956,12 @@ onActivated(() => void scrollToBottom())
         cursor: default;
       }
     }
+  }
+
+  .ask-custom {
+    margin-top: 8px;
+    font-size: 11.5px;
+    color: var(--ink-muted);
   }
 
   .ask-done {
