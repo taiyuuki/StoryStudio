@@ -11,6 +11,14 @@ export interface RecentProject {
   openedAt: number
 }
 
+/** 每个项目的上次编辑位置（首页「继续写作」直达） */
+export interface LastScene {
+  sceneId: string
+  chapterTitle: string
+  sceneTitle: string
+  ts: number
+}
+
 /** 主题直接落 localStorage，避免依赖插件的恢复时机 */
 const THEME_KEY = 'ss-theme'
 
@@ -30,6 +38,8 @@ export const useUiStore = defineStore(
       localStorage.getItem(THEME_KEY) === 'theme-dark' ? 'theme-dark' : 'theme-ink',
     )
     const recentProjects = ref<RecentProject[]>([])
+    /** root → 上次编辑的场景（随最近项目一起清理与持久化） */
+    const lastScene = ref<Record<string, LastScene>>({})
     const activePanel = ref<DockPanel>(null)
     const dockWidth = ref(DOCK_WIDTH_DEFAULT)
     /** 编辑器 AI 幽灵补全（Tab 采纳 / Esc 关闭） */
@@ -51,10 +61,26 @@ export const useUiStore = defineStore(
       const list = recentProjects.value.filter((p) => p.root !== root)
       list.unshift({ root, name, openedAt: Date.now() })
       recentProjects.value = list.slice(0, 10)
+      // 位置记忆随最近列表一起收敛，避免无限增长
+      const alive = new Set(recentProjects.value.map((p) => p.root))
+      const kept: Record<string, LastScene> = {}
+      for (const [k, v] of Object.entries(lastScene.value)) {
+        if (alive.has(k)) kept[k] = v
+      }
+      lastScene.value = kept
     }
 
     function forgetProject(root: string) {
       recentProjects.value = recentProjects.value.filter((p) => p.root !== root)
+      if (lastScene.value[root]) {
+        const next = { ...lastScene.value }
+        delete next[root]
+        lastScene.value = next
+      }
+    }
+
+    function rememberScene(root: string, scene: LastScene) {
+      lastScene.value = { ...lastScene.value, [root]: scene }
     }
 
     function togglePanel(panel: Exclude<DockPanel, null>) {
@@ -73,19 +99,21 @@ export const useUiStore = defineStore(
     return {
       theme,
       recentProjects,
+      lastScene,
       activePanel,
       dockWidth,
       aiGhost,
       toggleTheme,
       rememberProject,
       forgetProject,
+      rememberScene,
       togglePanel,
     }
   },
   {
     persist: {
       storage: localStorage,
-      pick: ['recentProjects', 'activePanel', 'dockWidth', 'aiGhost'],
+      pick: ['recentProjects', 'lastScene', 'activePanel', 'dockWidth', 'aiGhost'],
     },
   },
 )

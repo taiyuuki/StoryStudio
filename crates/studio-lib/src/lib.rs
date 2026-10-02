@@ -58,7 +58,8 @@ pub use git::{
 pub use mutations::EntityKind;
 pub use mutations::{repair_project, RepairReport};
 pub use project::{
-    create_project, init_project, open_project, project_info, FileCounts, Project, ProjectInfo,
+    create_project, init_project, open_project, peek, peek_projects, project_info, FileCounts,
+    PeekEntry, Project, ProjectInfo, ProjectPeek,
 };
 pub use story_ai_runtime::ApiMode;
 pub use story_exporter::ChapterFile;

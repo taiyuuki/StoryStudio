@@ -48,6 +48,14 @@ pub fn refresh_workspace(root: String) -> R<WorkspaceDto> {
     open_project(root)
 }
 
+/// 首页书案：批量轻量窥视最近项目（扫片段文件，走线程池避免阻塞主线程）
+#[tauri::command]
+pub async fn peek_projects(roots: Vec<String>) -> R<Vec<lib::PeekEntry>> {
+    tauri::async_runtime::spawn_blocking(move || lib::peek_projects(&roots))
+        .await
+        .map_err(|err| err.to_string())
+}
+
 // ============================================================================
 // 结构：Chapter / Scene
 // ============================================================================

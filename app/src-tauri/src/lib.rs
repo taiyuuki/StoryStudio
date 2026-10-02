@@ -44,6 +44,7 @@ pub fn run() {
             commands::create_project,
             commands::open_project,
             commands::refresh_workspace,
+            commands::peek_projects,
             // 结构
             commands::create_chapter,
             commands::rename_chapter,

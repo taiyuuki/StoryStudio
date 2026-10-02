@@ -178,6 +178,29 @@ export interface WorkspaceDto {
   totalWords: number
 }
 
+/** 首页书案：项目轻量概览（不建 IR，批量拉取） */
+export interface ProjectPeekDto {
+  root: string
+  name: string
+  /** 目标字数（outline.toml [story]，未设为 null） */
+  targetWords: number | null
+  chapterCount: number
+  sceneCount: number
+  fragmentCount: number
+  /** 当前正文总字数（frontmatter 与锚点注释剥离后） */
+  wordCount: number
+  today: DayCountDto
+  streakDays: number
+  dailyGoal: number
+  total: DayCountDto
+}
+
+export interface PeekEntryDto {
+  root: string
+  /** 目录不存在/损坏时为 null */
+  peek: ProjectPeekDto | null
+}
+
 export interface AnchorDto {
   entity: string
   role: string
@@ -690,6 +713,9 @@ export const api = {
   },
   refreshWorkspace(root: string) {
     return call<WorkspaceDto>('refresh_workspace', { root })
+  },
+  peekProjects(roots: string[]) {
+    return call<PeekEntryDto[]>('peek_projects', { roots })
   },
 
   // ── 结构 ──────────────────────────────────────────────

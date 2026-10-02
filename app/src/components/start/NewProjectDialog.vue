@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { documentDir, homeDir } from '@tauri-apps/api/path'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api/backend'
 
-const emit = defineEmits<{ created: [root: string] }>()
+const props = defineProps<{ modelValue: boolean }>()
+
+const emit = defineEmits<{
+  'update:modelValue': [v: boolean]
+  created: [root: string]
+}>()
 
 const bookName = ref('')
 const parentDir = ref('')
@@ -27,6 +32,14 @@ onMounted(async () => {
   }
 })
 
+// 每次打开清空上次的书名，目录选择保留（连续开书常见）
+watch(
+  () => props.modelValue,
+  (v) => {
+    if (v) bookName.value = ''
+  },
+)
+
 async function pickDir() {
   const dir = await open({ directory: true, title: '选择项目存放目录' })
   if (typeof dir === 'string') parentDir.value = dir
@@ -47,6 +60,7 @@ async function create() {
   try {
     const root = await api.createProject(dir, bookName.value.trim())
     ElMessage.success('项目已创建')
+    emit('update:modelValue', false)
     emit('created', root)
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -57,74 +71,68 @@ async function create() {
 </script>
 
 <template>
-  <div class="fusion-card new-card">
-    <div class="card-head">
-      <i class="fa-solid fa-feather-pointed" />
-      <span>开卷 · 新建作品</span>
-    </div>
-
-    <label class="field">
-      <span class="field-label">书名</span>
-      <input
-        v-model="bookName"
-        class="ink-input"
-        placeholder="例：山海拾遗录"
-        maxlength="60"
-        @keyup.enter="create"
-      />
-    </label>
-
-    <label class="field">
-      <span class="field-label">存放目录（可选）</span>
-      <div class="dir-row">
+  <ElDialog
+    :model-value="modelValue"
+    title="开卷 · 新建作品"
+    width="520px"
+    align-center
+    append-to-body
+    :close-on-click-modal="false"
+    @update:model-value="emit('update:modelValue', $event)"
+  >
+    <div class="npd">
+      <label class="field">
+        <span class="field-label">书名</span>
         <input
-          v-model="parentDir"
+          v-model="bookName"
           class="ink-input"
-          :placeholder="defaultDir ? `默认：${defaultDir}` : '默认：文稿/StoryStudio'"
-          readonly
-          @click="pickDir"
+          placeholder="例：山海拾遗录"
+          maxlength="60"
+          @keyup.enter="create"
         />
-        <button class="ink-btn" @click="pickDir">
-          <i class="fa-regular fa-folder-open" />
-          浏览
+      </label>
+
+      <label class="field">
+        <span class="field-label">存放目录（可选）</span>
+        <div class="dir-row">
+          <input
+            v-model="parentDir"
+            class="ink-input"
+            :placeholder="defaultDir ? `默认：${defaultDir}` : '默认：文稿/StoryStudio'"
+            readonly
+            @click="pickDir"
+          />
+          <button class="ink-btn" @click="pickDir">
+            <i class="fa-regular fa-folder-open" />
+            浏览
+          </button>
+        </div>
+      </label>
+
+      <div class="hint">
+        <i class="fa-solid fa-circle-info" />
+        不选也行，会根据书名在「文稿/StoryStudio」里自动创建一个文件夹，所有内容都保存在里面
+      </div>
+
+      <div class="npd-foot">
+        <button class="ink-btn" @click="emit('update:modelValue', false)">取消</button>
+        <button
+          class="ink-btn ink-btn--primary ink-btn--lg create-btn"
+          :disabled="creating"
+          @click="create"
+        >
+          <i class="fa-solid fa-wand-magic-sparkles" />
+          {{ creating ? '正在落墨…' : '创建作品' }}
         </button>
       </div>
-    </label>
-
-    <div class="hint">
-      <i class="fa-solid fa-circle-info" />
-      不选也行，会根据书名在「文稿/StoryStudio」里自动创建一个文件夹，所有内容都保存在里面
     </div>
-
-    <button class="ink-btn ink-btn--primary ink-btn--lg create-btn" :disabled="creating" @click="create">
-      <i class="fa-solid fa-wand-magic-sparkles" />
-      {{ creating ? '正在落墨…' : '创建作品' }}
-    </button>
-
-    <slot />
-  </div>
+  </ElDialog>
 </template>
 
 <style scoped lang="scss">
-.new-card {
-  padding: 22px 24px;
+.npd {
   display: flex;
   flex-direction: column;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 14px;
-  color: var(--ink-main);
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--divider);
-  margin-bottom: 18px;
-
-  i {
-    color: var(--ink-accent);
-  }
 }
 
 .field {
@@ -179,7 +187,7 @@ async function create() {
   display: flex;
   gap: 7px;
   align-items: flex-start;
-  margin: 2px 0 18px;
+  margin: 2px 0 20px;
   font-size: 12px;
   line-height: 1.7;
   color: var(--ink-muted);
@@ -188,17 +196,15 @@ async function create() {
     margin-top: 4px;
     flex-shrink: 0;
   }
+}
 
-  code {
-    font-family: 'SF Mono', Menlo, monospace;
-    font-size: 11px;
-    background: var(--surface-2);
-    padding: 1px 5px;
-    border-radius: 4px;
-  }
+.npd-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .create-btn {
-  margin-top: auto;
+  min-width: 128px;
 }
 </style>

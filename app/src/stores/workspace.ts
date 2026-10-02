@@ -69,9 +69,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       ui.rememberProject(data.root, data.name)
       // 同步本地时区（码字统计按本地日切日）；失败不影响打开
       api.statsSyncClock(data.root, new Date().getTimezoneOffset()).catch(() => {})
-      // 默认选中第一个场景
-      const first = data.chapters[0]?.scenes[0]
-      if (first) await selectScene(first.id)
+      // 优先回到上次编辑位置（首页「继续写作」直达）；场景已被删则回退首个场景
+      const last = ui.lastScene[data.root]
+      const target =
+        last && data.chapters.some((ch) => ch.scenes.some((sc) => sc.id === last.sceneId))
+          ? last.sceneId
+          : (data.chapters[0]?.scenes[0]?.id ?? null)
+      if (target) await selectScene(target)
       void runCompile()
       void refreshStats()
       return true
@@ -105,6 +109,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     try {
       scene.value = await api.getScene(root.value, sceneId)
       for (const f of scene.value.fragments) fragmentSave[f.id] = 'saved'
+      // 记住上次位置（首页「继续写作」直达）
+      ui.rememberScene(root.value, {
+        sceneId: scene.value.id,
+        chapterTitle: scene.value.chapterTitle,
+        sceneTitle: scene.value.title || '未命名场景',
+        ts: Date.now(),
+      })
     } catch (err) {
       ElMessage.error((err as Error).message)
     }
