@@ -30,12 +30,13 @@ export interface TimelineItem {
 const MUTATION_PREFIXES = [
   'create_', 'write_', 'edit_', 'append_', 'rewrite_', 'delete_', 'update_',
   'add_', 'remove_', 'set_', 'move_', 'merge_', 'split_', 'advance_',
-  'insert_', 'design_',
+  'insert_', 'design_', 'anchor_', 'save_', 'resolve_', 'retire_',
 ]
 const FRAGMENT_TOOLS = new Set([
   'write_fragment', 'edit_fragment', 'append_fragment', 'rewrite_fragment',
   'delete_fragment', 'split_fragment', 'split_fragments', 'merge_fragments',
-  'move_fragment',
+  'move_fragment', 'set_fragment_anchor', 'remove_fragment_anchor',
+  'anchor_fragments',
 ])
 
 export const useMiaoStore = defineStore('miao', () => {
@@ -87,12 +88,25 @@ export const useMiaoStore = defineStore('miao', () => {
   }
 
   let refreshTimer: ReturnType<typeof setTimeout> | null = null
+  /** 防抖窗口内挂起的重载标志：只累积不清——后续非片段类工具不能把片段工具排定的重载冲掉 */
+  let pendingSceneReload = false
   function scheduleWorkbenchRefresh(reloadScene: boolean) {
+    pendingSceneReload = pendingSceneReload || reloadScene
     if (refreshTimer) clearTimeout(refreshTimer)
     refreshTimer = setTimeout(() => {
       refreshTimer = null
-      void store.refresh()
-      if (reloadScene && store.scene) void store.selectScene(store.scene.id)
+      const reload = pendingSceneReload
+      pendingSceneReload = false
+      void store.refresh().then(() => {
+        if (!reload || !store.scene) return
+        // 用户正在编辑当前场景时不重载（会把编辑器内容覆盖回磁盘版）；
+        // 改动仍体现在结构树与字数里，停笔后的下一次刷新即可见
+        const busy = Object.values(store.fragmentSave).some(
+          (s) => s === 'dirty' || s === 'saving',
+        )
+        if (busy) return
+        void store.selectScene(store.scene.id)
+      })
     }, 600)
   }
 

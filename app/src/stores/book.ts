@@ -188,8 +188,8 @@ export const useBookStore = defineStore('book', () => {
 
   // ── 工作台同步（落盘后随写随现） ────────────────────────
   // 流水线每提交一段就防抖刷新：结构树 / 全书字数总是更新；当前打开的
-  // 场景仅在用户没有未保存编辑、且磁盘片段数确实变化时重载——绝不
-  // 抢占正在打字的编辑器。
+  // 场景在用户没有未保存编辑时重载——增删片段与改写正文都立即上屏，
+  // 绝不抢占正在打字的编辑器。
   let workbenchTimer: ReturnType<typeof setTimeout> | null = null
   function scheduleWorkbenchSync() {
     if (workbenchTimer) clearTimeout(workbenchTimer)
@@ -202,12 +202,7 @@ export const useBookStore = defineStore('book', () => {
           (s) => s === 'dirty' || s === 'saving',
         )
         if (busy) return
-        const treeScene = store.ws?.chapters
-          .flatMap((c) => c.scenes)
-          .find((s) => s.id === sceneId)
-        if (treeScene && treeScene.fragmentCount !== store.scene.fragments.length) {
-          void store.selectScene(sceneId)
-        }
+        void store.selectScene(sceneId)
       })
     }, 800)
   }

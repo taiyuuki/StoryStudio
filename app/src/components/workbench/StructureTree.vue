@@ -267,21 +267,58 @@ function sceneTitle(s: SceneDto): string {
         </div>
 
         <div v-show="!collapsed.has(ch.id)" class="scene-list">
-          <button
+          <div
             v-for="sc in ch.scenes"
             :key="sc.id"
             class="scene-row"
             :class="{ 'is-active': sc.id === store.scene?.id }"
             :title="sc.summary ?? undefined"
+            role="button"
+            tabindex="0"
             @click="selectScene(sc.id)"
+            @keyup.enter="selectScene(sc.id)"
           >
-            <span class="scene-dot" />
-            <span class="scene-title">{{ sceneTitle(sc) }}</span>
-            <span v-if="sc.pov" class="scene-pov" :title="`视角：${store.entityName(sc.pov)}`">
-              {{ store.entityName(sc.pov) }}
-            </span>
-            <span class="scene-words num">{{ sc.wordCount }}</span>
-          </button>
+            <input
+              v-if="renaming?.kind === 'scene' && renaming.id === sc.id"
+              v-model="renaming.value"
+              class="rename-input"
+              autofocus
+              @keyup.enter="confirmRename"
+              @keyup.escape="renaming = null"
+              @blur="confirmRename"
+              @click.stop
+              @keyup.stop
+            />
+            <template v-else>
+              <span class="scene-dot" />
+              <span class="scene-title">{{ sceneTitle(sc) }}</span>
+              <span v-if="sc.pov" class="scene-pov" :title="`视角：${store.entityName(sc.pov)}`">
+                {{ store.entityName(sc.pov) }}
+              </span>
+              <span class="scene-words num">{{ sc.wordCount }}</span>
+              <ElDropdown
+                trigger="click"
+                @command="(cmd: string) => {
+                  if (cmd === 'rename') startRename('scene', sc.id, sc.title ?? '')
+                  else if (cmd === 'delete') store.deleteScene(sc.id)
+                }"
+              >
+                <button class="row-menu" title="场景操作" @click.stop>
+                  <i class="fa-solid fa-ellipsis" />
+                </button>
+                <template #dropdown>
+                  <ElDropdownMenu>
+                    <ElDropdownItem command="rename">
+                      <i class="fa-solid fa-pen" /> 重命名
+                    </ElDropdownItem>
+                    <ElDropdownItem command="delete" divided>
+                      <i class="fa-solid fa-trash" /> 删除场景
+                    </ElDropdownItem>
+                  </ElDropdownMenu>
+                </template>
+              </ElDropdown>
+            </template>
+          </div>
           <button class="scene-add" @click="createScene(ch.id)">
             <i class="fa-solid fa-plus" />
             新建场景
@@ -515,10 +552,16 @@ function sceneTitle(s: SceneDto): string {
   cursor: pointer;
   transition: all 0.2s;
 
+  .row-menu {
+    opacity: 0;
+    flex-shrink: 0;
+  }
+
   &:hover {
     background: var(--surface-2);
 
-    .scene-words {
+    .scene-words,
+    .row-menu {
       opacity: 1;
     }
   }

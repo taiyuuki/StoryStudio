@@ -157,6 +157,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const saveInFlight = new Set<string>()
   const pendingSaveText = new Map<string, string>()
 
+  function readSaveState(fragmentId: string): SaveState {
+    return fragmentSave[fragmentId] ?? 'saved'
+  }
+
   async function saveFragment(fragmentId: string, text: string): Promise<void> {
     if (!root.value) return
     if (saveInFlight.has(fragmentId)) {
@@ -169,13 +173,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     fragmentSave[fragmentId] = 'saving'
     try {
       await api.writeFragment(root.value, fragmentId, text)
-      const f = scene.value?.fragments.find((x) => x.id === fragmentId)
-      if (f) {
-        f.text = text
-        f.wordCount = countWords(text)
+      // 途中有新编辑（防抖计时器又武装了，或已暂存待补跑）则本次落盘文本已过时：
+      // 回写 f.text 会经 props.watch 把编辑器整体替换回旧文本——文字闪回、
+      // CodeMirror 跨文档测量失稳还会把纸面滚动甩到顶部。新文本由补跑保存追平。
+      // （经函数读取保存状态：await 期间 scheduleSave 会把它改回 'dirty'，
+      //   直接读属性会被 TS 按赋值路径窄化成 'saving' 而报错）
+      const newerEdits =
+        readSaveState(fragmentId) === 'dirty' || pendingSaveText.has(fragmentId)
+      if (!newerEdits) {
+        const f = scene.value?.fragments.find((x) => x.id === fragmentId)
+        if (f) {
+          f.text = text
+          f.wordCount = countWords(text)
+        }
       }
-      // 途中有新编辑（已暂存待补跑）则保持 dirty，不误报已保存
-      fragmentSave[fragmentId] = pendingSaveText.has(fragmentId) ? 'dirty' : 'saved'
+      // 途中有新编辑则保持 dirty，不误报已保存（计时器武装也算，不只看暂存）
+      fragmentSave[fragmentId] = newerEdits ? 'dirty' : 'saved'
       scheduleCompile()
       void refreshStats()
     } catch (err) {
@@ -192,10 +205,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  /** 保存失败后的手动重试（FragmentBlock 的错误指示可点击） */
-  function retrySave(fragmentId: string): void {
-    const f = scene.value?.fragments.find((x) => x.id === fragmentId)
-    if (f) void saveFragment(fragmentId, f.text)
+  /** 保存失败后的手动重试（FragmentBlock 的错误指示可点击）；必须传编辑器当前文本，fragment.text 可能已过时 */
+  function retrySave(fragmentId: string, text: string): void {
+    void saveFragment(fragmentId, text)
   }
 
   async function insertFragment(afterId: string | null): Promise<void> {

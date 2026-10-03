@@ -29,15 +29,30 @@ const povName = computed(() =>
   scene.value?.pov ? store.entityName(scene.value.pov) : '',
 )
 
-// 切换场景（左树点击、妙笔跳转等）后纸面回到顶部，不沿用上一个场景的滚动位置
 const paperScrollEl = useTemplateRef<HTMLElement>('paperScroll')
 
+// 切换场景（左树点击、妙笔跳转等）后纸面回到顶部，不沿用上一个场景的滚动位置；
+// 同一场景的数据重载（妙笔/逐章成书随写随现）则保住当前位置，不让纸面跳顶
 watch(
-  () => scene.value?.id,
-  () => {
-    void nextTick(() => {
-      if (paperScrollEl.value) paperScrollEl.value.scrollTop = 0
-    })
+  scene,
+  (next, prev) => {
+    if (!next || next.id !== prev?.id) {
+      void nextTick(() => {
+        if (paperScrollEl.value) paperScrollEl.value.scrollTop = 0
+      })
+      return
+    }
+    const el = paperScrollEl.value
+    if (!el) return
+    const top = el.scrollTop
+    // nextTick 修 Vue 渲染层的位移；双 rAF 再修一次——CodeMirror 在 rAF 测量阶段
+    // （整文档替换后的滚动稳定）可能晚一帧把纸面 scrollTop 改写掉
+    const restore = () => {
+      const cur = paperScrollEl.value
+      if (cur && Math.abs(cur.scrollTop - top) > 1) cur.scrollTop = top
+    }
+    void nextTick(restore)
+    requestAnimationFrame(() => requestAnimationFrame(restore))
   },
 )
 

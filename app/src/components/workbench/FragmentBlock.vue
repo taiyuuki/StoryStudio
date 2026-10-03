@@ -158,7 +158,7 @@ async function moveDown() {
         :class="`state-${saveState}`"
         :title="saveState === 'error' ? '点击重试保存' : undefined"
         :role="saveState === 'error' ? 'button' : undefined"
-        @click="saveState === 'error' && store.retrySave(fragment.id)"
+        @click="saveState === 'error' && store.retrySave(fragment.id, doc)"
       >
         <i
           class="fa-solid"
