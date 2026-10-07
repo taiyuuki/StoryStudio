@@ -525,6 +525,39 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  /** 记录线索可见性（同观察者同场景覆盖）；成功后刷新线索数据 */
+  async function setThreadKnowledge(
+    threadId: string,
+    observer: string,
+    state: string,
+    sceneId: string,
+  ): Promise<boolean> {
+    if (!root.value) return false
+    try {
+      await api.setThreadKnowledge(root.value, threadId, observer, state, sceneId)
+      await refresh()
+      return true
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+      return false
+    }
+  }
+
+  /** 删除线索可见性记录（sceneId 省略 = 删整条观察者记录） */
+  async function removeThreadKnowledge(
+    threadId: string,
+    observer: string,
+    sceneId?: string,
+  ): Promise<void> {
+    if (!root.value) return
+    try {
+      await api.removeThreadKnowledge(root.value, threadId, observer, sceneId)
+      await refresh()
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+    }
+  }
+
   // ── 片段版本历史 ────────────────────────────────────────
   async function loadVersions(fragmentId: string): Promise<FragmentVersionDto[]> {
     if (!root.value) return []
@@ -695,6 +728,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     createThread,
     updateThread,
     deleteThread,
+    setThreadKnowledge,
+    removeThreadKnowledge,
     retrySave,
     loadVersions,
     readVersion,

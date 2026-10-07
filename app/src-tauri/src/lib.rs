@@ -133,6 +133,8 @@ pub fn run() {
             commands::create_thread,
             commands::update_thread,
             commands::delete_thread,
+            commands::set_thread_knowledge,
+            commands::remove_thread_knowledge,
             // 世界观
             commands::get_worldview,
             commands::save_worldview,

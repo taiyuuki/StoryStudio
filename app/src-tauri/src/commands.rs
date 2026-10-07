@@ -391,6 +391,32 @@ pub fn delete_thread(root: String, thread_id: String) -> R<()> {
     mutations::delete_thread(&paths(&root), &thread_id).map_err(e)
 }
 
+/// 手动记录线索可见性：observer 为 "reader"/"author"/"omniscient" 或实体 ID（c_xx/o_xx）
+#[tauri::command]
+pub fn set_thread_knowledge(
+    root: String,
+    thread_id: String,
+    observer: String,
+    state: String,
+    scene_id: String,
+) -> R<()> {
+    mutations::set_thread_knowledge(&paths(&root), &thread_id, &observer, &state, &scene_id)
+        .map_err(e)
+}
+
+/// 删除线索可见性记录：scene_id 传 None 删整条观察者记录，Some 只删该场景的时间线点
+#[tauri::command]
+pub fn remove_thread_knowledge(
+    root: String,
+    thread_id: String,
+    observer: String,
+    scene_id: Option<String>,
+) -> R<()> {
+    mutations::remove_thread_knowledge(&paths(&root), &thread_id, &observer, scene_id.as_deref())
+        .map_err(e)
+        .map(|_| ())
+}
+
 fn load_thread(root: &str, thread_id: &str) -> R<ThreadDto> {
     let file = load_toml::<story_project_format::ThreadsFile>(&paths(root).threads_toml())?;
     file.threads

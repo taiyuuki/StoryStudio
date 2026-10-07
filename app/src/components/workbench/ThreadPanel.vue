@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import type { ThreadDto, VolumeGroupDto } from '@/api/backend'
+import { ElMessage } from 'element-plus'
+import type { ThreadDto, ThreadKnowledgeDto, VolumeGroupDto } from '@/api/backend'
 import { api } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -9,7 +10,7 @@ const store = useWorkspaceStore()
 const creating = ref(false)
 const form = ref({ title: '', description: '', priority: 'minor', dueVolume: 0 })
 const editingId = ref<string | null>(null)
-const editDraft = ref({ title: '', goal: '', priority: 'minor', dueVolume: 0 })
+const editDraft = ref({ title: '', description: '', goal: '', priority: 'minor', dueVolume: 0 })
 
 /** 卷列表（计划埋设卷下拉用）；0 = 全书长线 */
 const volumes = ref<VolumeGroupDto[]>([])
@@ -88,6 +89,7 @@ function startEdit(t: ThreadDto) {
   editingId.value = t.id
   editDraft.value = {
     title: t.title,
+    description: t.description ?? '',
     goal: t.goal ?? '',
     priority: t.priority,
     dueVolume: t.dueVolume ?? 0,
@@ -95,14 +97,116 @@ function startEdit(t: ThreadDto) {
 }
 
 async function saveEdit(id: string) {
+  const title = editDraft.value.title.trim()
+  if (!title) {
+    ElMessage.warning('线索标题不能为空')
+    return
+  }
   await store.updateThread(id, {
-    title: editDraft.value.title.trim(),
+    title,
+    description: editDraft.value.description.trim(),
     goal: editDraft.value.goal.trim(),
     priority: editDraft.value.priority,
     // 0 = 清除，恢复全书长线
     dueVolume: editDraft.value.dueVolume,
   })
   editingId.value = null
+}
+
+// ── 线索可见性（观察者 → 状态时间线） ─────────────────────
+
+const knowAdding = ref<string | null>(null)
+const knowForm = ref({ observer: 'reader', state: 'known', sceneId: '' })
+
+const stateMeta: Record<string, { label: string; cls: string }> = {
+  unknown: { label: '不知', cls: 'kn-unknown' },
+  suspected: { label: '起疑', cls: 'kn-suspected' },
+  known: { label: '知晓', cls: 'kn-known' },
+}
+
+/** 按阅读顺序的场景选项（章节·场景），并给出排序序号 */
+const sceneOptions = computed(() => {
+  const out: { id: string; label: string }[] = []
+  for (const c of store.ws?.chapters ?? []) {
+    for (const s of c.scenes) out.push({ id: s.id, label: `${c.title} · ${s.title}` })
+  }
+  return out
+})
+const sceneOrder = computed(() => {
+  const m = new Map<string, number>()
+  sceneOptions.value.forEach((s, i) => m.set(s.id, i))
+  return m
+})
+
+/** 观察者下拉：叙述层 + 角色 + 组织 */
+const observerOptions = computed(() => {
+  const entities = store.ws?.entities ?? []
+  return [
+    {
+      group: '叙述层',
+      items: [
+        { value: 'reader', label: '读者' },
+        { value: 'author', label: '作者' },
+        { value: 'omniscient', label: '全知视角' },
+      ],
+    },
+    {
+      group: '角色',
+      items: entities
+        .filter((x) => x.kind === 'character')
+        .map((x) => ({ value: x.id, label: x.displayName })),
+    },
+    {
+      group: '组织',
+      items: entities
+        .filter((x) => x.kind === 'organization')
+        .map((x) => ({ value: x.id, label: x.displayName })),
+    },
+  ]
+})
+
+function observerLabel(k: ThreadKnowledgeDto): string {
+  if (k.observerKind === 'reader') return '读者'
+  if (k.observerKind === 'author') return '作者'
+  if (k.observerKind === 'omniscient') return '全知'
+  if (k.observerEntity) return store.entityName(k.observerEntity)
+  return k.observerKind
+}
+
+/** 观察者记录回传后端的原始串：内置用 kind，实体用 ID（c_/o_ 前缀） */
+function observerKey(k: ThreadKnowledgeDto): string {
+  return k.observerEntity ?? k.observerKind
+}
+
+/** 时间线按阅读顺序展示（后端存储按场景 ID 排序） */
+function sortedTimeline(k: ThreadKnowledgeDto) {
+  const order = sceneOrder.value
+  return [...k.stateTimeline].sort(
+    (a, b) => (order.get(a.scene) ?? 1e9) - (order.get(b.scene) ?? 1e9),
+  )
+}
+
+function openKnowledge(t: ThreadDto) {
+  knowAdding.value = t.id
+  knowForm.value = {
+    observer: 'reader',
+    state: 'known',
+    sceneId: store.scene?.id ?? sceneOptions.value[0]?.id ?? '',
+  }
+}
+
+async function saveKnowledge(threadId: string) {
+  const f = knowForm.value
+  if (!f.sceneId) {
+    ElMessage.warning('请选择场景')
+    return
+  }
+  const ok = await store.setThreadKnowledge(threadId, f.observer, f.state, f.sceneId)
+  if (ok) knowAdding.value = null
+}
+
+function removeKnowledge(t: ThreadDto, k: ThreadKnowledgeDto) {
+  void store.removeThreadKnowledge(t.id, observerKey(k))
 }
 </script>
 
@@ -142,6 +246,7 @@ async function saveEdit(id: string) {
     <div v-for="t in threads" :key="t.id" class="thread-card" :class="{ 'is-main': t.priority === 'main' }">
       <template v-if="editingId === t.id">
         <input v-model="editDraft.title" class="ed-input" />
+        <textarea v-model="editDraft.description" class="ed-input" rows="2" placeholder="描述（可选）" />
         <textarea v-model="editDraft.goal" class="ed-input" rows="2" placeholder="叙事目标" />
         <div class="tp-create-row">
           <select v-model="editDraft.priority">
@@ -190,6 +295,76 @@ async function saveEdit(id: string) {
             <i class="fa-solid fa-check-double" /> 回收于「{{ anchorScene(t.resolvedAt) }}」
           </span>
         </div>
+
+        <!-- 可见性：观察者对该线索的知晓状态时间线 -->
+        <div v-if="t.knowledge.length || knowAdding === t.id" class="tc-know">
+          <div class="tk-head">
+            <span><i class="fa-regular fa-eye" /> 可见性</span>
+            <button class="tk-act" title="记录可见性" @click="openKnowledge(t)">
+              <i class="fa-solid fa-plus" />
+            </button>
+          </div>
+          <div
+            v-for="k in t.knowledge"
+            :key="observerKey(k)"
+            class="tk-row"
+          >
+            <span class="tk-observer">{{ observerLabel(k) }}</span>
+            <span class="tk-line">
+              <template v-for="(e, i) in sortedTimeline(k)" :key="e.scene">
+                <i v-if="i > 0" class="fa-solid fa-arrow-right-long tk-arrow" />
+                <span class="tk-point" :class="stateMeta[e.state]?.cls" :title="`${anchorScene(e.scene)} · ${stateMeta[e.state]?.label ?? e.state}`">
+                  {{ anchorScene(e.scene) }}·{{ stateMeta[e.state]?.label ?? e.state }}
+                </span>
+              </template>
+            </span>
+            <button
+              class="tk-act tk-act--danger"
+              title="删除该观察者的记录"
+              @click="removeKnowledge(t, k)"
+            >
+              <i class="fa-solid fa-xmark" />
+            </button>
+          </div>
+          <div v-if="knowAdding === t.id" class="tk-form">
+            <div class="tp-create-row">
+              <select v-model="knowForm.observer" title="观察者">
+                <optgroup v-for="g in observerOptions" :key="g.group" :label="g.group">
+                  <option v-for="o in g.items" :key="o.value" :value="o.value">
+                    {{ o.label }}
+                  </option>
+                </optgroup>
+              </select>
+              <select v-model="knowForm.state" title="知晓程度">
+                <option value="unknown">不知晓</option>
+                <option value="suspected">起疑</option>
+                <option value="known">知晓</option>
+              </select>
+            </div>
+            <div class="tp-create-row">
+              <select v-model="knowForm.sceneId" title="叙事锚点场景">
+                <option value="" disabled>选择场景…</option>
+                <option v-for="s in sceneOptions" :key="s.id" :value="s.id">
+                  {{ s.label }}
+                </option>
+              </select>
+            </div>
+            <div class="tp-create-row">
+              <button class="ink-btn ink-btn--sm ink-btn--primary" @click="saveKnowledge(t.id)">
+                记录
+              </button>
+              <button class="ink-btn ink-btn--sm" @click="knowAdding = null">取消</button>
+            </div>
+          </div>
+        </div>
+        <button
+          v-else
+          class="tk-entry"
+          title="记录各观察者何时知晓这条线索"
+          @click="openKnowledge(t)"
+        >
+          <i class="fa-regular fa-eye" /> 记可见性
+        </button>
       </template>
     </div>
   </div>
@@ -235,6 +410,12 @@ async function saveEdit(id: string) {
   &:focus {
     border-color: var(--ink-accent);
   }
+}
+
+.ed-input + .ed-input,
+textarea.ed-input {
+  resize: vertical;
+  line-height: 1.6;
 }
 
 .tp-create textarea {
@@ -397,6 +578,144 @@ async function saveEdit(id: string) {
     display: inline-flex;
     align-items: center;
     gap: 5px;
+  }
+}
+
+// ── 可见性 ────────────────────────────────────────────
+.tk-entry {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-disabled);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--surface-2);
+    color: var(--ink-muted);
+  }
+}
+
+.tc-know {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--divider);
+}
+
+.tk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ink-muted);
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+}
+
+.tk-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.tk-observer {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--ink-sec);
+}
+
+.tk-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tk-arrow {
+  font-size: 8px;
+  color: var(--ink-disabled);
+}
+
+.tk-point {
+  padding: 1px 7px;
+  border-radius: 4px;
+
+  &.kn-unknown {
+    background: var(--surface-2);
+    color: var(--ink-muted);
+  }
+
+  &.kn-suspected {
+    background: color-mix(in srgb, var(--ink-warning) 15%, transparent);
+    color: var(--ink-warning);
+  }
+
+  &.kn-known {
+    background: color-mix(in srgb, var(--ink-positive) 14%, transparent);
+    color: var(--ink-positive);
+  }
+}
+
+.tk-act {
+  border: none;
+  background: transparent;
+  color: var(--ink-disabled);
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 10px;
+
+  &:hover {
+    background: var(--surface-2);
+    color: var(--ink-main);
+  }
+
+  &--danger:hover {
+    background: var(--state-danger);
+    color: #fff;
+  }
+}
+
+.tk-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px dashed var(--ui-border);
+  background: var(--ink-accent-soft);
+
+  select {
+    flex: 1;
+    min-width: 0;
+    height: 28px;
+    padding: 0 6px;
+    border-radius: 6px;
+    border: 1px solid var(--ui-border);
+    background: var(--input-bg);
+    color: var(--ink-main);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
   }
 }
 </style>

@@ -76,6 +76,18 @@ export interface ThreadDto {
   revealedAt: string | null
   resolvedAt: string | null
   abandoned: boolean
+  /** 知识可见性（观察者 → 状态时间线） */
+  knowledge: ThreadKnowledgeDto[]
+}
+
+/** 线索可见性条目：一个观察者的知晓状态时间线 */
+export interface ThreadKnowledgeDto {
+  /** reader | author | omniscient | character | organization */
+  observerKind: string
+  /** character / organization 观察者的实体 ID（内置观察者为 null） */
+  observerEntity: string | null
+  /** 状态时间线（后端按场景 ID 排序，展示时按阅读顺序重排） */
+  stateTimeline: { scene: string; state: 'unknown' | 'suspected' | 'known' | string }[]
 }
 
 /** 未锚定指代台账记录（anchoring.toml） */
@@ -876,6 +888,25 @@ export const api = {
   },
   deleteThread(root: string, threadId: string) {
     return call<void>('delete_thread', { root, threadId })
+  },
+  /** 手动记录线索可见性；observer 为 reader/author/omniscient 或实体 ID（c_xx/o_xx） */
+  setThreadKnowledge(
+    root: string,
+    threadId: string,
+    observer: string,
+    state: 'unknown' | 'suspected' | 'known' | string,
+    sceneId: string,
+  ) {
+    return call<void>('set_thread_knowledge', { root, threadId, observer, state, sceneId })
+  },
+  /** 删除线索可见性记录；sceneId 省略删整条观察者记录 */
+  removeThreadKnowledge(root: string, threadId: string, observer: string, sceneId?: string) {
+    return call<void>('remove_thread_knowledge', {
+      root,
+      threadId,
+      observer,
+      sceneId: sceneId ?? null,
+    })
   },
 
   // ── 世界观 ────────────────────────────────────────────

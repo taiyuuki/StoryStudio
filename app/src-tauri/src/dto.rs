@@ -8,7 +8,7 @@ use story_project_format::entity_file::{ItemSection, ProfileSection};
 use story_project_format::fragment_file::AnchorEntry;
 use story_project_format::relation_file::ValidityDef;
 use story_project_format::structure_toml::StoryTimeDef;
-use story_project_format::threads_file::ThreadDef;
+use story_project_format::threads_file::{ObserverDef, ThreadDef};
 use story_project_format::worldview_file::{ConceptDef, SystemDef};
 use story_project_format::{
     ChapterDef, ChapterOutlineDef, ChaptersFile, ConceptsFile, EntityFile, FragmentFile,
@@ -160,6 +160,28 @@ pub struct ThreadDto {
     pub revealed_at: Option<String>,
     pub resolved_at: Option<String>,
     pub abandoned: bool,
+    /// 知识可见性（观察者 → 状态时间线）
+    pub knowledge: Vec<ThreadKnowledgeDto>,
+}
+
+/// 线索可见性条目：一个观察者的知晓状态时间线
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadKnowledgeDto {
+    /// reader | author | omniscient | character | organization
+    pub observer_kind: String,
+    /// character / organization 观察者的实体 ID（内置观察者为 None）
+    pub observer_entity: Option<String>,
+    /// 状态时间线（按场景 ID 排序存储，展示序由前端按阅读顺序重排）
+    pub state_timeline: Vec<ThreadStateEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadStateEntryDto {
+    pub scene: String,
+    /// unknown | suspected | known
+    pub state: String,
 }
 
 // ============================================================================
@@ -500,6 +522,33 @@ pub fn to_thread_dto(t: &ThreadDef) -> ThreadDto {
         revealed_at: t.revealed_at.clone(),
         resolved_at: t.resolved_at.clone(),
         abandoned: t.abandoned,
+        knowledge: t
+            .knowledge
+            .iter()
+            .map(|k| {
+                let (kind, entity) = match &k.observer {
+                    ObserverDef::Builtin(s) => (s.clone(), None),
+                    ObserverDef::Character { character } => {
+                        ("character".to_string(), Some(character.clone()))
+                    }
+                    ObserverDef::Organization { organization } => {
+                        ("organization".to_string(), Some(organization.clone()))
+                    }
+                };
+                ThreadKnowledgeDto {
+                    observer_kind: kind,
+                    observer_entity: entity,
+                    state_timeline: k
+                        .state_timeline
+                        .iter()
+                        .map(|e| ThreadStateEntryDto {
+                            scene: e.scene.clone(),
+                            state: e.state.clone(),
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
     }
 }
 

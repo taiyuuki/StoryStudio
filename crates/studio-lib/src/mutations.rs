@@ -3017,15 +3017,21 @@ pub fn update_thread(
     let mut changed: Vec<&'static str> = Vec::new();
 
     if let Some(v) = title {
-        thread.title = v.to_string();
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            return Err(StudioError::Config("线索标题不能为空".into()));
+        }
+        thread.title = trimmed.to_string();
         changed.push("title");
     }
     if let Some(v) = description {
-        thread.description = Some(v.to_string());
+        // 空串 = 清除描述
+        thread.description = (!v.trim().is_empty()).then(|| v.trim().to_string());
         changed.push("description");
     }
     if let Some(v) = goal {
-        thread.goal = Some(v.to_string());
+        // 空串 = 清除目标
+        thread.goal = (!v.trim().is_empty()).then(|| v.trim().to_string());
         changed.push("goal");
     }
     if let Some(v) = priority {
@@ -3295,6 +3301,60 @@ pub fn set_thread_knowledge_batch(
     }
     file.save(&threads_path)?;
     Ok(())
+}
+
+/// 删除线索的可见性记录。
+///
+/// - `observer`：原始字符串（`"reader"` / `"c_001"` / `"o_001"` 等）
+/// - `scene_id`：`Some` 时只删该场景的时间线记录（删空后移除整条），
+///   `None` 时删除该观察者的整条记录
+///
+/// 返回是否实际删除了内容（线索/观察者不存在或时间线无该场景时为 false）。
+pub fn remove_thread_knowledge(
+    paths: &ProjectPaths,
+    thread_id: &str,
+    observer: &str,
+    scene_id: Option<&str>,
+) -> Result<bool, StudioError> {
+    let threads_path = paths.threads_toml();
+    let mut file: ThreadsFile = ThreadsFile::load_or_default(&threads_path)?;
+
+    let thread = file
+        .threads
+        .iter_mut()
+        .find(|t| t.id == thread_id)
+        .ok_or_else(|| StudioError::NotFound(format!("线索 '{thread_id}' 不存在")))?;
+
+    let target = parse_observer(observer);
+    let idx = thread
+        .knowledge
+        .iter()
+        .position(|k| observer_matches(&k.observer, &target));
+    let Some(idx) = idx else {
+        return Ok(false);
+    };
+
+    let removed = match scene_id {
+        None => {
+            thread.knowledge.remove(idx);
+            true
+        }
+        Some(scene) => {
+            let timeline = &mut thread.knowledge[idx].state_timeline;
+            let before = timeline.len();
+            timeline.retain(|e| e.scene != scene);
+            let removed = timeline.len() < before;
+            if timeline.is_empty() {
+                thread.knowledge.remove(idx);
+            }
+            removed
+        }
+    };
+
+    if removed {
+        file.save(&threads_path)?;
+    }
+    Ok(removed)
 }
 
 /// 在已加载的线索文件上记录一条可见性（校验 + 变更），不落盘。
@@ -4020,6 +4080,34 @@ mod tests {
             update_thread(&paths, &id, None, None, None, Some("bogus"), None, None).unwrap_err();
         assert!(matches!(err, StudioError::Config(_)));
 
+        // 修改 description；goal 传空串 = 清除
+        let changed = update_thread(
+            &paths,
+            &id,
+            None,
+            Some("  新描述  "),
+            Some(""),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(changed, vec!["description", "goal"]);
+        let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
+        let t = file.threads.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(t.description.as_deref(), Some("新描述"));
+        assert_eq!(t.goal, None);
+
+        // description 传空串 = 清除；title 空串被拒绝
+        update_thread(&paths, &id, None, Some(""), None, None, None, None).unwrap();
+        let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
+        assert_eq!(
+            file.threads.iter().find(|t| t.id == id).unwrap().description,
+            None
+        );
+        let err = update_thread(&paths, &id, Some("  "), None, None, None, None, None).unwrap_err();
+        assert!(matches!(err, StudioError::Config(_)));
+
         // 不存在的线索
         let err =
             update_thread(&paths, "t_999", Some("x"), None, None, None, None, None).unwrap_err();
@@ -4247,6 +4335,36 @@ mod tests {
 
         // 6. 不存在的线索
         let err = set_thread_knowledge(&paths, "t_999", "reader", "known", "sc_01").unwrap_err();
+        assert!(matches!(err, StudioError::NotFound(_)));
+
+        // 7. 删除单点：reader 在 sc_01_02 的记录（时间线还剩 sc_05_03）
+        let removed = remove_thread_knowledge(&paths, &id, "reader", Some("sc_01_02")).unwrap();
+        assert!(removed);
+        let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
+        let t = file.threads.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(t.knowledge.len(), 2);
+        assert_eq!(t.knowledge[0].state_timeline.len(), 1);
+        assert_eq!(t.knowledge[0].state_timeline[0].scene, "sc_05_03");
+
+        // 8. 删空时间线后移除整条：reader 只剩一条，删掉后整条消失
+        remove_thread_knowledge(&paths, &id, "reader", Some("sc_05_03")).unwrap();
+        let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
+        let t = file.threads.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(t.knowledge.len(), 1); // 只剩 c_001
+
+        // 9. 删除整条：不传 scene_id
+        let removed = remove_thread_knowledge(&paths, &id, "c_001", None).unwrap();
+        assert!(removed);
+        let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
+        let t = file.threads.iter().find(|t| t.id == id).unwrap();
+        assert!(t.knowledge.is_empty());
+
+        // 10. 观察者/场景不存在 → false，不报错
+        assert!(!remove_thread_knowledge(&paths, &id, "reader", None).unwrap());
+        assert!(!remove_thread_knowledge(&paths, &id, "c_001", Some("sc_01")).unwrap());
+
+        // 11. 不存在的线索
+        let err = remove_thread_knowledge(&paths, "t_999", "reader", None).unwrap_err();
         assert!(matches!(err, StudioError::NotFound(_)));
     }
 
