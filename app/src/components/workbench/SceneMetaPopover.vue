@@ -105,13 +105,13 @@ async function save() {
   input,
   select,
   textarea {
-    padding: 7px 10px;
+    padding: 8px 11px;
     border-radius: 7px;
     border: 1px solid var(--ui-border);
     background: var(--input-bg);
     color: var(--ink-main);
     font-family: inherit;
-    font-size: 13px;
+    font-size: 14px;
     outline: none;
     transition: border-color 0.2s;
 

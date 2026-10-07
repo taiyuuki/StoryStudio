@@ -79,7 +79,7 @@ textarea {
   background: var(--input-bg);
   color: var(--ink-main);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.8;
   resize: vertical;
   outline: none;

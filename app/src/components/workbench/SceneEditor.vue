@@ -484,7 +484,7 @@ async function saveSummary() {
     background: var(--input-bg);
     color: var(--ink-main);
     font-family: inherit;
-    font-size: 12.5px;
+    font-size: 14px;
     line-height: 1.8;
     resize: vertical;
     outline: none;

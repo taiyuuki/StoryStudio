@@ -61,7 +61,7 @@ function addChapter() {
             <div class="wz-field"><label>卷名</label><input v-model="v.name" placeholder="如：第一卷 灯下" /></div>
             <div class="wz-field"><label>主题</label><input v-model="v.theme" /></div>
           </div>
-          <div class="wz-field"><label>本卷梗概</label><input v-model="v.summary" /></div>
+          <div class="wz-field"><label>本卷梗概</label><textarea v-model="v.summary" rows="2" /></div>
         </div>
       </div>
       <button class="wz-add" @click="addVolume"><i class="fa-solid fa-plus" /> 加一卷</button>
@@ -121,7 +121,7 @@ function addChapter() {
                 <option v-for="n in characterNames" :key="n" :value="n" />
               </datalist>
             </div>
-            <div class="wz-field"><label>章末钩子</label><input v-model="c.hook" placeholder="让读者翻页的理由" /></div>
+            <div class="wz-field"><label>章末钩子</label><textarea v-model="c.hook" rows="2" placeholder="让读者翻页的理由" /></div>
           </div>
         </div>
       </div>

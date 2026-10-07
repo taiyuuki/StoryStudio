@@ -312,13 +312,14 @@ onActivated(() => void refresh())
   .git-msg-input {
     flex: 1;
     min-width: 0;
-    padding: 7px 11px;
+    height: 36px;
+    padding: 0 11px;
     border: 1px solid var(--ui-border);
     border-radius: 8px;
     background: var(--input-bg);
     color: var(--ink-main);
     font-family: inherit;
-    font-size: 12.5px;
+    font-size: 14px;
     outline: none;
 
     &::placeholder {

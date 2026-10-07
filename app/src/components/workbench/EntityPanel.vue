@@ -326,7 +326,7 @@ function label(r: string): string {
         </div>
         <div class="d-row d-row--col">
           <label>简介</label>
-          <input v-model="draft.geography.summary" />
+          <textarea v-model="draft.geography.summary" rows="2" placeholder="地点综述" />
         </div>
       </template>
 
@@ -345,7 +345,7 @@ function label(r: string): string {
         </div>
         <div class="d-row d-row--col">
           <label>理念</label>
-          <input v-model="draft.org.ideology" />
+          <textarea v-model="draft.org.ideology" rows="2" placeholder="理念 / 宗旨（可选）" />
         </div>
         <div class="d-row d-row--col">
           <label>简介</label>
@@ -730,7 +730,7 @@ function label(r: string): string {
   gap: 5px;
 
   label {
-    font-size: 11.5px;
+    font-size: 12px;
     color: var(--ink-sec);
     letter-spacing: 0.06em;
   }
@@ -738,13 +738,13 @@ function label(r: string): string {
   input,
   textarea,
   select {
-    padding: 7px 10px;
+    padding: 8px 11px;
     border-radius: 7px;
     border: 1px solid var(--ui-border);
     background: var(--input-bg);
     color: var(--ink-main);
     font-family: inherit;
-    font-size: 13px;
+    font-size: 14px;
     outline: none;
     transition: border-color 0.2s;
     width: 100%;

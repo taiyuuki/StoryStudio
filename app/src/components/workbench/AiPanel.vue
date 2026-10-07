@@ -1277,7 +1277,7 @@ onActivated(() => void scrollToBottom())
     background: var(--input-bg);
     color: var(--ink-main);
     font-family: inherit;
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.7;
     outline: none;
     transition: border-color 0.2s;

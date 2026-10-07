@@ -442,7 +442,7 @@ function moveChapter(gi: number, dir: -1 | 1) {
                     </ElSelect>
                   </div>
                 </div>
-                <input v-model="chDraft.hook" class="cp-input" placeholder="章末钩子（让读者翻页的理由）" />
+                <textarea v-model="chDraft.hook" class="cp-input" rows="2" placeholder="章末钩子（让读者翻页的理由）" />
                 <textarea v-model="chDraft.notes" class="cp-input" rows="2" placeholder="备注（可选）" />
                 <div class="cp-edit-row">
                   <span style="flex: 1" />
@@ -706,13 +706,13 @@ function moveChapter(gi: number, dir: -1 | 1) {
 
 .cp-input {
   width: 100%;
-  padding: 7px 10px;
+  padding: 8px 11px;
   border-radius: 7px;
   border: 1px solid var(--ui-border);
   background: var(--input-bg);
   color: var(--ink-main);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
   outline: none;
 
   &:focus {

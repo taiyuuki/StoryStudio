@@ -295,7 +295,7 @@ function moveEra(i: number, dir: -1 | 1) {
           <select v-model="systemForm.kind">
             <option v-for="k in SYSTEM_KINDS" :key="k" :value="k">{{ k }}</option>
           </select>
-          <input v-model="systemForm.levels" placeholder="等级链（如：炼气→筑基→金丹）" />
+          <textarea v-model="systemForm.levels" rows="2" placeholder="等级链（如：炼气→筑基→金丹）" />
           <textarea v-model="systemForm.rules" rows="2" placeholder="规则与代价（可选）" />
           <textarea v-model="systemForm.summary" rows="2" placeholder="一句话概括（可选）" />
           <div class="wp-edit-row">
@@ -315,7 +315,7 @@ function moveEra(i: number, dir: -1 | 1) {
             <select v-model="systemDraft.kind">
               <option v-for="k in SYSTEM_KINDS" :key="k" :value="k">{{ k }}</option>
             </select>
-            <input v-model="systemDraft.levels" class="wp-input" placeholder="等级链" />
+            <textarea v-model="systemDraft.levels" class="wp-input" rows="2" placeholder="等级链" />
             <textarea v-model="systemDraft.rules" class="wp-input" rows="2" placeholder="规则与代价" />
             <textarea v-model="systemDraft.summary" class="wp-input" rows="2" placeholder="一句话概括" />
             <div class="wp-edit-row">
@@ -512,13 +512,13 @@ function moveEra(i: number, dir: -1 | 1) {
 .wp-edit select,
 .wp-era-add input {
   width: 100%;
-  padding: 7px 10px;
+  padding: 8px 11px;
   border-radius: 7px;
   border: 1px solid var(--ui-border);
   background: var(--input-bg);
   color: var(--ink-main);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
   outline: none;
 
   &:focus {

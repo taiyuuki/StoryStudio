@@ -223,13 +223,13 @@ async function saveEdit(id: string) {
 .tp-create input,
 .tp-create textarea {
   width: 100%;
-  padding: 7px 10px;
+  padding: 8px 11px;
   border-radius: 7px;
   border: 1px solid var(--ui-border);
   background: var(--input-bg);
   color: var(--ink-main);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
   outline: none;
 
   &:focus {

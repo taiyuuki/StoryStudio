@@ -40,6 +40,18 @@ textarea,
   user-select: text;
 }
 
+// ── 表单控件通用（自动增高由 form-autogrow.ts 负责）────────
+// 只允许纵向拉伸：横向拉会破坏表单栅格；高度不足时自动贴合内容
+textarea {
+  resize: vertical;
+}
+
+// 自动增高的防失控上限：超过半屏改为框内滚动；豁免者见 data-no-grow
+textarea:not([data-no-grow]) {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
 // ── 纸纹背景 ──────────────────────────────────────────────
 // 每个"页面"铺一层 SVG 噪声，营造宣纸质感
 .paper-texture {
@@ -186,7 +198,7 @@ textarea,
   min-width: 0;
 
   > label {
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--ink-sec);
     letter-spacing: 0.05em;
   }
@@ -194,8 +206,8 @@ textarea,
   // 统一控件高度：macOS 原生 select 比文本框矮，显式定高才能对齐
   input,
   select {
-    height: 36px;
-    padding: 0 10px;
+    height: 38px;
+    padding: 0 12px;
   }
 
   input,
@@ -207,7 +219,7 @@ textarea,
     background: var(--input-bg);
     color: var(--ink-main);
     font-family: inherit;
-    font-size: 13.5px;
+    font-size: 14px;
     line-height: 1.6;
     outline: none;
     transition: border-color 0.2s, box-shadow 0.2s;
@@ -223,9 +235,8 @@ textarea,
   }
 
   textarea {
-    padding: 8px 11px;
+    padding: 9px 12px;
     line-height: 1.8;
-    resize: vertical;
     min-height: 66px;
   }
 }

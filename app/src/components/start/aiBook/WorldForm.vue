@@ -115,7 +115,7 @@ function addThread() {
           <div class="wz-row">
             <div class="wz-field">
               <label>性格</label>
-              <input v-model="c.personality" />
+              <textarea v-model="c.personality" rows="2" />
             </div>
             <div class="wz-field">
               <label>别名（逗号分隔）</label>
@@ -173,7 +173,7 @@ function addThread() {
                   </select>
                 </div>
               </div>
-              <div class="wz-field"><label>等级链</label><input v-model="s.levels" placeholder="炼气→筑基→金丹" /></div>
+              <div class="wz-field"><label>等级链</label><textarea v-model="s.levels" rows="2" placeholder="炼气→筑基→金丹" /></div>
               <div class="wz-field"><label>规则与代价</label><textarea v-model="s.rules" rows="2" /></div>
             </div>
           </div>
@@ -198,7 +198,7 @@ function addThread() {
               </div>
               <div class="wz-row">
                 <div class="wz-field"><label>势力范围</label><input v-model="f.territory" /></div>
-                <div class="wz-field"><label>理念</label><input v-model="f.ideology" /></div>
+                <div class="wz-field"><label>理念</label><textarea v-model="f.ideology" rows="2" /></div>
               </div>
               <div class="wz-field"><label>简介</label><textarea v-model="f.summary" rows="2" /></div>
             </div>

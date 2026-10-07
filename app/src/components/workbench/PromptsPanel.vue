@@ -196,6 +196,7 @@ function onKeydown(e: KeyboardEvent) {
       <textarea
         v-model="draft"
         class="pp-editor num"
+        data-no-grow
         rows="18"
         spellcheck="false"
         :class="{ 'is-dirty': dirty }"
@@ -207,7 +208,7 @@ function onKeydown(e: KeyboardEvent) {
           <i class="fa-solid" :class="showBuiltin ? 'fa-chevron-down' : 'fa-chevron-right'" />
           {{ showBuiltin ? '收起内置原文' : '对照内置原文' }}
         </button>
-        <textarea v-if="showBuiltin" class="pp-editor num pp-editor--readonly" :value="selected.builtin" readonly rows="10" />
+        <textarea v-if="showBuiltin" class="pp-editor num pp-editor--readonly" data-no-grow :value="selected.builtin" readonly rows="10" />
       </div>
 
       <!-- 操作行 -->
@@ -279,14 +280,14 @@ function onKeydown(e: KeyboardEvent) {
 
 .pp-select {
   width: 100%;
-  height: 32px;
-  padding: 0 9px;
+  height: 36px;
+  padding: 0 10px;
   border-radius: 8px;
   border: 1px solid var(--ui-border);
   background: var(--input-bg);
   color: var(--ink-main);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
   outline: none;
 
   &:focus {
@@ -347,7 +348,7 @@ function onKeydown(e: KeyboardEvent) {
   border: 1px solid var(--ui-border);
   background: var(--input-bg);
   color: var(--ink-main);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
   resize: vertical;
   outline: none;

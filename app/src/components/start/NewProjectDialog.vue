@@ -213,7 +213,7 @@ async function create() {
   background: var(--input-bg);
   color: var(--ink-main);
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 14px;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
 
