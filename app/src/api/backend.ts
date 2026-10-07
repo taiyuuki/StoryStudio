@@ -90,6 +90,58 @@ export interface ThreadKnowledgeDto {
   stateTimeline: { scene: string; state: 'unknown' | 'suspected' | 'known' | string }[]
 }
 
+// ── 知识断言 ────────────────────────────────────────────
+
+/** 知识面板数据：断言列表 + 可作证据的片段清单 */
+export interface KnowledgeDto {
+  assertions: AssertionDto[]
+  /** 可作证据的片段（按阅读顺序，附「章节 · 场景」定位标签） */
+  fragments: FragmentRefDto[]
+}
+
+export interface AssertionDto {
+  id: string
+  /** 断言主体（实体 ID） */
+  subject: string
+  /** alive / age / holds / located_at / member_of / identity / status / 自定义 */
+  predicate: string
+  /** 展示用值字符串（布尔/整数/文本统一转字符串） */
+  object: string
+  /** active | superseded | contradicted */
+  status: 'active' | 'superseded' | 'contradicted' | string
+  /** 来源：manual / ai:模型名 / 空 */
+  extractedBy: string
+  evidence: EvidenceRefDto[]
+  /** 有效期起止（"1023年9月" 样式，无则 null） */
+  validFrom: string | null
+  validUntil: string | null
+}
+
+export interface EvidenceRefDto {
+  /** 证据 ID（ev_XXXX） */
+  id: string
+  /** 片段 ID（f_XXXX） */
+  fragment: string
+  /** 定位标签「章节 · 场景」 */
+  label: string
+}
+
+export interface FragmentRefDto {
+  id: string
+  label: string
+}
+
+/** addAssertion 的回执 */
+export interface AssertionOutcomeDto {
+  id: string
+  /** 被自动废弃（status → superseded）的旧断言 ID */
+  superseded: string[]
+  /** 与已有 active 断言完全相同，直接复用未新建 */
+  deduplicated: boolean
+  /** 同主体同谓词下仍处 active 的其他旧值（可多值谓词） */
+  coexisting: string[]
+}
+
 /** 未锚定指代台账记录（anchoring.toml） */
 export interface UnresolvedRefDto {
   fragmentId: string
@@ -907,6 +959,35 @@ export const api = {
       observer,
       sceneId: sceneId ?? null,
     })
+  },
+
+  // ── 知识断言 ──────────────────────────────────────────
+  /** 断言列表 + 可作证据的片段清单 */
+  listKnowledge(root: string) {
+    return call<KnowledgeDto>('list_knowledge', { root })
+  },
+  /** 手动添加断言；evidenceFragment 传片段 ID 时自动登记证据条目 */
+  addAssertion(
+    root: string,
+    subject: string,
+    predicate: string,
+    object: string,
+    evidenceFragment?: string,
+  ) {
+    return call<AssertionOutcomeDto>('add_assertion', {
+      root,
+      subject,
+      predicate,
+      object,
+      evidenceFragment: evidenceFragment ?? null,
+    })
+  },
+  /** 修改断言状态：active / superseded / contradicted */
+  setAssertionStatus(root: string, assertionId: string, status: string) {
+    return call<void>('set_assertion_status', { root, assertionId, status })
+  },
+  deleteAssertion(root: string, assertionId: string) {
+    return call<void>('delete_assertion', { root, assertionId })
   },
 
   // ── 世界观 ────────────────────────────────────────────

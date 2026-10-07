@@ -185,6 +185,173 @@ pub struct ThreadStateEntryDto {
 }
 
 // ============================================================================
+// Knowledge — 知识断言（上帝视角的事实真相）
+// ============================================================================
+
+/// 知识面板数据：断言列表 + 可作证据的片段清单
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeDto {
+    pub assertions: Vec<AssertionDto>,
+    /// 可作证据的片段（按阅读顺序，附「章节 · 场景」定位标签）
+    pub fragments: Vec<FragmentRefDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssertionDto {
+    pub id: String,
+    /// 断言主体（实体 ID）
+    pub subject: String,
+    /// alive / age / holds / located_at / member_of / identity / status / 自定义
+    pub predicate: String,
+    /// 展示用值字符串（布尔/整数/文本统一转字符串）
+    pub object: String,
+    /// active | superseded | contradicted（空串视为 active）
+    pub status: String,
+    /// 来源：manual / ai:模型名 / 空
+    pub extracted_by: String,
+    pub evidence: Vec<EvidenceRefDto>,
+    /// 有效期起止（"1023年9月" 样式，无则 None）
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceRefDto {
+    /// 证据 ID（ev_XXXX）
+    pub id: String,
+    /// 片段 ID（f_XXXX）
+    pub fragment: String,
+    /// 定位标签「章节 · 场景」
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FragmentRefDto {
+    pub id: String,
+    pub label: String,
+}
+
+/// add_assertion 的前端回执
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssertionOutcomeDto {
+    pub id: String,
+    /// 被自动废弃（status → superseded）的旧断言 ID
+    pub superseded: Vec<String>,
+    /// 与已有 active 断言完全相同，直接复用未新建
+    pub deduplicated: bool,
+    /// 同主体同谓词下仍处 active 的其他旧值（可多值谓词）
+    pub coexisting: Vec<String>,
+}
+
+/// StoryTimeDef → "1023年9月15日" 样式（knowledge_file 的数值锚定义）
+fn story_time_label(t: &story_project_format::knowledge_file::StoryTimeDef) -> String {
+    let mut s = format!("{}年", t.year);
+    if let Some(m) = t.month {
+        s.push_str(&format!("{m}月"));
+        if let Some(d) = t.day {
+            s.push_str(&format!("{d}日"));
+        }
+    }
+    s
+}
+
+pub fn build_knowledge(root: &Path) -> Result<KnowledgeDto, String> {
+    use story_project_format::knowledge_file::{AssertionsFile, EvidenceFile};
+
+    let paths = story_project_format::ProjectPaths::new(root);
+
+    // structure → 片段定位标签与阅读顺序清单
+    let structure = story_project_format::StructureFile::from_toml_str(&read_file(
+        &paths.structure_toml(),
+    )?)
+    .map_err(|e| format!("structure.toml 解析失败: {e}"))?;
+
+    let mut frag_label: BTreeMap<String, String> = BTreeMap::new();
+    let mut fragments = Vec::new();
+    for cid in &structure.book.chapters {
+        let Some(chapter) = structure.chapter.get(cid) else {
+            continue;
+        };
+        for sid in &chapter.scenes {
+            let Some(scene) = structure.scene.get(sid) else {
+                continue;
+            };
+            let label = format!("{} · {}", chapter.title, scene.title.as_deref().unwrap_or(""));
+            for fid in &scene.fragments {
+                if frag_label.insert(fid.clone(), label.clone()).is_none() {
+                    fragments.push(FragmentRefDto {
+                        id: fid.clone(),
+                        label: label.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // 证据登记表：ev_XXXX → 片段 ID
+    let evidence_file: EvidenceFile = load_toml(&paths.knowledge_dir().join("evidence.toml"))?;
+    let ev_fragment: BTreeMap<&str, &str> = evidence_file
+        .evidence
+        .iter()
+        .map(|e| (e.id.as_str(), e.loc.as_str()))
+        .collect();
+
+    let assertions_file: AssertionsFile =
+        load_toml(&paths.knowledge_dir().join("assertions.toml"))?;
+    let assertions = assertions_file
+        .assertions
+        .iter()
+        .map(|a| {
+            let object = match &a.object {
+                toml::Value::String(s) => s.clone(),
+                toml::Value::Integer(i) => i.to_string(),
+                toml::Value::Boolean(b) => b.to_string(),
+                other => other.to_string(),
+            };
+            AssertionDto {
+                id: a.id.clone(),
+                subject: a.subject.clone(),
+                predicate: a.predicate.clone(),
+                object,
+                status: if a.status.is_empty() {
+                    "active".to_string()
+                } else {
+                    a.status.clone()
+                },
+                extracted_by: a.extracted_by.clone(),
+                evidence: a
+                    .evidence
+                    .iter()
+                    .filter_map(|ev_id| {
+                        ev_fragment.get(ev_id.as_str()).map(|&fid| EvidenceRefDto {
+                            id: ev_id.clone(),
+                            fragment: fid.to_string(),
+                            label: frag_label.get(fid).cloned().unwrap_or_default(),
+                        })
+                    })
+                    .collect(),
+                valid_from: a.valid.as_ref().and_then(|v| v.from.as_ref()).map(story_time_label),
+                valid_until: a
+                    .valid
+                    .as_ref()
+                    .and_then(|v| v.until.as_ref())
+                    .map(story_time_label),
+            }
+        })
+        .collect();
+
+    Ok(KnowledgeDto {
+        assertions,
+        fragments,
+    })
+}
+
+// ============================================================================
 // SceneDetail — 单个场景的编辑数据（含片段正文）
 // ============================================================================
 
@@ -1410,5 +1577,72 @@ volume_order = 2
         let again = build_chapters_outline(&root).unwrap();
         assert_eq!(again.volumes.len(), 2);
         assert_eq!(again.chapters[1].volume_order, 2);
+    }
+}
+
+#[cfg(test)]
+mod knowledge_tests {
+    use super::*;
+    use story_studio_lib::mutations;
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "knowledge-dto-test-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn build_knowledge_resolves_evidence_location() {
+        let root = temp_root("evidence");
+        story_project_format::init::init_project(&root, "断言测试").unwrap();
+        let paths = story_project_format::ProjectPaths::new(&root);
+
+        // 章节结构 + 片段 + 实体
+        let cid = mutations::create_chapter(&paths, "第一章").unwrap();
+        let sid = mutations::create_scene(&paths, &cid, "雨夜", None).unwrap();
+        let fid = mutations::create_fragment(&paths, &sid, "他握紧了玉佩。").unwrap();
+        let entity =
+            mutations::create_entity(&paths, mutations::EntityKind::Character, "林风").unwrap();
+
+        // 添加断言（带证据片段）
+        let outcome =
+            mutations::add_assertion(&paths, &entity, "holds", "i_0001", Some(&fid)).unwrap();
+        assert!(!outcome.deduplicated);
+
+        let k = build_knowledge(&root).unwrap();
+        assert_eq!(k.assertions.len(), 1);
+        let a = &k.assertions[0];
+        assert_eq!(a.subject, entity);
+        assert_eq!(a.predicate, "holds");
+        assert_eq!(a.object, "i_0001");
+        assert_eq!(a.status, "active"); // 空状态归一化为 active
+        assert_eq!(a.extracted_by, "manual");
+        assert_eq!(a.evidence.len(), 1);
+        assert_eq!(a.evidence[0].fragment, fid);
+        assert_eq!(a.evidence[0].label, "第一章 · 雨夜");
+        assert_eq!(k.fragments.len(), 1);
+        assert_eq!(k.fragments[0].id, fid);
+        assert_eq!(k.fragments[0].label, "第一章 · 雨夜");
+
+        // 状态流转反映到 DTO
+        mutations::set_assertion_status(&paths, &a.id, "superseded").unwrap();
+        let k2 = build_knowledge(&root).unwrap();
+        assert_eq!(k2.assertions[0].status, "superseded");
+    }
+
+    #[test]
+    fn build_knowledge_empty_project_is_empty() {
+        let root = temp_root("empty");
+        story_project_format::init::init_project(&root, "空项目").unwrap();
+
+        let k = build_knowledge(&root).unwrap();
+        assert!(k.assertions.is_empty());
+        assert!(k.fragments.is_empty()); // 尚无片段
     }
 }

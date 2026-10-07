@@ -7,6 +7,7 @@ import { useUiStore, DOCK_WIDTH_DEFAULT, DOCK_WIDTH_MAX, DOCK_WIDTH_MIN } from '
 import { useWorkspaceStore } from '@/stores/workspace'
 import AiPanel from './AiPanel.vue'
 import AnchoringReviewPanel from './AnchoringReviewPanel.vue'
+import AssertionPanel from './AssertionPanel.vue'
 import BookPanel from './BookPanel.vue'
 import EntityPanel from './EntityPanel.vue'
 import ThreadPanel from './ThreadPanel.vue'
@@ -41,6 +42,7 @@ const panels = computed(
       ['worldview', { label: '世界观', icon: 'fa-solid fa-globe', comp: WorldviewPanel }],
       ['book', { label: '逐章成书', icon: 'fa-solid fa-book-open', comp: BookPanel }],
       ['threads', { label: '叙事线索', icon: 'fa-solid fa-route', comp: ThreadPanel }],
+      ['knowledge', { label: '知识断言', icon: 'fa-solid fa-database', comp: AssertionPanel }],
       [
         'diagnostics',
         {

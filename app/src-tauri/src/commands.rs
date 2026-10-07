@@ -417,6 +417,51 @@ pub fn remove_thread_knowledge(
         .map(|_| ())
 }
 
+// ============================================================================
+// 知识断言
+// ============================================================================
+
+#[tauri::command]
+pub fn list_knowledge(root: String) -> R<KnowledgeDto> {
+    crate::dto::build_knowledge(Path::new(&root))
+}
+
+/// 手动添加断言；evidence_fragment 传片段 ID 时自动登记证据条目
+#[tauri::command]
+pub fn add_assertion(
+    root: String,
+    subject: String,
+    predicate: String,
+    object: String,
+    evidence_fragment: Option<String>,
+) -> R<AssertionOutcomeDto> {
+    mutations::add_assertion(
+        &paths(&root),
+        &subject,
+        &predicate,
+        &object,
+        evidence_fragment.as_deref(),
+    )
+    .map_err(e)
+    .map(|o| AssertionOutcomeDto {
+        id: o.id,
+        superseded: o.superseded,
+        deduplicated: o.deduplicated,
+        coexisting: o.coexisting,
+    })
+}
+
+/// 修改断言状态：active / superseded / contradicted
+#[tauri::command]
+pub fn set_assertion_status(root: String, assertion_id: String, status: String) -> R<()> {
+    mutations::set_assertion_status(&paths(&root), &assertion_id, &status).map_err(e)
+}
+
+#[tauri::command]
+pub fn delete_assertion(root: String, assertion_id: String) -> R<()> {
+    mutations::delete_assertion(&paths(&root), &assertion_id).map_err(e)
+}
+
 fn load_thread(root: &str, thread_id: &str) -> R<ThreadDto> {
     let file = load_toml::<story_project_format::ThreadsFile>(&paths(root).threads_toml())?;
     file.threads

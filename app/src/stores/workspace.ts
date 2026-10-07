@@ -730,6 +730,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     deleteThread,
     setThreadKnowledge,
     removeThreadKnowledge,
+    scheduleCompile,
     retrySave,
     loadVersions,
     readVersion,

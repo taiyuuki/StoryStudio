@@ -135,6 +135,11 @@ pub fn run() {
             commands::delete_thread,
             commands::set_thread_knowledge,
             commands::remove_thread_knowledge,
+            // 知识断言
+            commands::list_knowledge,
+            commands::add_assertion,
+            commands::set_assertion_status,
+            commands::delete_assertion,
             // 世界观
             commands::get_worldview,
             commands::save_worldview,
