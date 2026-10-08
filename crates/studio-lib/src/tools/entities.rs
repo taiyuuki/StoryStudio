@@ -1207,7 +1207,9 @@ impl Tool for GetSceneContextTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "get_scene_context".into(),
-            description: "获取指定场景的完整上下文：POV、出场角色、片段列表、所属章节。".into(),
+            description: "获取指定场景的完整上下文：POV、出场角色、片段列表、所属章节、\
+            本章脉络（目标/节拍/钩子）。动笔前调用可一屏对齐设计意图。"
+                .into(),
             parameters: object_schema(vec![("scene_id", "string", "场景 ID（如 sc_01_01）", true)]),
         }
     }
@@ -1302,6 +1304,14 @@ impl Tool for GetSceneContextTool {
         if !time_label.is_empty() {
             result.push_str(&format!("  故事时间: {time_label}\n"));
         }
+        // 本章脉络（goal/beats/hook）：动笔时刻直接对照，无需切回脉络面板
+        let outline_brief = chapter_info
+            .as_ref()
+            .and_then(|(ch_id_str, _)| collect_chapter_outline_brief(&self.ctx, ch_id_str));
+        if let Some(brief) = &outline_brief {
+            result.push_str("  本章脉络:\n");
+            result.push_str(brief);
+        }
         if let Some(block) = characters_block {
             result.push_str("  本章涉及角色:\n");
             result.push_str(&block);
@@ -1332,6 +1342,34 @@ impl Tool for GetSceneContextTool {
 /// POV 角色若也出现在列表中，追加 `[POV]` 标记，便于 AI 区分主视角与其余出场角色。
 ///
 /// 返回 `None` 表示：chapters.toml 不存在/解析失败/无匹配章节/characters 为空。
+/// 章节脉络速览（chapters.toml 的 goal/beats/hook）——动笔时刻直接对照，
+/// 免去在脉络面板与场景间来回切换。无脉络或全部为空时返回 None。
+fn collect_chapter_outline_brief(ctx: &ToolContext, chapter_id: &str) -> Option<String> {
+    let file = crate::mutations::load_chapters_file(&ctx.paths()).ok()?;
+    let outline = file
+        .chapters
+        .iter()
+        .find(|c| c.chapter_id.as_deref() == Some(chapter_id))?;
+
+    let mut lines = Vec::new();
+    if let Some(goal) = outline.goal.as_deref().filter(|g| !g.is_empty()) {
+        lines.push(format!("    目标: {goal}"));
+    }
+    if !outline.beats.is_empty() {
+        lines.push("    节拍:".into());
+        for (i, beat) in outline.beats.iter().enumerate() {
+            lines.push(format!("      {}. {beat}", i + 1));
+        }
+    }
+    if let Some(hook) = outline.hook.as_deref().filter(|h| !h.is_empty()) {
+        lines.push(format!("    章末钩子: {hook}"));
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(lines.join("\n") + "\n")
+}
+
 fn collect_chapter_characters(
     ctx: &ToolContext,
     chapter_id: &str,
@@ -1892,6 +1930,49 @@ status = "writing"
     }
 
     #[test]
+    fn get_scene_context_includes_chapter_outline() {
+        // 章节脉络（goal/beats/hook）应透传进场景上下文
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        let structure = r#"[book]
+id = "b_root"
+title = "测试小说"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[scene.sc_01_01]
+title = "开场"
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        let chapters = r#"[[chapters]]
+chapter_id = "ch_01"
+title = "第一章"
+goal = "引出主线冲突"
+beats = ["雨夜遇袭", "获得信物"]
+hook = "信物上刻着陌生的家徽"
+status = "writing"
+"#;
+        std::fs::write(dir.join("chapters.toml"), chapters).unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = GetSceneContextTool::new(ctx);
+        let result = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+
+        assert!(result.contains("本章脉络"), "got: {result}");
+        assert!(result.contains("目标: 引出主线冲突"), "got: {result}");
+        assert!(result.contains("1. 雨夜遇袭"), "got: {result}");
+        assert!(result.contains("2. 获得信物"), "got: {result}");
+        assert!(result.contains("章末钩子: 信物上刻着陌生的家徽"), "got: {result}");
+    }
+
+    #[test]
     fn get_scene_context_without_chapters_toml() {
         // 没有 chapters.toml（或脉络中无匹配章节）时，不应输出"本章涉及角色"段
         let tmp = setup_test_project();
@@ -1926,6 +2007,10 @@ pov = "c_0001"
         assert!(
             !result.contains("本章涉及角色"),
             "无脉络时不应输出涉及角色段, got: {result}"
+        );
+        assert!(
+            !result.contains("本章脉络"),
+            "无脉络时不应输出脉络段, got: {result}"
         );
     }
 
