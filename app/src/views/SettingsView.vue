@@ -897,6 +897,7 @@ function goBack() {
 
 .sv-list-card,
 .sv-purpose-card,
+.sv-agent-card,
 .sv-editor {
   padding: 18px 20px;
 }
