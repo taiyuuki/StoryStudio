@@ -1208,7 +1208,8 @@ impl Tool for GetSceneContextTool {
         ToolDef {
             name: "get_scene_context".into(),
             description: "获取指定场景的完整上下文：POV、出场角色、片段列表、所属章节、\
-            本章脉络（目标/节拍/钩子）。动笔前调用可一屏对齐设计意图。"
+            本章脉络（目标/节拍/钩子）、本章线索及各观察者的最新认知（该透露多少、\
+            隐瞒多少一目了然）。动笔前调用可一屏对齐设计意图。"
                 .into(),
             parameters: object_schema(vec![("scene_id", "string", "场景 ID（如 sc_01_01）", true)]),
         }
@@ -1312,6 +1313,14 @@ impl Tool for GetSceneContextTool {
             result.push_str("  本章脉络:\n");
             result.push_str(brief);
         }
+        // 本章线索认知快照：各观察者最新认知，动笔时直接拿捏该透露多少
+        let threads_brief = chapter_info
+            .as_ref()
+            .and_then(|(ch_id_str, _)| collect_chapter_threads_brief(&self.ctx, ch_id_str));
+        if let Some(brief) = &threads_brief {
+            result.push_str("  本章线索:\n");
+            result.push_str(brief);
+        }
         if let Some(block) = characters_block {
             result.push_str("  本章涉及角色:\n");
             result.push_str(&block);
@@ -1366,6 +1375,57 @@ fn collect_chapter_outline_brief(ctx: &ToolContext, chapter_id: &str) -> Option<
     }
     if lines.is_empty() {
         return None;
+    }
+    Some(lines.join("\n") + "\n")
+}
+
+/// 本章涉及线索的认知快照（chapters.toml 的 threads 列表 → threads.toml）。
+///
+/// 每条线索给出标题/ID/派生状态，以及各观察者的**最新**认知（时间线末项）——
+/// 写场景时据此决定本章该透露多少、隐瞒多少，免去逐条调 get_thread_detail。
+/// 完整时间线仍走 get_thread_detail。无匹配章节或无线索时返回 None。
+fn collect_chapter_threads_brief(ctx: &ToolContext, chapter_id: &str) -> Option<String> {
+    let outline = crate::mutations::load_chapters_file(&ctx.paths()).ok()?;
+    let chapter = outline
+        .chapters
+        .iter()
+        .find(|c| c.chapter_id.as_deref() == Some(chapter_id))?;
+    if chapter.threads.is_empty() {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(ctx.paths().threads_toml()).ok()?;
+    let file = story_project_format::ThreadsFile::from_toml_str(&content).ok()?;
+
+    let mut lines = Vec::new();
+    for tid in &chapter.threads {
+        let Some(t) = file.threads.iter().find(|t| &t.id == tid) else {
+            lines.push(format!("    {tid}（threads.toml 中不存在）"));
+            continue;
+        };
+        let status = super::knowledge::derive_thread_status(t);
+        let mut line = format!("    {}（{tid}·{status}）", t.title);
+        if !t.knowledge.is_empty() {
+            let observers: Vec<String> = t
+                .knowledge
+                .iter()
+                .map(|k| {
+                    let observer = super::knowledge::format_observer(&k.observer);
+                    match k.state_timeline.last() {
+                        // 时间线按记录顺序累积，末项即最新认知
+                        Some(latest) => format!(
+                            "{}:{}({})",
+                            observer,
+                            super::knowledge::format_knowledge_state(&latest.state),
+                            latest.scene
+                        ),
+                        None => format!("{observer}:无记录"),
+                    }
+                })
+                .collect();
+            line.push_str(&format!(" — {}", observers.join("，")));
+        }
+        lines.push(line);
     }
     Some(lines.join("\n") + "\n")
 }
@@ -2072,6 +2132,75 @@ status = "writing"
         assert!(result.contains("1. 雨夜遇袭"), "got: {result}");
         assert!(result.contains("2. 获得信物"), "got: {result}");
         assert!(result.contains("章末钩子: 信物上刻着陌生的家徽"), "got: {result}");
+    }
+
+    #[test]
+    fn get_scene_context_includes_thread_knowledge_snapshot() {
+        // 本章线索应附带各观察者的最新认知（时间线末项），免去逐条 get_thread_detail
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        let structure = r#"[book]
+id = "b_root"
+title = "测试小说"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[scene.sc_01_01]
+title = "开场"
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        let chapters = r#"[[chapters]]
+chapter_id = "ch_01"
+title = "第一章"
+threads = ["t_001", "t_404"]
+status = "writing"
+"#;
+        std::fs::write(dir.join("chapters.toml"), chapters).unwrap();
+
+        let threads = r#"[[thread]]
+id = "t_001"
+title = "信物之谜"
+planted_at = "sc_01_01"
+
+[[thread.knowledge]]
+observer = "reader"
+state_timeline = [
+    { scene = "sc_01_01", state = "suspected" },
+    { scene = "sc_01_02", state = "known" },
+]
+
+[[thread.knowledge]]
+observer = { character = "c_0001" }
+state_timeline = [
+    { scene = "sc_01_01", state = "unknown" },
+]
+"#;
+        std::fs::write(dir.join("threads.toml"), threads).unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = GetSceneContextTool::new(ctx);
+        let result = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+
+        assert!(result.contains("本章线索"), "got: {result}");
+        // 线索标题 + ID + 派生状态（planted_at 已设 → planted）
+        assert!(result.contains("信物之谜（t_001·planted）"), "got: {result}");
+        // reader 取时间线末项（known@sc_01_02），不是首项 suspected
+        assert!(result.contains("读者:知晓(sc_01_02)"), "got: {result}");
+        assert!(
+            !result.contains("读者:怀疑"),
+            "应取最新认知而非首项, got: {result}"
+        );
+        // 角色观察者按 ID 渲染
+        assert!(result.contains("角色 c_0001:未知(sc_01_01)"), "got: {result}");
+        // chapters.toml 里引用了不存在的线索：标注而非报错
+        assert!(result.contains("t_404（threads.toml 中不存在）"), "got: {result}");
     }
 
     #[test]

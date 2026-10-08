@@ -428,7 +428,7 @@ impl Tool for CreateThreadTool {
 // ============================================================================
 
 /// 从 ThreadDef 的 loose-typed 字段推导状态（与 ThreadStatus::derive 逻辑一致）。
-fn derive_thread_status(t: &story_project_format::threads_file::ThreadDef) -> &'static str {
+pub(super) fn derive_thread_status(t: &story_project_format::threads_file::ThreadDef) -> &'static str {
     if t.abandoned {
         "abandoned"
     } else if t.resolved_at.is_some() {
@@ -763,7 +763,7 @@ impl Tool for DeleteThreadTool {
 // ============================================================================
 
 /// 将 ObserverDef 渲染为可读文本
-fn format_observer(o: &story_project_format::threads_file::ObserverDef) -> String {
+pub(super) fn format_observer(o: &story_project_format::threads_file::ObserverDef) -> String {
     use story_project_format::threads_file::ObserverDef;
     match o {
         ObserverDef::Builtin(s) => match s.as_str() {
@@ -778,7 +778,7 @@ fn format_observer(o: &story_project_format::threads_file::ObserverDef) -> Strin
 }
 
 /// 将 knowledge state 渲染为中文
-fn format_knowledge_state(s: &str) -> &str {
+pub(super) fn format_knowledge_state(s: &str) -> &str {
     match s {
         "unknown" => "未知",
         "suspected" => "怀疑",
