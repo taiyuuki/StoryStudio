@@ -39,7 +39,7 @@ async function openProject(root: string) {
 async function pickAndOpen() {
   const dir = await openDialog({
     directory: true,
-    title: '选择 StoryStudio 项目目录（含 project.toml）',
+    title: '选择 StoryStudio 作品文件夹（含 project.toml）',
   })
   if (typeof dir === 'string') openProject(dir)
 }
@@ -59,6 +59,10 @@ async function pickAndOpen() {
           <button class="ink-btn ink-btn--primary ink-btn--lg" @click="showNew = true">
             <i class="fa-solid fa-feather-pointed" />
             新建作品
+          </button>
+          <button class="ink-btn ink-btn--lg" @click="pickAndOpen">
+            <i class="fa-regular fa-folder-open" />
+            打开已有作品
           </button>
           <button class="ink-btn ink-btn--lg" @click="router.push('/create')">
             <i class="fa-solid fa-wand-magic-sparkles" />

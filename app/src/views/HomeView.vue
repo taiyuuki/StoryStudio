@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { ElMessage } from 'element-plus'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useUiStore } from '@/stores/ui'
 import { api, type ProjectPeekDto } from '@/api/backend'
@@ -15,6 +18,9 @@ const ui = useUiStore()
 /** root → 轻量概览（null = 目录不可用；不在 map = 尚未加载） */
 const peeks = ref<Record<string, ProjectPeekDto | null>>({})
 const showNew = ref(false)
+/** 拖着单个文件夹悬停时显示落点提示 */
+const dragOver = ref(false)
+let unlistenDrop: (() => void) | null = null
 
 const projects = computed(() => ui.recentProjects)
 const primary = computed(() => projects.value[0] ?? null)
@@ -70,10 +76,40 @@ async function loadPeeks() {
   }
 }
 
-onMounted(loadPeeks)
+onMounted(async () => {
+  loadPeeks()
+  // 整窗拖放打开作品（Tauri 原生事件，仅文件/文件夹拖放触发）：
+  // 换机器 / 重装后没有最近列表，把作品文件夹拖进来即可继续写
+  unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+    const p = event.payload
+    if (p.type === 'enter') {
+      dragOver.value = p.paths.length === 1
+    } else if (p.type === 'over') {
+      // over 载荷不带 paths；enter 必先于 over，保持 enter 时算好的状态
+    } else if (p.type === 'leave') {
+      dragOver.value = false
+    } else if (p.type === 'drop') {
+      dragOver.value = false
+      if (store.loading) return
+      if (p.paths.length === 1) void openProject(p.paths[0])
+      else if (p.paths.length > 1) ElMessage.warning('一次只能打开一个作品文件夹')
+    }
+  })
+})
+
+onUnmounted(() => unlistenDrop?.())
 
 async function openProject(root: string) {
   if (await store.openRoot(root)) router.push('/workbench')
+}
+
+/** 选一个已有作品文件夹打开（project.toml 所在目录） */
+async function pickAndOpen() {
+  const dir = await openDialog({
+    directory: true,
+    title: '选择 StoryStudio 作品文件夹（含 project.toml）',
+  })
+  if (typeof dir === 'string') openProject(dir)
 }
 
 async function openBookPanel(root: string) {
@@ -96,15 +132,20 @@ async function openBookPanel(root: string) {
         <p class="hero-sub">设定为骨 · 伏笔为脉 · 一气呵成</p>
       </div>
       <div class="welcome-actions">
-        <button class="ink-btn ink-btn--primary ink-btn--lg" @click="router.push('/works')">
+        <button class="ink-btn ink-btn--primary ink-btn--lg" @click="showNew = true">
           <i class="fa-solid fa-feather-pointed" />
           新建作品
+        </button>
+        <button class="ink-btn ink-btn--lg" @click="pickAndOpen">
+          <i class="fa-regular fa-folder-open" />
+          打开已有作品
         </button>
         <button class="ink-btn ink-btn--lg" @click="router.push('/create')">
           <i class="fa-solid fa-wand-magic-sparkles" />
           AI 开书
         </button>
       </div>
+      <p class="welcome-hint">把作品文件夹直接拖进窗口，也能打开</p>
       <p class="home-foot text-ink-muted">作品以纯文本形式保存在你选择的文件夹里，随时可备份、可迁移</p>
     </div>
 
@@ -191,6 +232,16 @@ async function openBookPanel(root: string) {
     </div>
 
     <NewProjectDialog v-model="showNew" @created="openProject" />
+
+    <!-- 拖放落点提示：盖住全窗口，不拦截事件（落点仍由 webview 原生分发） -->
+    <Transition name="drop-fade">
+      <div v-if="dragOver" class="drop-overlay">
+        <div class="drop-card">
+          <i class="fa-regular fa-folder-open" />
+          <span>松开 · 打开这个作品</span>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -460,11 +511,76 @@ async function openBookPanel(root: string) {
   gap: 14px;
 }
 
+.welcome-hint {
+  margin-top: 20px;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: var(--ink-disabled);
+}
+
 .home-foot {
   margin-top: 40px;
   text-align: center;
   font-size: 12px;
   letter-spacing: 0.1em;
+}
+
+// ── 拖放打开作品 ─────────────────────────────────────────
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000; // 盖过 ElDialog，拖放期间模态框也在下面
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg-main) 72%, transparent);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+
+.drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 36px 52px;
+  border: 1.5px dashed var(--ink-accent);
+  border-radius: 16px;
+  background: var(--surface-1);
+  box-shadow: var(--ui-shadow-hover);
+  animation: drop-pop 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+
+  i {
+    font-size: 28px;
+    color: var(--ink-accent);
+  }
+
+  span {
+    font-size: 14px;
+    letter-spacing: 0.18em;
+    color: var(--ink-main);
+  }
+}
+
+.drop-fade-enter-active,
+.drop-fade-leave-active {
+  transition: opacity 0.16s ease;
+}
+
+.drop-fade-enter-from,
+.drop-fade-leave-to {
+  opacity: 0;
+}
+
+@keyframes drop-pop {
+  from {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
 }
 
 @keyframes rise {
