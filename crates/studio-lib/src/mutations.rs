@@ -1245,6 +1245,33 @@ pub fn create_scene(
     Ok(new_id)
 }
 
+/// 创建场景并可选写入首个片段（高速写作：建场 + 开笔一次往返完成）。
+///
+/// `initial_text` 为 None 或空白时只建场。片段创建失败时场景已落盘，
+/// 等价于旧两步流程的第二步失败，可重试 write_fragment_text。
+/// 返回 (场景 ID, 首个片段 ID；只建场时为 None)。
+pub fn create_scene_with_fragment(
+    paths: &ProjectPaths,
+    chapter_id: &str,
+    title: &str,
+    pov: Option<&str>,
+    initial_text: Option<&str>,
+    source: crate::stats::WriteSource,
+) -> Result<(String, Option<String>), StudioError> {
+    let scene_id = create_scene(paths, chapter_id, title, pov)?;
+    let fragment_id = match initial_text.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(text) => Some(create_fragment_anchored_source(
+            paths,
+            &scene_id,
+            text,
+            &[],
+            source,
+        )?),
+        None => None,
+    };
+    Ok((scene_id, fragment_id))
+}
+
 /// 重命名场景
 pub fn rename_scene(
     paths: &ProjectPaths,

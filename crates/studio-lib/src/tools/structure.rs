@@ -186,11 +186,20 @@ impl Tool for CreateSceneTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "create_scene".into(),
-            description: "在指定章节下创建新场景，自动生成场景 ID 并更新 structure.toml。".into(),
+            description: "在指定章节下创建新场景，自动生成场景 ID 并更新 structure.toml。\
+            可选传入 initial_text 直接写入首个片段，建场与开笔一次完成，\
+            省一次 write_fragment_text 往返。"
+                .into(),
             parameters: object_schema(vec![
                 ("chapter_id", "string", "所属章节 ID（如 ch_01）", true),
                 ("title", "string", "场景标题", true),
                 ("pov_character_id", "string", "POV 角色 ID", false),
+                (
+                    "initial_text",
+                    "string",
+                    "首个片段正文（可选；高速写作时建场即开笔，正文较长也可后续再写）",
+                    false,
+                ),
             ]),
         }
     }
@@ -199,14 +208,27 @@ impl Tool for CreateSceneTool {
         let chapter_id = get_str(arguments, "chapter_id")?;
         let title = get_str(arguments, "title")?;
         let pov = get_str_opt(arguments, "pov_character_id");
+        let initial_text = get_str_opt(arguments, "initial_text");
 
         let paths = self.ctx.paths();
-        let new_id = crate::mutations::create_scene(&paths, &chapter_id, &title, pov.as_deref())
-            .map_err(|e| e.to_string())?;
+        let (new_id, fragment_id) = crate::mutations::create_scene_with_fragment(
+            &paths,
+            &chapter_id,
+            &title,
+            pov.as_deref(),
+            initial_text.as_deref(),
+            crate::stats::WriteSource::Ai,
+        )
+        .map_err(|e| e.to_string())?;
 
+        let fragment_note = match &fragment_id {
+            Some(fid) => format!("，首个片段已写入: {fid}（续写用 write_fragment_text / append_fragment_text）"),
+            None => String::new(),
+        };
         Ok(format!(
-            "场景已创建: id={new_id}, title={title}, chapter={chapter_id}, pov={}",
-            pov.as_deref().unwrap_or("未设置")
+            "场景已创建: id={new_id}, title={title}, chapter={chapter_id}, pov={}{}",
+            pov.as_deref().unwrap_or("未设置"),
+            fragment_note
         ))
     }
 }
@@ -830,6 +852,72 @@ mod tests {
             .execute(&serde_json::json!({ "chapter_id": "ch_9999" }))
             .unwrap_err();
         assert!(err.contains("不存在"), "{err}");
+    }
+
+    #[test]
+    fn create_scene_with_initial_text() {
+        // 建场即开笔：initial_text 直接落成首个片段，省一次工具往返
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+
+        let out = CreateSceneTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                "chapter_id": ch,
+                "title": "试讲课",
+                "pov_character_id": "c_0001",
+                "initial_text": "粉笔落在石板上，苏格画下第一个圆。"
+            }))
+            .unwrap();
+        assert!(out.contains("首个片段已写入"), "{out}");
+
+        // 片段文件落盘且关联到场景
+        let fragment_id = out
+            .split("首个片段已写入: ")
+            .nth(1)
+            .unwrap()
+            .split('（')
+            .next()
+            .unwrap()
+            .trim()
+            .to_string();
+        let content = std::fs::read_to_string(dir.join("fragments").join(format!("{fragment_id}.md")))
+            .unwrap();
+        assert!(content.contains("粉笔落在石板上"), "{content}");
+        let structure =
+            story_project_format::StructureFile::from_toml_str(
+                &std::fs::read_to_string(dir.join("structure.toml")).unwrap(),
+            )
+            .unwrap();
+        let scene = structure
+            .scene
+            .iter()
+            .find(|(_, s)| s.title.as_deref() == Some("试讲课"))
+            .unwrap();
+        assert!(
+            scene.1.fragments.iter().any(|f| f == &fragment_id),
+            "片段应关联到场景: {:?}",
+            scene.1.fragments
+        );
+
+        // 不传 initial_text：行为与旧版一致，无片段
+        let out2 = CreateSceneTool::new(ctx)
+            .execute(&serde_json::json!({ "chapter_id": ch, "title": "空场景" }))
+            .unwrap();
+        assert!(!out2.contains("首个片段"), "{out2}");
+        let structure =
+            story_project_format::StructureFile::from_toml_str(
+                &std::fs::read_to_string(dir.join("structure.toml")).unwrap(),
+            )
+            .unwrap();
+        let empty_scene = structure
+            .scene
+            .iter()
+            .find(|(_, s)| s.title.as_deref() == Some("空场景"))
+            .unwrap();
+        assert!(empty_scene.1.fragments.is_empty());
     }
 
     #[test]
