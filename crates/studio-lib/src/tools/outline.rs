@@ -6,7 +6,7 @@ use story_ai_runtime::{Tool, ToolDef};
 use story_project_format::outline_file::{ArcDef, ConflictDef, StorylineDef, VolumeDef};
 use story_project_format::{EntityFile, OutlineFile};
 
-use super::{check_index, get_str, get_str_opt, object_schema, ToolContext};
+use super::{check_index, get_index, get_str, get_str_opt, object_schema, ToolContext};
 
 // ============================================================================
 // update_entity
@@ -566,7 +566,7 @@ impl Tool for UpdateOutlineItemTool {
             description: "修改大纲中已有的条目（卷/弧线/故事线/冲突）。先 get_outline 获取序号，再用 index 指定要修改的条目，只更新提供的字段。".into(),
             parameters: object_schema(vec![
                 ("section", "string", "条目类型: volume / arc / storyline / conflict（不支持 story）", true),
-                ("index", "string", "条目序号（1-based，对应 get_outline 显示的编号）", true),
+                ("index", "integer", "条目序号（1-based，对应 get_outline 显示的编号）", true),
                 ("name", "string", "名称（全部类型通用）", false),
                 ("summary", "string", "摘要（volume/arc/storyline/conflict）", false),
                 ("theme", "string", "主题（volume）", false),
@@ -587,12 +587,7 @@ impl Tool for UpdateOutlineItemTool {
                 "story 是单值段，请使用 set_outline_item(section=story) 修改故事元信息".into(),
             );
         }
-        let index: usize = get_str(arguments, "index")?
-            .parse()
-            .map_err(|_| "index 必须是正整数（1-based）".to_string())?;
-        if index == 0 {
-            return Err("index 从 1 开始计数".into());
-        }
+        let index = get_index(arguments, "index")?;
 
         let (mut outline, outline_path) = load_outline(&self.ctx)?;
 
@@ -715,19 +710,14 @@ impl Tool for DeleteOutlineItemTool {
             description: "删除大纲中已有的条目（卷/弧线/故事线/冲突）。先 get_outline 获取序号，再用 index 指定要删除的条目。".into(),
             parameters: object_schema(vec![
                 ("section", "string", "条目类型: volume / arc / storyline / conflict", true),
-                ("index", "string", "条目序号（1-based，对应 get_outline 显示的编号）", true),
+                ("index", "integer", "条目序号（1-based，对应 get_outline 显示的编号）", true),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let section = get_str(arguments, "section")?;
-        let index: usize = get_str(arguments, "index")?
-            .parse()
-            .map_err(|_| "index 必须是正整数（1-based）".to_string())?;
-        if index == 0 {
-            return Err("index 从 1 开始计数".into());
-        }
+        let index = get_index(arguments, "index")?;
 
         let (mut outline, outline_path) = load_outline(&self.ctx)?;
 

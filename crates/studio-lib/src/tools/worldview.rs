@@ -12,7 +12,7 @@ use story_project_format::worldview_file::{
 };
 use story_project_format::EntityFile;
 
-use super::{check_index, get_str, get_str_opt, object_schema, ToolContext};
+use super::{check_index, get_index, get_str, get_str_opt, object_schema, ToolContext};
 
 // ============================================================================
 // get_worldview
@@ -310,7 +310,7 @@ impl Tool for UpdateWorldviewItemTool {
                 .into(),
             parameters: object_schema(vec![
                 ("section", "string", "条目类型: concept / system", true),
-                ("index", "string", "条目序号（1-based，对应 get_worldview 显示的编号）", true),
+                ("index", "integer", "条目序号（1-based，对应 get_worldview 显示的编号）", true),
                 ("name", "string", "名称（全部类型通用）", false),
                 ("category", "string", "概念分类（concept）", false),
                 ("summary", "string", "摘要（全部类型通用）", false),
@@ -324,12 +324,7 @@ impl Tool for UpdateWorldviewItemTool {
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let section = get_str(arguments, "section")?;
-        let index: usize = get_str(arguments, "index")?
-            .parse()
-            .map_err(|_| "index 必须是正整数（1-based）".to_string())?;
-        if index == 0 {
-            return Err("index 从 1 开始计数".into());
-        }
+        let index = get_index(arguments, "index")?;
 
         let paths = self.ctx.paths();
         let mut changes: Vec<&str> = Vec::new();
@@ -427,19 +422,14 @@ impl Tool for DeleteWorldviewItemTool {
                 .into(),
             parameters: object_schema(vec![
                 ("section", "string", "条目类型: concept / system", true),
-                ("index", "string", "条目序号（1-based，对应 get_worldview 显示的编号）", true),
+                ("index", "integer", "条目序号（1-based，对应 get_worldview 显示的编号）", true),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let section = get_str(arguments, "section")?;
-        let index: usize = get_str(arguments, "index")?
-            .parse()
-            .map_err(|_| "index 必须是正整数（1-based）".to_string())?;
-        if index == 0 {
-            return Err("index 从 1 开始计数".into());
-        }
+        let index = get_index(arguments, "index")?;
 
         let paths = self.ctx.paths();
 

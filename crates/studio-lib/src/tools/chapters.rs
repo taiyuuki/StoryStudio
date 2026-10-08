@@ -12,7 +12,7 @@ use story_project_format::{
     VolumeGroupDef,
 };
 
-use super::{check_index, get_str, get_str_opt, object_schema, ToolContext};
+use super::{check_index, get_index, get_str, get_str_opt, object_schema, ToolContext};
 
 // ============================================================================
 // design_chapters
@@ -372,7 +372,7 @@ impl Tool for UpdateChapterOutlineTool {
             name: "update_chapter_outline".into(),
             description: "修改单章脉络（用 index 指定，1-based，对应 get_chapter_outline 显示的编号）。可更新标题、梗概、目标、节拍、涉及角色/线索、钩子、备注、章节 ID、状态。status 仅允许 planned→writing→completed 单向推进。".into(),
             parameters: object_schema(vec![
-                ("index", "string", "章序号（1-based）", true),
+                ("index", "integer", "章序号（1-based）", true),
                 ("title", "string", "章节标题", false),
                 ("volume_order", "string", "所属卷序号（1-based，0=未分卷）", false),
                 ("summary", "string", "章节梗概", false),
@@ -389,12 +389,7 @@ impl Tool for UpdateChapterOutlineTool {
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let index: usize = get_str(arguments, "index")?
-            .parse()
-            .map_err(|_| "index 必须是正整数（1-based）".to_string())?;
-        if index == 0 {
-            return Err("index 从 1 开始计数".into());
-        }
+        let index = get_index(arguments, "index")?;
 
         let (mut file, mut volumes, path) = load_chapters(&self.ctx)?;
         check_index("章节", index, file.chapters.len())?;
@@ -512,18 +507,13 @@ impl Tool for DeleteChapterOutlineTool {
             name: "delete_chapter_outline".into(),
             description: "删除单章脉络（用 index 指定，1-based）。仅删除 chapters.toml 中的设计记录，不影响 structure.toml 的章节实现。".into(),
             parameters: object_schema(vec![
-                ("index", "string", "章序号（1-based，对应 get_chapter_outline 显示的编号）", true),
+                ("index", "integer", "章序号（1-based，对应 get_chapter_outline 显示的编号）", true),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let index: usize = get_str(arguments, "index")?
-            .parse()
-            .map_err(|_| "index 必须是正整数（1-based）".to_string())?;
-        if index == 0 {
-            return Err("index 从 1 开始计数".into());
-        }
+        let index = get_index(arguments, "index")?;
 
         let (mut file, mut volumes, path) = load_chapters(&self.ctx)?;
         check_index("章节", index, file.chapters.len())?;
@@ -845,9 +835,9 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("单向推进"));
 
-        // 6. delete_chapter_outline：删第 2 章
+        // 6. delete_chapter_outline：删第 2 章（数字形态 index，schema 声明为 integer）
         let delete = DeleteChapterOutlineTool::new(ctx.clone());
-        let res = delete.execute(&serde_json::json!({"index": "2"})).unwrap();
+        let res = delete.execute(&serde_json::json!({"index": 2})).unwrap();
         assert!(res.contains("已删除章节脉络"));
         assert!(res.contains("剩余 1 个"));
 

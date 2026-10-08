@@ -219,6 +219,39 @@ pub(super) fn get_u32_opt(args: &serde_json::Value, key: &str) -> Option<u32> {
     }
 }
 
+/// 读取 1-based 序号参数（outline / chapters / worldview 的 index）。
+///
+/// schema 声明为 integer，但模型偶尔无视声明传字符串数字——两种形态都收：
+/// - JSON 数字：整数直接用；浮点仅接受整数值（如 2.0）
+/// - 字符串：trim 后解析
+///
+/// 报错口径与原各调用点一致：缺失 / 非数字 / 0。
+pub(super) fn get_index(args: &serde_json::Value, key: &str) -> Result<usize, String> {
+    let parse_err = || format!("{key} 必须是正整数（1-based）");
+    let raw = args.get(key).ok_or_else(|| format!("缺少参数: {key}"))?;
+    let value: usize = match raw {
+        serde_json::Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                u as usize
+            } else if let Some(f) = n.as_f64() {
+                if f.fract() == 0.0 && f > 0.0 {
+                    f as usize
+                } else {
+                    return Err(parse_err());
+                }
+            } else {
+                return Err(parse_err());
+            }
+        }
+        serde_json::Value::String(s) => s.trim().parse().map_err(|_| parse_err())?,
+        _ => return Err(parse_err()),
+    };
+    if value == 0 {
+        return Err(format!("{key} 从 1 开始计数"));
+    }
+    Ok(value)
+}
+
 pub(super) fn format_brief(text: &str, max_len: usize) -> String {
     if text.len() > max_len {
         // 按字符边界截断，避免在 UTF-8 多字节字符中间切断（会 panic）
@@ -405,6 +438,23 @@ pub use agent::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_index_accepts_number_and_string_forms() {
+        // JSON 数字（schema 声明的 integer 形态）
+        assert_eq!(get_index(&serde_json::json!({"index": 2}), "index").unwrap(), 2);
+        // 整数值浮点
+        assert_eq!(get_index(&serde_json::json!({"index": 2.0}), "index").unwrap(), 2);
+        // 字符串数字（模型偶尔无视 schema 的形态）
+        assert_eq!(get_index(&serde_json::json!({"index": "3"}), "index").unwrap(), 3);
+        assert_eq!(get_index(&serde_json::json!({"index": " 3 "}), "index").unwrap(), 3);
+        // 非整数浮点 / 0 / 负数 / 非数字 / 缺失
+        assert!(get_index(&serde_json::json!({"index": 1.5}), "index").is_err());
+        assert!(get_index(&serde_json::json!({"index": 0}), "index").is_err());
+        assert!(get_index(&serde_json::json!({"index": -1}), "index").is_err());
+        assert!(get_index(&serde_json::json!({"index": "abc"}), "index").is_err());
+        assert!(get_index(&serde_json::json!({}), "index").is_err());
+    }
 
     /// 工具解析缓存：复用 / 脏检测 / 增量可见性
     #[test]
