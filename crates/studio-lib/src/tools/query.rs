@@ -3,7 +3,7 @@
 //! 集中实现"读取型"聚合查询工具，补齐知识库可查询化与正文可检索化能力：
 //! - `get_story_recap`：全书/章节回顾（聚合 scene.summary + 按需 LLM 摘要）
 //! - `get_relations`：关系图查询（按实体/类型过滤 SemanticGraph 边）
-//! - `query_assertions`：断言查询（按 subject/predicate/status 过滤）
+//! - `query_assertions`：断言查询（按 subject/predicate/object/status 过滤，object 支持反查）
 //! - `find_mentions`：实体出场查询（复用 LocationIndex，含显式 anchors + 隐式 mentions）
 //! - `search_text`：关键词全文检索（遍历 fragment 正文）
 //!
@@ -512,13 +512,29 @@ impl QueryAssertionsTool {
     }
 }
 
+/// object 过滤的宽松匹配：断言 object 是 toml::Value（add_assertion 会按谓词
+/// 转类型：alive→布尔、age→整数、其余→字符串），过滤入参恒为字符串，
+/// 按各自的自然形态比对（布尔忽略大小写、数字按数值比较）。
+fn object_matches(value: &toml::Value, filter: &str) -> bool {
+    match value {
+        toml::Value::String(s) => s == filter,
+        toml::Value::Boolean(b) => filter.eq_ignore_ascii_case(&b.to_string()),
+        toml::Value::Integer(i) => filter.parse::<i64>().is_ok_and(|n| n == *i),
+        toml::Value::Float(f) => filter.parse::<f64>().is_ok_and(|n| n == *f),
+        other => other.to_string() == filter,
+    }
+}
+
 impl Tool for QueryAssertionsTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "query_assertions".into(),
-            description: "查询知识库断言。可按主体实体、谓词、状态过滤，\
+            description: "查询知识库断言。可按主体实体、谓词、宾语、状态过滤，\
             默认只返回 active 状态。用于核对角色当前状态（年龄/存活/持有物/位置等）、\
-            检查事实一致性。predicate 如 alive/age/holds/located_at/member_of/identity。"
+            检查事实一致性。支持反向查询：predicate+object 组合（如 predicate=located_at\
+            +object=o_0004 查「谁在该地点」，predicate=holds+object=i_0002 查「某道具在\
+            谁手里」），不必拉全量自行筛选。predicate 如 alive/age/holds/located_at/\
+            member_of/identity。"
                 .into(),
             parameters: object_schema(vec![
                 (
@@ -534,6 +550,13 @@ impl Tool for QueryAssertionsTool {
                     false,
                 ),
                 (
+                    "object",
+                    "string",
+                    "宾语过滤（实体 ID 或值，如 o_0004 / true / 35）。与 predicate 组合可反查：\
+                    谁在某地、某物在谁手里。省略则不限宾语",
+                    false,
+                ),
+                (
                     "status",
                     "string",
                     "状态过滤：active（默认）/ superseded / contradicted / all",
@@ -546,6 +569,7 @@ impl Tool for QueryAssertionsTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let subject_filter = get_str_opt(arguments, "subject");
         let predicate_filter = get_str_opt(arguments, "predicate");
+        let object_filter = get_str_opt(arguments, "object");
         let status_filter =
             get_str_opt(arguments, "status").unwrap_or_else(|| "active".to_string());
 
@@ -574,17 +598,19 @@ impl Tool for QueryAssertionsTool {
             .filter(|a| {
                 let subj_match = subject_filter.as_ref().is_none_or(|s| s == &a.subject);
                 let pred_match = predicate_filter.as_ref().is_none_or(|p| p == &a.predicate);
+                let obj_match =
+                    object_filter.as_ref().is_none_or(|o| object_matches(&a.object, o));
                 let status_match = status_filter == "all"
                     || status_filter == "active" && (a.status.is_empty() || a.status == "active")
                     || status_filter == a.status;
-                subj_match && pred_match && status_match
+                subj_match && pred_match && obj_match && status_match
             })
             .collect();
 
         let mut out = String::new();
         out.push_str(&format!("断言列表({}):\n", filtered.len()));
         if filtered.is_empty() {
-            if subject_filter.is_some() || predicate_filter.is_some() {
+            if subject_filter.is_some() || predicate_filter.is_some() || object_filter.is_some() {
                 out.push_str("  （无匹配断言）");
             } else {
                 out.push_str("  （知识库为空，可用 add_assertion 添加）");
@@ -1679,6 +1705,67 @@ status = "superseded"
             .unwrap();
         assert!(result.contains("断言列表(1)"));
         assert!(result.contains(".age = 17"));
+    }
+
+    #[test]
+    fn query_assertions_reverse_filter_by_object() {
+        let tmp = setup_test_project();
+        write_fixture_with_summary(tmp.path());
+        write_knowledge_fixture(tmp.path());
+        // 追加两条 located_at 断言验证「谁在某地」反查
+        let extra = r#"
+[[assertion]]
+id = "a_010"
+subject = "c_0001"
+predicate = "located_at"
+object = "o_0004"
+
+[[assertion]]
+id = "a_011"
+subject = "c_0002"
+predicate = "located_at"
+object = "o_0009"
+"#;
+        let path = tmp.path().join("knowledge/assertions.toml");
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(extra);
+        std::fs::write(&path, content).unwrap();
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = QueryAssertionsTool::new(ctx);
+        let result = tool
+            .execute(&serde_json::json!({"predicate": "located_at", "object": "o_0004"}))
+            .unwrap();
+        assert!(result.contains("断言列表(1)"), "{result}");
+        assert!(result.contains("林风"), "主体应翻译为实体名: {result}");
+        assert!(!result.contains("o_0009"));
+    }
+
+    #[test]
+    fn query_assertions_object_matches_bool_and_int_string_form() {
+        let tmp = setup_test_project();
+        write_fixture_with_summary(tmp.path());
+        write_knowledge_fixture(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = QueryAssertionsTool::new(ctx);
+
+        // object=true（布尔）用字符串 "true" 过滤
+        let result = tool
+            .execute(&serde_json::json!({"predicate": "alive", "object": "true"}))
+            .unwrap();
+        assert!(result.contains("断言列表(1)"), "{result}");
+
+        // object=17（整数）用字符串 "17" 过滤
+        let result = tool
+            .execute(&serde_json::json!({"predicate": "age", "object": "17"}))
+            .unwrap();
+        assert!(result.contains("断言列表(1)"), "{result}");
+
+        // 不匹配的值：18 查不到
+        let result = tool
+            .execute(&serde_json::json!({"predicate": "age", "object": "18"}))
+            .unwrap();
+        assert!(result.contains("断言列表(0)"), "{result}");
     }
 
     // —— find_mentions ——
