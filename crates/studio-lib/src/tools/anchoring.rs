@@ -10,13 +10,14 @@
 //!
 //! Best-effort 语义：写入本身不因锚定失败而回滚。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use story_ai_runtime::provider::{AiProvider, GenerateRequest, Message};
 use story_ai_runtime::{Tool, ToolDef};
 use story_project_format::{EntityFile, FragmentFile, ProjectPaths, StructureFile};
 
-use super::{get_str, get_str_opt, object_schema, ToolContext};
+use super::{get_str, get_str_opt, get_u32_opt, object_schema, ToolContext};
 
 /// 名册上限：超出的实体不参与本次锚定
 const ROSTER_CAP: usize = 40;
@@ -481,32 +482,107 @@ impl Tool for ListUnresolvedRefsTool {
         ToolDef {
             name: "list_unresolved_refs".into(),
             description: "列出未锚定指代台账：待处置的名册外指代（如\"摆的人\"\"写的人\"），\
-            以及已忽略/已归拢的处置记录。省略 fragment_id 则列出全部。\
+            以及已忽略/已归拢的处置记录。台账随篇幅累积，中后期建议用 chapter_id /\
+            volume 过滤只看相关范围；一次性龙套（背景人物泛指）可批量 ignore。\
             待处置项用 resolve_unresolved_ref 处置。".into(),
-            parameters: object_schema(vec![(
-                "fragment_id",
-                "string",
-                "片段 ID（省略则列出全部）",
-                false,
-            )]),
+            parameters: object_schema(vec![
+                (
+                    "fragment_id",
+                    "string",
+                    "片段 ID（只看该片段的指代）",
+                    false,
+                ),
+                (
+                    "chapter_id",
+                    "string",
+                    "只看该章节的指代（结构树章节 ID，如 ch_01）",
+                    false,
+                ),
+                (
+                    "volume",
+                    "integer",
+                    "只看该卷的指代（卷号，对应 get_chapter_outline 的 volume_order）",
+                    false,
+                ),
+            ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let fid = get_str_opt(arguments, "fragment_id");
+        let chapter_filter = get_str_opt(arguments, "chapter_id");
+        let volume_filter = get_u32_opt(arguments, "volume");
+
+        // chapter/volume 过滤需要 片段→章节→卷 映射；只在使用时构建一次
+        let frag_locations = if chapter_filter.is_some() || volume_filter.is_some() {
+            Some(build_fragment_locations(&self.ctx)?)
+        } else {
+            None
+        };
+
         let refs = crate::mutations::load_unresolved_refs(&self.ctx.paths())
             .map_err(|e| e.to_string())?;
         let selected: Vec<_> = refs
             .iter()
-            .filter(|r| fid.as_deref().is_none_or(|f| r.fragment_id == f))
+            .filter(|r| {
+                if let Some(f) = &fid {
+                    if &r.fragment_id != f {
+                        return false;
+                    }
+                }
+                if let Some(map) = &frag_locations {
+                    // 已不在结构中的片段（被删）按章节过滤时无从归属，跳过
+                    let Some((ch, vol)) = map.get(&r.fragment_id) else {
+                        return false;
+                    };
+                    if let Some(cf) = &chapter_filter {
+                        if ch.as_deref() != Some(cf.as_str()) {
+                            return false;
+                        }
+                    }
+                    if let Some(vf) = volume_filter {
+                        if *vol != Some(vf) {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
             .collect();
 
         if selected.is_empty() {
-            return Ok("未锚定指代台账为空。".to_string());
+            let scoped = chapter_filter.is_some() || volume_filter.is_some() || fid.is_some();
+            return Ok(if scoped {
+                "该范围内没有未锚定指代记录。".to_string()
+            } else {
+                "未锚定指代台账为空。".to_string()
+            });
+        }
+
+        // 范围描述（有过滤时提示当前口径）
+        let mut scope = String::new();
+        if let Some(f) = &fid {
+            scope.push_str(&format!("片段 {f}"));
+        }
+        if let Some(c) = &chapter_filter {
+            if !scope.is_empty() {
+                scope.push_str(" · ");
+            }
+            scope.push_str(&format!("章节 {c}"));
+        }
+        if let Some(v) = volume_filter {
+            if !scope.is_empty() {
+                scope.push_str(" · ");
+            }
+            scope.push_str(&format!("第 {v} 卷"));
         }
 
         let pending: Vec<_> = selected.iter().filter(|r| r.is_pending()).collect();
-        let mut out = format!("共 {} 条记录，待处置 {} 条：", selected.len(), pending.len());
+        let mut out = if scope.is_empty() {
+            format!("共 {} 条记录，待处置 {} 条：", selected.len(), pending.len())
+        } else {
+            format!("范围[{scope}] 共 {} 条记录，待处置 {} 条：", selected.len(), pending.len())
+        };
         for r in &selected {
             let status = match r.status.as_str() {
                 "ignored" => "已忽略".to_string(),
@@ -523,6 +599,36 @@ impl Tool for ListUnresolvedRefsTool {
         }
         Ok(out)
     }
+}
+
+/// 片段 ID → (章节 ID, 卷号)。章节 ID 来自结构树，卷号经 chapters.toml 的
+/// chapter_id → volume_order 映射（未回填 chapter_id 的章节卷号为 None）。
+fn build_fragment_locations(
+    ctx: &ToolContext,
+) -> Result<HashMap<String, (Option<String>, Option<u32>)>, String> {
+    let parse = ctx.parse()?;
+    let doc = &parse.ir.document;
+    let vol_of: HashMap<String, u32> = crate::mutations::load_chapters_file(&ctx.paths())
+        .map(|file| {
+            file.chapters
+                .iter()
+                .filter_map(|c| Some((c.chapter_id.clone()?, c.volume_order)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut map = HashMap::new();
+    for (fid, _) in doc.all_fragments() {
+        let chapter_id = doc
+            .scene_of_fragment(fid)
+            .and_then(|sid| doc.chapter_of_scene(sid))
+            .map(|ch| ch.as_str().to_string());
+        let volume = chapter_id
+            .as_deref()
+            .and_then(|cid| vol_of.get(cid).copied());
+        map.insert(fid.as_str().to_string(), (chapter_id, volume));
+    }
+    Ok(map)
 }
 
 pub struct ResolveUnresolvedRefTool {
@@ -1177,6 +1283,94 @@ mod tests {
             None,
         );
         assert!(result.is_err());
+    }
+
+    /// chapter_id / volume 过滤：只看指定章节或卷的指代；无过滤行为不变。
+    #[test]
+    fn list_unresolved_refs_filters_by_chapter_and_volume() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        let structure = r#"[book]
+id = "b_root"
+title = "测试"
+chapters = ["ch_01", "ch_02"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[scene.sc_01_01]
+title = "开场"
+fragments = ["f_0001"]
+
+[chapter.ch_02]
+title = "第二章"
+scenes = ["sc_02_01"]
+
+[scene.sc_02_01]
+title = "夜行"
+fragments = ["f_0002"]
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n\n他看见摆的人。").unwrap();
+        std::fs::write(dir.join("fragments/f_0002.md"), "---\nid: f_0002\n---\n\n卖果子的妇人喊了一声。").unwrap();
+
+        let chapters = r#"[[chapters]]
+chapter_id = "ch_01"
+title = "第一章"
+volume_order = 1
+status = "completed"
+
+[[chapters]]
+chapter_id = "ch_02"
+title = "第二章"
+volume_order = 2
+status = "writing"
+"#;
+        std::fs::write(dir.join("chapters.toml"), chapters).unwrap();
+
+        let anchoring = r#"[[ref]]
+fragment_id = "f_0001"
+quote = "摆的人"
+hint = "疑似新角色"
+
+[[ref]]
+fragment_id = "f_0002"
+quote = "卖果子的妇人"
+hint = "疑似路人"
+
+[[ref]]
+fragment_id = "f_0002"
+quote = "推车的搬运工"
+hint = "疑似路人"
+status = "ignored"
+"#;
+        std::fs::write(dir.join("anchoring.toml"), anchoring).unwrap();
+
+        let tool = ListUnresolvedRefsTool::new(ToolContext::new(dir.to_path_buf()));
+
+        // 无过滤：3 条（含已忽略）
+        let out = tool.execute(&serde_json::json!({})).unwrap();
+        assert!(out.contains("共 3 条记录，待处置 2 条"), "{out}");
+
+        // chapter_id 过滤：只剩 ch_01 的 1 条
+        let out = tool
+            .execute(&serde_json::json!({"chapter_id": "ch_01"}))
+            .unwrap();
+        assert!(out.contains("范围[章节 ch_01] 共 1 条记录"), "{out}");
+        assert!(out.contains("摆的人"), "{out}");
+        assert!(!out.contains("卖果子的妇人"), "{out}");
+
+        // volume 过滤：第 2 卷的 2 条（含 1 条已忽略）
+        let out = tool.execute(&serde_json::json!({"volume": 2})).unwrap();
+        assert!(out.contains("范围[第 2 卷] 共 2 条记录，待处置 1 条"), "{out}");
+        assert!(out.contains("推车的搬运工"), "{out}");
+        assert!(!out.contains("摆的人"), "{out}");
+
+        // 范围内无记录
+        let out = tool.execute(&serde_json::json!({"volume": 3})).unwrap();
+        assert!(out.contains("该范围内没有"), "{out}");
     }
 }
 
