@@ -165,6 +165,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(WriteFragmentTextTool::new(ctx.clone())));
     registry.register(Box::new(EditFragmentTextTool::new(ctx.clone())));
     registry.register(Box::new(ReadFragmentTextTool::new(ctx.clone())));
+    registry.register(Box::new(ReadSceneFullTextTool::new(ctx.clone())));
     registry.register(Box::new(AppendFragmentTextTool::new(ctx.clone())));
     registry.register(Box::new(DeleteFragmentTool::new(ctx.clone())));
     registry.register(Box::new(RewriteFragmentTool::new(ctx.clone())));

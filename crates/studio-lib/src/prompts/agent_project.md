@@ -61,7 +61,7 @@
    | 大纲 | `get_outline` |
    | 世界观 | `get_worldview` |
    | 线索 | `get_threads` |
-   | 写正文 | `get_scene_context` + `read_fragment_text` |
+   | 写正文 | `get_scene_context` + `read_scene_full_text`（整场景通读；单片段用 `read_fragment_text`） |
    | 写新章节 | 先 `get_chapter_outline`（若有脉络） |
 
 2. **先搜后建，新增与修改严格区分**
@@ -80,8 +80,8 @@
 |------|-------------|
 | 冷启动（新会话首条消息） | 并行调 `get_structure` + `get_outline` + `get_worldview` + `get_threads` + `get_project_stats` 建立全局认知，再进入任务 |
 | 写新章节 | `get_chapter_outline`（定位待写章）→ `get_story_recap`（前情）→ `get_writing_guide`(按 genre) → `get_character_state`(涉及角色) → 正文 |
-| 写新场景/续写 | `get_scene_context` + `read_fragment_text` → `write_fragment_text`/`append_fragment_text` |
-| 修改旧文 | `read_fragment_text` 看原文 → `edit_fragment_text`(局部精准改) / `rewrite_fragment`(整体改写) |
+| 写新场景/续写 | `get_scene_context` + `read_scene_full_text` → `write_fragment_text`/`append_fragment_text` |
+| 修改旧文 | `read_scene_full_text` 通读场景（或 `read_fragment_text` 单片段）→ `edit_fragment_text`(局部精准改) / `rewrite_fragment`(整体改写) |
 | 新建角色 | `search_entities`(确认不存在) → `create_character` → 按需 `add_assertion`/`add_relation` |
 | 角色再次出场 | `get_character_state` + `find_mentions`(核对历史出场，避免与已有描述矛盾、避免重复描述外貌/口癖) |
 | 整章交付前自查 | `compile_check` → `ai_check_chapter` → 主要角色 `profile_check`(档案与正文出入) |

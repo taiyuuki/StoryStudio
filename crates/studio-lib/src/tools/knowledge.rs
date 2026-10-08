@@ -1525,6 +1525,104 @@ impl Tool for ReadFragmentTextTool {
 }
 
 // ============================================================================
+// read_scene_full_text
+// ============================================================================
+
+/// 一次性读取整个场景的全部正文（按片段顺序拼合）。
+///
+/// 此前 Agent 同步一个场景需 get_scene_context（片段列表只有 100 字预览）
+/// + N 次 read_fragment_text 往返；本工具把往返压到一次。
+pub struct ReadSceneFullTextTool {
+    ctx: ToolContext,
+}
+impl ReadSceneFullTextTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for ReadSceneFullTextTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "read_scene_full_text".into(),
+            description: "一次性读取整个场景的全部正文：按片段顺序拼合，\
+            每个片段标注 ID、字数与锚点实体。同步或修改场景前先调本工具通读全文；\
+            需要 POV、章节脉络、出场角色等元数据时另调 get_scene_context。\
+            避免逐片段调 read_fragment_text 的多次往返。"
+                .into(),
+            parameters: object_schema(vec![(
+                "scene_id",
+                "string",
+                "场景 ID（如 sc_01_01）",
+                true,
+            )]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let scene_id = get_str(arguments, "scene_id")?;
+        let parse_output = self.ctx.parse()?;
+        let sid = StableId::new_unchecked(&scene_id);
+        let scene = parse_output
+            .ir
+            .document
+            .get_scene(&sid)
+            .ok_or_else(|| format!("场景 '{scene_id}' 不存在"))?;
+
+        let chapter_title = parse_output
+            .ir
+            .document
+            .chapter_of_scene(&sid)
+            .and_then(|ch_id| parse_output.ir.document.get_chapter(ch_id))
+            .map(|ch| ch.title.clone());
+
+        let mut blocks = Vec::new();
+        let mut total_words = 0usize;
+        for fid in parse_output.ir.document.fragments_of_scene(&sid) {
+            let Some(frag) = parse_output.ir.document.get_fragment(fid) else {
+                continue;
+            };
+            let words = crate::workflow::count_words(&frag.text);
+            total_words += words as usize;
+            // 锚点渲染为 id(名称)，名称不可解析时只留 id
+            let anchors: Vec<String> = frag
+                .anchors
+                .iter()
+                .map(|a| {
+                    match parse_output.ir.semantic.get(&a.entity) {
+                        Some(node) => format!("{}({})", a.entity.as_str(), node.display_name()),
+                        None => a.entity.as_str().to_string(),
+                    }
+                })
+                .collect();
+            let anchor_part = if anchors.is_empty() {
+                String::new()
+            } else {
+                format!(" · 锚点: {}", anchors.join(", "))
+            };
+            blocks.push(format!(
+                "── {fid}（{words} 字{anchor_part}）──\n{}",
+                frag.text.trim()
+            ));
+        }
+
+        let title = scene.title.as_deref().unwrap_or("无标题");
+        if blocks.is_empty() {
+            return Ok(format!("场景 {scene_id}《{title}》暂无片段。"));
+        }
+        let chapter_part = chapter_title
+            .as_deref()
+            .map(|t| format!("（{t}）"))
+            .unwrap_or_default();
+        Ok(format!(
+            "场景 {scene_id}《{title}》{chapter_part}:\n片段 {} 个 · 共 {total_words} 字\n\n{}",
+            blocks.len(),
+            blocks.join("\n\n"),
+        ))
+    }
+}
+
+// ============================================================================
 // append_fragment_text
 // ============================================================================
 
@@ -2859,6 +2957,54 @@ fragments = []
         let content = std::fs::read_to_string(dir.join("fragments/f_0001.md")).unwrap();
         assert!(content.contains("c_8A91D4"), "锚点应保留");
         assert!(content.contains("冰雨倾盆而下"));
+    }
+
+    // ------------------------------------------------------------------------
+    // read_scene_full_text
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn read_scene_full_text_joins_fragments_in_order() {
+        let (tmp, ctx, _fid) = setup_fragment("第一段正文。");
+        // 再写一个片段，验证顺序拼合与汇总
+        let create = WriteFragmentTextTool::new(ctx.clone());
+        create
+            .execute(&serde_json::json!({
+                "scene_id": "sc_01_01",
+                "text": "第二段正文。",
+            }))
+            .unwrap();
+
+        let tool = ReadSceneFullTextTool::new(ctx);
+        let out = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+        assert!(out.contains("第一段正文。"), "{out}");
+        assert!(out.contains("第二段正文。"), "{out}");
+        // 顺序：第一段先于第二段；两个片段各带分节头
+        let p1 = out.find("第一段正文。").unwrap();
+        let p2 = out.find("第二段正文。").unwrap();
+        assert!(p1 < p2);
+        assert!(out.contains("片段 2 个"), "{out}");
+        assert!(out.contains("共 10 字"), "{out}"); // 标点不计：两段各 5 字
+        assert!(out.contains("── f_0001"), "{out}");
+        let _ = tmp;
+    }
+
+    #[test]
+    fn read_scene_full_text_empty_scene_and_missing_scene() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path()); // 场景无片段
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let tool = ReadSceneFullTextTool::new(ctx);
+        let empty = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+        assert!(empty.contains("暂无片段"), "{empty}");
+
+        let missing = tool.execute(&serde_json::json!({ "scene_id": "sc_99_99" }));
+        assert!(missing.is_err());
     }
 
     // ------------------------------------------------------------------------
