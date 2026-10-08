@@ -12,7 +12,10 @@ use story_project_format::{
     VolumeGroupDef,
 };
 
-use super::{check_index, get_index, get_str, get_str_opt, object_schema, ToolContext};
+use super::{
+    check_index, get_index, get_json_array_opt, get_str, get_str_opt, get_str_array_opt,
+    object_schema, ToolContext,
+};
 
 // ============================================================================
 // design_chapters
@@ -33,23 +36,24 @@ impl Tool for DesignChaptersTool {
             name: "design_chapters".into(),
             description: "根据大纲和卷结构设计章节脉络，一次性追加多章到 chapters.toml。每章含标题、所属卷序号、梗概、目标、节拍、涉及角色/线索、章末钩子等。设计阶段无需 chapter_id（虚拟章），动笔时再 create_chapter 落实。卷分组通常无需提供：章节按 volume_order 自动归卷，卷分组为空时自动从 outline.toml 的卷大纲导入。".into(),
             parameters: object_schema(vec![
-                ("chapters", "string", "章节数组的 JSON 字符串，每项: {title, volume_order(1-based,0=未分卷), summary?, goal?, beats?:[...], characters?:[...], threads?:[...], hook?, notes?}", true),
-                ("volumes", "string", "可选：卷分组数组的 JSON 字符串，每项: {name, order(1-based), theme?, summary?}。若提供则整体替换大纲卷结构（写入 outline.toml）。项目已有卷时无需传，章节按 volume_order 直接归卷", false),
+                ("chapters", "array", "章节数组，每项: {title, volume_order(1-based,0=未分卷), summary?, goal?, beats?:[...], characters?:[...], threads?:[...], hook?, notes?}", true),
+                ("volumes", "array", "可选：卷分组数组，每项: {name, order(1-based), theme?, summary?}。若提供则整体替换大纲卷结构（写入 outline.toml）。项目已有卷时无需传，章节按 volume_order 直接归卷", false),
                 ("replace", "boolean", "是否替换现有章节脉络（默认 false=追加）。传 true 会清空已有章节，慎用", false),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let chapters_json = get_str(arguments, "chapters")?;
-        let volumes_json = get_str_opt(arguments, "volumes");
+        // 兼容原生数组与 JSON 字符串两种形态（模型常无视 schema 声明）
+        let chapter_inputs = match get_json_array_opt(arguments, "chapters")? {
+            Some(items) => items,
+            None => return Err("缺少参数: chapters".to_string()),
+        };
+        let volumes_json = get_json_array_opt(arguments, "volumes")?;
         let replace = arguments
             .get("replace")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-
-        // 解析章节数组（宽松：容许代码围栏、前后缀文字、字符串内杂引号）
-        let chapter_inputs = parse_json_array_lenient(&chapters_json, "chapters")?;
 
         if chapter_inputs.is_empty() {
             return Err("chapters 不能为空数组".into());
@@ -59,8 +63,7 @@ impl Tool for DesignChaptersTool {
 
         // 可选：替换卷分组（唯一真相源在 outline.toml）
         let mut volume_note = String::new();
-        if let Some(vol_str) = volumes_json {
-            let vol_inputs = parse_json_array_lenient(&vol_str, "volumes")?;
+        if let Some(vol_inputs) = volumes_json {
             let mut vols = Vec::with_capacity(vol_inputs.len());
             for v in &vol_inputs {
                 vols.push(VolumeGroupDef {
@@ -377,9 +380,9 @@ impl Tool for UpdateChapterOutlineTool {
                 ("volume_order", "string", "所属卷序号（1-based，0=未分卷）", false),
                 ("summary", "string", "章节梗概", false),
                 ("goal", "string", "本章目标", false),
-                ("beats", "string", "节拍数组的 JSON 字符串（如 [\"登场\",\"冲突\"]），整体替换", false),
-                ("characters", "string", "涉及角色 ID 数组的 JSON 字符串，整体替换", false),
-                ("threads", "string", "涉及线索 ID 数组的 JSON 字符串，整体替换", false),
+                ("beats", "array", "节拍列表（如 [\"登场\",\"冲突\"]；逗号分隔字符串亦可），整体替换", false),
+                ("characters", "array", "涉及角色 ID 列表，整体替换", false),
+                ("threads", "array", "涉及线索 ID 列表，整体替换", false),
                 ("hook", "string", "章末钩子", false),
                 ("notes", "string", "其他备注", false),
                 ("chapter_id", "string", "对齐 structure.toml 的章节 ID（ch_XX）；传空字符串清除", false),
@@ -416,16 +419,16 @@ impl Tool for UpdateChapterOutlineTool {
             item.goal = Some(v);
             changes.push("goal");
         }
-        if let Some(v) = get_str_opt(arguments, "beats") {
-            item.beats = parse_json_str_array(&v, "beats")?;
+        if let Some(v) = get_str_array_opt(arguments, "beats")? {
+            item.beats = v;
             changes.push("beats");
         }
-        if let Some(v) = get_str_opt(arguments, "characters") {
-            item.characters = parse_json_str_array(&v, "characters")?;
+        if let Some(v) = get_str_array_opt(arguments, "characters")? {
+            item.characters = v;
             changes.push("characters");
         }
-        if let Some(v) = get_str_opt(arguments, "threads") {
-            item.threads = parse_json_str_array(&v, "threads")?;
+        if let Some(v) = get_str_array_opt(arguments, "threads")? {
+            item.threads = v;
             changes.push("threads");
         }
         if let Some(v) = get_str_opt(arguments, "hook") {
@@ -622,11 +625,6 @@ fn parse_str_array(obj: &serde_json::Value, key: &str) -> Result<Vec<String>, St
 }
 
 /// 解析 JSON 字符串形式的字符串数组（宽松解析）
-fn parse_json_str_array(json_str: &str, field: &str) -> Result<Vec<String>, String> {
-    let v = parse_json_array_lenient(json_str, field)?;
-    parse_str_array(&serde_json::Value::Array(v), field)
-}
-
 /// 宽松解析模型输出的 JSON 数组字符串。
 ///
 /// 依次尝试：原文 → 剥 ```json 围栏 → 截取首个 '[' 到最后一个 ']' →
@@ -777,6 +775,50 @@ mod tests {
         assert!(out.contains("第一章"));
         assert!(!out.contains("省略"), "短脉络不应触发智能默认: {out}");
         drop(tmp);
+    }
+
+    /// 原生数组形态的 characters/threads 必须真正落盘（回归：字符串单形态入口
+    /// 曾把原生数组静默吞掉，导致脉络/场景上下文里角色与线索全部缺席）。
+    #[test]
+    fn update_chapter_outline_native_array_persists() {
+        let (_tmp, ctx) = setup();
+        DesignChaptersTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                // chapters 也用原生数组形态
+                "chapters": [
+                    {"title": "雨夜", "volume_order": 1, "chapter_id": "ch_01"}
+                ]
+            }))
+            .unwrap();
+
+        // 模型无视 schema 传原生数组（事故形态）
+        let update = UpdateChapterOutlineTool::new(ctx.clone());
+        let res = update
+            .execute(&serde_json::json!({
+                "index": 1,
+                "characters": ["c_0001", "c_0005"],
+                "threads": ["t_004", "t_007"],
+            }))
+            .unwrap();
+        assert!(res.contains("characters"), "回执应列出更新字段: {res}");
+        assert!(res.contains("threads"), "回执应列出更新字段: {res}");
+
+        // 逗号串形态同样生效
+        update
+            .execute(&serde_json::json!({"index": 1, "beats": "登场, 冲突"}))
+            .unwrap();
+
+        // 读取侧验证落盘
+        let out = GetChapterOutlineTool::new(ctx.clone())
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(out.contains("角色: c_0001, c_0005"), "{out}");
+        assert!(out.contains("线索: t_004, t_007"), "{out}");
+        assert!(out.contains("节拍: 登场 → 冲突"), "{out}");
+
+        // 落盘文件本身
+        let content = std::fs::read_to_string(ctx.paths().chapters_toml()).unwrap();
+        assert!(content.contains("\"t_004\"") || content.contains("t_004"), "{content}");
     }
 
     #[test]

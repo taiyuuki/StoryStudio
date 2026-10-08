@@ -6,7 +6,7 @@ use story_project_format::EntityFile;
 
 use crate::mutations::EntityKind;
 
-use super::{format_brief, get_str, get_str_opt, object_schema, ToolContext};
+use super::{format_brief, get_str, get_str_array_opt, get_str_opt, object_schema, ToolContext};
 
 /// 同名检测：创建实体后检查同名实体。
 ///
@@ -88,7 +88,7 @@ impl Tool for CreateCharacterTool {
             description: "创建新角色。生成角色 ID 并写入 entities/characters/ 目录。".into(),
             parameters: object_schema(vec![
                 ("name", "string", "角色名称", true),
-                ("aliases", "string", "别名，逗号分隔", false),
+                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
                 ("gender", "string", "性别", false),
                 ("age", "string", "年龄描述", false),
                 ("role", "string", "在故事中的角色", false),
@@ -122,7 +122,7 @@ impl Tool for CreateCharacterTool {
             || personality.is_some()
             || background.is_some()
             || habits.is_some()
-            || get_str_opt(arguments, "aliases").is_some()
+            || get_str_array_opt(arguments, "aliases").is_ok_and(|v| v.is_some())
         {
             let entity_dir = paths.characters_dir();
             let entity_path = entity_dir.join(format!("{new_id}.toml"));
@@ -130,8 +130,8 @@ impl Tool for CreateCharacterTool {
                 std::fs::read_to_string(&entity_path).map_err(|e| format!("读取失败: {e}"))?;
             let mut entity =
                 EntityFile::from_toml_str(&content).map_err(|e| format!("解析失败: {e}"))?;
-            if let Some(v) = get_str_opt(arguments, "aliases") {
-                entity.aliases = v.split(',').map(|s| s.trim().to_string()).collect();
+            if let Some(v) = get_str_array_opt(arguments, "aliases")? {
+                entity.aliases = v;
             }
             if gender.is_some() || appearance.is_some() || personality.is_some() || habits.is_some()
             {
@@ -185,7 +185,7 @@ impl Tool for CreateLocationTool {
                 .into(),
             parameters: object_schema(vec![
                 ("name", "string", "地点名称（如：青云城）", true),
-                ("aliases", "string", "别名，逗号分隔", false),
+                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
                 ("parent", "string", "父地点 ID（构成地理层级树）", false),
                 (
                     "geo_kind",
@@ -207,7 +207,7 @@ impl Tool for CreateLocationTool {
             .map_err(|e| e.to_string())?;
 
         // 追加可选字段
-        let aliases = get_str_opt(arguments, "aliases");
+        let aliases = get_str_array_opt(arguments, "aliases")?;
         let parent = get_str_opt(arguments, "parent");
         let geo_kind = get_str_opt(arguments, "geo_kind");
         let position = get_str_opt(arguments, "position");
@@ -227,7 +227,7 @@ impl Tool for CreateLocationTool {
             let mut entity =
                 EntityFile::from_toml_str(&content).map_err(|e| format!("解析失败: {e}"))?;
             if let Some(v) = aliases {
-                entity.aliases = v.split(',').map(|s| s.trim().to_string()).collect();
+                entity.aliases = v;
             }
             let geo = entity.geography.get_or_insert_with(Default::default);
             if let Some(v) = parent {
@@ -276,7 +276,7 @@ impl Tool for CreateItemTool {
             description: "创建新道具/物品。生成道具 ID 并写入 entities/items/ 目录。".into(),
             parameters: object_schema(vec![
                 ("name", "string", "道具名称（如：寒霜剑）", true),
-                ("aliases", "string", "别名，逗号分隔", false),
+                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
                 (
                     "item_kind",
                     "string",
@@ -302,7 +302,7 @@ impl Tool for CreateItemTool {
             .map_err(|e| e.to_string())?;
 
         // 追加可选字段
-        let aliases = get_str_opt(arguments, "aliases");
+        let aliases = get_str_array_opt(arguments, "aliases")?;
         let item_kind = get_str_opt(arguments, "item_kind");
         let grade = get_str_opt(arguments, "grade");
         let description = get_str_opt(arguments, "description");
@@ -320,7 +320,7 @@ impl Tool for CreateItemTool {
             let mut entity =
                 EntityFile::from_toml_str(&content).map_err(|e| format!("解析失败: {e}"))?;
             if let Some(v) = aliases {
-                entity.aliases = v.split(',').map(|s| s.trim().to_string()).collect();
+                entity.aliases = v;
             }
             let item = entity.item.get_or_insert_with(Default::default);
             if let Some(v) = item_kind {
@@ -368,7 +368,7 @@ impl Tool for CreateOrganizationTool {
                 .into(),
             parameters: object_schema(vec![
                 ("name", "string", "组织名称（如：天机阁）", true),
-                ("aliases", "string", "别名，逗号分隔", false),
+                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
                 (
                     "org_kind",
                     "string",
@@ -390,7 +390,7 @@ impl Tool for CreateOrganizationTool {
             .map_err(|e| e.to_string())?;
 
         // 追加可选字段（存入 [org] 段）
-        let aliases = get_str_opt(arguments, "aliases");
+        let aliases = get_str_array_opt(arguments, "aliases")?;
         let org_kind = get_str_opt(arguments, "org_kind");
         let leader = get_str_opt(arguments, "leader");
         let territory = get_str_opt(arguments, "territory");
@@ -410,7 +410,7 @@ impl Tool for CreateOrganizationTool {
             let mut entity =
                 EntityFile::from_toml_str(&content).map_err(|e| format!("解析失败: {e}"))?;
             if let Some(v) = aliases {
-                entity.aliases = v.split(',').map(|s| s.trim().to_string()).collect();
+                entity.aliases = v;
             }
             let org = entity.org.get_or_insert_with(Default::default);
             if let Some(v) = org_kind {
@@ -2201,6 +2201,86 @@ state_timeline = [
         assert!(result.contains("角色 c_0001:未知(sc_01_01)"), "got: {result}");
         // chapters.toml 里引用了不存在的线索：标注而非报错
         assert!(result.contains("t_404（threads.toml 中不存在）"), "got: {result}");
+    }
+
+    /// 回归：update_chapter_outline 用原生数组形态写 threads 后，
+    /// get_scene_context 应出现「本章线索」快照（此前数组被静默吞掉导致缺席）。
+    #[test]
+    fn scene_context_thread_snapshot_after_native_array_update() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        let structure = r#"[book]
+id = "b_root"
+title = "测试小说"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[scene.sc_01_01]
+title = "开场"
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        let threads = r#"[[thread]]
+id = "t_004"
+title = "信物之谜"
+planted_at = "sc_01_01"
+
+[[thread.knowledge]]
+observer = "reader"
+state_timeline = [
+    { scene = "sc_01_01", state = "suspected" },
+    { scene = "sc_01_02", state = "known" },
+]
+"#;
+        std::fs::write(dir.join("threads.toml"), threads).unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        // design + update 全部走原生数组形态
+        crate::tools::DesignChaptersTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                "chapters": [{"title": "第一章", "volume_order": 1, "chapter_id": "ch_01"}]
+            }))
+            .unwrap();
+        crate::tools::UpdateChapterOutlineTool::new(ctx.clone())
+            .execute(&serde_json::json!({"index": 1, "threads": ["t_004"]}))
+            .unwrap();
+
+        let result = GetSceneContextTool::new(ctx)
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+        assert!(result.contains("本章线索"), "got: {result}");
+        assert!(result.contains("信物之谜"), "got: {result}");
+        assert!(result.contains("读者:知晓(sc_01_02)"), "got: {result}");
+    }
+
+    /// 回归：create_* 的 aliases 传原生数组不再被静默丢弃（逗号串仍可用）。
+    #[test]
+    fn create_character_accepts_native_array_aliases() {
+        let tmp = setup_test_project();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let res = CreateCharacterTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                "name": "林七",
+                "aliases": ["小七", "七爷"],
+            }))
+            .unwrap();
+        let id = res.split("id=").nth(1).unwrap().split(',').next().unwrap().to_string();
+        let path = story_project_format::ProjectPaths::new(tmp.path())
+            .characters_dir()
+            .join(format!("{id}.toml"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("小七") && content.contains("七爷"), "{content}");
+
+        // 逗号串形态保持可用
+        let res = CreateCharacterTool::new(ctx)
+            .execute(&serde_json::json!({"name": "叶秋", "aliases": "叶先生,秋叔"}))
+            .unwrap();
+        assert!(res.contains("叶秋"), "{res}");
     }
 
     #[test]

@@ -13,7 +13,7 @@ use story_project_format::worldview_file::{
 };
 use story_project_format::EntityFile;
 
-use super::{check_index, get_index, get_str, get_str_opt, object_schema, ToolContext};
+use super::{check_index, get_index, get_json_array_opt, get_str, get_str_opt, object_schema, ToolContext};
 
 // ============================================================================
 // get_worldview
@@ -271,8 +271,8 @@ impl Tool for SetWorldviewItemTool {
                 ("rules", "string", "规则与代价（section=system）", false),
                 (
                     "items",
-                    "string",
-                    "批量添加：JSON 数组，每项 {\"section\": \"concept|system\", \"name\": \"...\", ...各类型字段}。与 section+单条字段二选一",
+                    "array",
+                    "批量添加：数组，每项 {\"section\": \"concept|system\", \"name\": \"...\", ...各类型字段}。与 section+单条字段二选一",
                     false,
                 ),
             ]),
@@ -282,15 +282,11 @@ impl Tool for SetWorldviewItemTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let paths = self.ctx.paths();
 
-        let items: Vec<serde_json::Value> = if let Some(raw) = get_str_opt(arguments, "items") {
-            let arr = super::chapters::parse_json_array_lenient(&raw, "items")?;
-            if arr.is_empty() {
-                return Err("items 不能为空数组".into());
-            }
-            arr
-        } else {
+        let items: Vec<serde_json::Value> = match get_json_array_opt(arguments, "items")? {
+            Some(arr) if arr.is_empty() => return Err("items 不能为空数组".into()),
+            Some(arr) => arr,
             // 单条：把扁平参数当作一条 item 处理（保持原语义）
-            vec![arguments.clone()]
+            None => vec![arguments.clone()],
         };
 
         // 分节文件懒加载：批量混合 concept/system 时各读一次、各写一次

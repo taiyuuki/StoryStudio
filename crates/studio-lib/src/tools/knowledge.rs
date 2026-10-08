@@ -5,7 +5,10 @@ use story_ai_runtime::{Tool, ToolDef};
 use story_ir::StableId;
 use story_project_format::FragmentFile;
 
-use super::{get_json_array_opt, get_str, get_str_opt, get_u32_opt, object_schema, ToolContext};
+use super::{
+    get_json_array_opt, get_str, get_str_opt, get_str_array_opt, get_u32_opt, object_schema,
+    ToolContext,
+};
 
 // ============================================================================
 // add_assertion
@@ -583,7 +586,7 @@ impl Tool for UpdateThreadTool {
                     "可见性范围: reader（明线，默认）/ pov（暗线，回收不要求先揭示）",
                     false,
                 ),
-                ("tags", "string", "标签，逗号分隔（整体覆盖）", false),
+                ("tags", "array", "标签列表（原生数组或逗号分隔字符串，整体覆盖）", false),
                 (
                     "due_volume",
                     "integer",
@@ -600,11 +603,7 @@ impl Tool for UpdateThreadTool {
         let description = get_str_opt(arguments, "description");
         let goal = get_str_opt(arguments, "goal");
         let priority = get_str_opt(arguments, "priority");
-        let tags = get_str_opt(arguments, "tags").map(|s| {
-            s.split(',')
-                .map(|t| t.trim().to_string())
-                .collect::<Vec<_>>()
-        });
+        let tags = get_str_array_opt(arguments, "tags")?;
         // None=不动；Some(n)=设为第 n 卷（0 清除）
         let due_volume = arguments.get("due_volume").map(|_| {
             get_u32_opt(arguments, "due_volume")

@@ -6,7 +6,10 @@ use story_ai_runtime::{Tool, ToolDef};
 use story_project_format::outline_file::{ArcDef, ConflictDef, StorylineDef, VolumeDef};
 use story_project_format::{EntityFile, OutlineFile};
 
-use super::{check_index, get_index, get_str, get_str_opt, object_schema, ToolContext};
+use super::{
+    check_index, get_index, get_json_array_opt, get_str, get_str_opt, get_str_array_opt,
+    object_schema, ToolContext,
+};
 
 // ============================================================================
 // update_entity
@@ -29,7 +32,7 @@ impl Tool for UpdateEntityTool {
             parameters: object_schema(vec![
                 ("entity_id", "string", "实体 ID", true),
                 ("display_name", "string", "新显示名称", false),
-                ("aliases", "string", "别名，逗号分隔", false),
+                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
                 ("gender", "string", "性别（角色）", false),
                 ("occupation", "string", "职业（角色）", false),
                 ("birth_year", "string", "出生年份（角色，整数）", false),
@@ -77,8 +80,8 @@ impl Tool for UpdateEntityTool {
             entity.display_name = v;
             changes.push("display_name");
         }
-        if let Some(v) = get_str_opt(arguments, "aliases") {
-            entity.aliases = v.split(',').map(|s| s.trim().to_string()).collect();
+        if let Some(v) = get_str_array_opt(arguments, "aliases")? {
+            entity.aliases = v;
             changes.push("aliases");
         }
 
@@ -373,8 +376,8 @@ impl Tool for SetOutlineItemTool {
                 ("climax", "string", "冲突高潮所在的卷（section=conflict）", false),
                 (
                     "items",
-                    "string",
-                    "批量添加：JSON 数组，每项 {\"section\": \"...\", ...该类型对应字段}。与 section+单条字段二选一",
+                    "array",
+                    "批量添加：数组，每项 {\"section\": \"...\", ...该类型对应字段}。与 section+单条字段二选一",
                     false,
                 ),
             ]),
@@ -396,15 +399,11 @@ impl Tool for SetOutlineItemTool {
             OutlineFile::default()
         };
 
-        let items: Vec<serde_json::Value> = if let Some(raw) = get_str_opt(arguments, "items") {
-            let arr = super::chapters::parse_json_array_lenient(&raw, "items")?;
-            if arr.is_empty() {
-                return Err("items 不能为空数组".into());
-            }
-            arr
-        } else {
+        let items: Vec<serde_json::Value> = match get_json_array_opt(arguments, "items")? {
+            Some(arr) if arr.is_empty() => return Err("items 不能为空数组".into()),
+            Some(arr) => arr,
             // 单条：把扁平参数当作一条 item 处理（保持原语义）
-            vec![arguments.clone()]
+            None => vec![arguments.clone()],
         };
 
         let mut sections: Vec<String> = Vec::with_capacity(items.len());

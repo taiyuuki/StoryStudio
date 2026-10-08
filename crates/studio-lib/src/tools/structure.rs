@@ -721,8 +721,8 @@ impl Tool for SetFragmentAnchorTool {
                 ("entity_id", "string", "实体 ID（如 c_0008 / l_0002 / i_0001），单条锚定时必填", false),
                 (
                     "entity_ids",
-                    "string",
-                    "批量锚定：JSON 数组，每项为实体 ID 字符串或 {\"entity_id\": \"...\", \"role\": \"...\"}。与 entity_id 二选一",
+                    "array",
+                    "批量锚定：数组，每项为实体 ID 字符串或 {\"entity_id\": \"...\", \"role\": \"...\"}。与 entity_id 二选一",
                     false,
                 ),
                 (
@@ -740,9 +740,7 @@ impl Tool for SetFragmentAnchorTool {
         let role = get_str_opt(arguments, "role").unwrap_or_else(|| "appears".to_string());
 
         // 批量：entity_ids 数组（ID 字符串或 {entity_id, role} 对象）
-        if let Some(raw) = get_str_opt(arguments, "entity_ids") {
-            let items =
-                super::chapters::parse_json_array_lenient(&raw, "entity_ids")?;
+        if let Some(items) = get_json_array_opt(arguments, "entity_ids")? {
             if items.is_empty() {
                 return Err("entity_ids 不能为空数组".into());
             }

@@ -219,6 +219,54 @@ pub(super) fn get_u32_opt(args: &serde_json::Value, key: &str) -> Option<u32> {
     }
 }
 
+/// 读取字符串数组参数（别名 / 标签 / ID 列表 / 节拍等），兼容三种形态：
+/// - 原生 JSON 数组（schema 声明 array 时的正规形态）
+/// - JSON 数组字符串（`"[\"a\",\"b\"]"`，字符串声明时期的模型习惯）
+/// - 逗号分隔字符串（`"a, b"`）
+///
+/// 模型无视 schema 的 "string"/"array" 声明是常态，此前字符串单形态入口会把
+/// 原生数组**静默吞掉**（update_chapter_outline 的 characters/threads 即此事故）。
+/// 元素统一 trim、去空；原生空数组是合法值（整体清空），空字符串视为未提供。
+pub(super) fn get_str_array_opt(
+    args: &serde_json::Value,
+    key: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let parse_items = |items: Vec<serde_json::Value>| -> Result<Vec<String>, String> {
+        items
+            .into_iter()
+            .map(|v| {
+                v.as_str()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| format!("{key} 数组元素必须是字符串"))
+            })
+            .collect()
+    };
+    match args.get(key) {
+        None => Ok(None),
+        Some(serde_json::Value::Array(items)) => Ok(Some(parse_items(items.clone())?)),
+        Some(serde_json::Value::String(raw)) => {
+            if raw.trim().is_empty() {
+                return Ok(None);
+            }
+            if raw.trim_start().starts_with('[') {
+                let items = self::chapters::parse_json_array_lenient(raw, key)?;
+                Ok(Some(parse_items(items)?))
+            } else {
+                Ok(Some(
+                    raw.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                ))
+            }
+        }
+        Some(other) => Err(format!(
+            "{key} 需为字符串数组（原生数组 / JSON 字符串 / 逗号分隔），收到: {other}"
+        )),
+    }
+}
+
 /// 读取 1-based 序号参数（outline / chapters / worldview 的 index）。
 ///
 /// schema 声明为 integer，但模型偶尔无视声明传字符串数字——两种形态都收：
@@ -438,6 +486,45 @@ pub use agent::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_str_array_opt_accepts_three_forms() {
+        // 原生数组（schema 声明 array 的正规形态）
+        assert_eq!(
+            get_str_array_opt(&serde_json::json!({"xs": ["a", "b"]}), "xs").unwrap(),
+            Some(vec!["a".into(), "b".into()])
+        );
+        // 原生空数组是合法值（整体清空语义）
+        assert_eq!(
+            get_str_array_opt(&serde_json::json!({"xs": []}), "xs").unwrap(),
+            Some(vec![])
+        );
+        // JSON 数组字符串
+        assert_eq!(
+            get_str_array_opt(&serde_json::json!({"xs": "[\"a\",\"b\"]"}), "xs").unwrap(),
+            Some(vec!["a".into(), "b".into()])
+        );
+        // 逗号分隔字符串（trim + 去空）
+        assert_eq!(
+            get_str_array_opt(&serde_json::json!({"xs": "a, b ,,"}), "xs").unwrap(),
+            Some(vec!["a".into(), "b".into()])
+        );
+        // 元素去空格
+        assert_eq!(
+            get_str_array_opt(&serde_json::json!({"xs": [" a "]}), "xs").unwrap(),
+            Some(vec!["a".into()])
+        );
+        // 空字符串 / 缺省 → 未提供
+        assert_eq!(
+            get_str_array_opt(&serde_json::json!({"xs": ""}), "xs").unwrap(),
+            None
+        );
+        assert_eq!(get_str_array_opt(&serde_json::json!({}), "xs").unwrap(), None);
+        // 数组元素非字符串 → 报错
+        assert!(get_str_array_opt(&serde_json::json!({"xs": ["a", 1]}), "xs").is_err());
+        // 其他类型 → 报错
+        assert!(get_str_array_opt(&serde_json::json!({"xs": {"a": 1}}), "xs").is_err());
+    }
 
     #[test]
     fn get_index_accepts_number_and_string_forms() {
