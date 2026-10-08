@@ -184,8 +184,23 @@ pub fn compile(
         }
     }
 
-    // 4. 确定性排序输出
-    sink.into_diagnostics()
+    // 4. 规则级 severity 覆盖：config 显式指定级别的规则，其全部诊断
+    //    统一重映射到该级别（eslint 式语义；规则内部 error/warning 的
+    //    自有分级只在未配置覆盖时保留）
+    let mut diagnostics = sink.into_diagnostics();
+    if !registry.config.severities.is_empty() {
+        for d in diagnostics.0.iter_mut() {
+            let crate::diagnostic::DiagnosticSource::Compiler { rule_id } = &d.source else {
+                continue;
+            };
+            if let Some(sev) = registry.config.severities.get(rule_id.as_str()) {
+                d.severity = *sev;
+            }
+        }
+    }
+
+    // 5. 确定性排序输出
+    diagnostics
 }
 
 // ============================================================================

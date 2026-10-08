@@ -84,8 +84,9 @@ fn compile_impl(dir: &Path, force_full: bool) -> Result<CompileResult, StudioErr
     // 2. 加载 KB
     let kb = load_knowledge_base(&paths);
 
-    // 3. 编译
-    let registry = RuleRegistry::new(CompilerConfig::default());
+    // 3. 编译（规则配置来自 config/compiler.toml，文件缺失/损坏退回默认）
+    let compiler_config = load_compiler_config(&paths);
+    let registry = RuleRegistry::new(compiler_config.clone());
     let request = CompileRequest::full_build();
     let mut diagnostics = compile(
         &registry,
@@ -96,8 +97,10 @@ fn compile_impl(dir: &Path, force_full: bool) -> Result<CompileResult, StudioErr
         &request,
     );
 
-    // 3.5 unused_thread 卷级分级（见下方函数注释）
-    grade_unused_thread_diagnostics(&paths, &mut diagnostics);
+    // 3.5 unused_thread 卷级分级（见下方函数注释）；thread_checks 被禁用时一并跳过
+    if !compiler_config.disabled.contains("thread_checks") {
+        grade_unused_thread_diagnostics(&paths, &mut diagnostics);
+    }
 
     // 4. 组装结果
     let stats = CompileStats {
@@ -120,6 +123,31 @@ fn compile_impl(dir: &Path, force_full: bool) -> Result<CompileResult, StudioErr
 /// 全量解析（错误归一化为 StudioError）
 fn parse_full(dir: &Path) -> Result<ParseOutput, StudioError> {
     parse_project(dir).map_err(StudioError::from)
+}
+
+/// 从 config/compiler.toml 构建规则配置（RFC-0003 §5.6）。
+///
+/// `rules` 与 `severity_overrides` 合并（后者后写、优先级更高）；
+/// 值为 "off" 时禁用整条规则，其余按 Severity 解析。非法值静默忽略——
+/// 配置是作者手改的文件，写错不该阻断编译。文件不存在/解析失败 → 默认配置
+/// （全部内置规则按默认级别）。
+fn load_compiler_config(paths: &ProjectPaths) -> CompilerConfig {
+    let path = paths.config_dir().join("compiler.toml");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return CompilerConfig::default();
+    };
+    let Ok(file) = story_project_format::CompilerConfigFile::from_toml_str(&content) else {
+        return CompilerConfig::default();
+    };
+    let mut config = CompilerConfig::default();
+    for (rule_id, sev) in file.rules.into_iter().chain(file.severity_overrides) {
+        if sev.eq_ignore_ascii_case("off") {
+            config.disabled.insert(rule_id);
+        } else if let Ok(s) = sev.parse() {
+            config.severities.insert(rule_id, s);
+        }
+    }
+    config
 }
 
 // ============================================================================
@@ -226,6 +254,101 @@ mod tests {
     };
     use story_project_format::init::init_project;
     use story_project_format::ChapterOutlineDef;
+
+    /// config/compiler.toml 生效：severity_overrides 降级、rules 关闭规则
+    #[test]
+    fn compiler_toml_overrides_and_disables_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "t").unwrap();
+        let dir = tmp.path();
+
+        // 制造 orphan_reference 触发条件：场景 POV 引用不存在的角色
+        // （片段锚点引用缺失实体会被解析层拦成硬错误，到不了编译规则）
+        let structure = r#"[book]
+id = "b_root"
+title = "t"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[scene.sc_01_01]
+title = "开场"
+pov = "c_missing"
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        let write_config = |toml: &str| {
+            std::fs::create_dir_all(dir.join("config")).unwrap();
+            std::fs::write(dir.join("config/compiler.toml"), toml).unwrap();
+        };
+
+        // 默认：orphan_pov_target 为 error
+        let result = compile_project(dir).unwrap();
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_str() == "orphan_pov_target")
+            .expect("默认应报 orphan_pov_target");
+        assert_eq!(diag.severity.as_str(), "error");
+
+        // severity_overrides 降级为 warning
+        write_config("[severity_overrides]\norphan_reference = \"warning\"\n");
+        let result = compile_project(dir).unwrap();
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_str() == "orphan_pov_target")
+            .expect("降级后仍应报，只是级别变化");
+        assert_eq!(diag.severity.as_str(), "warning");
+
+        // rules 关闭规则 → 诊断消失
+        write_config("[rules]\norphan_reference = \"off\"\n");
+        let result = compile_project(dir).unwrap();
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_str() == "orphan_pov_target"),
+            "规则关闭后不应再报"
+        );
+    }
+
+    /// thread_checks 关闭时，编排层的 unused_thread 卷级分级也一并跳过
+    #[test]
+    fn compiler_toml_off_skips_unused_thread_grading() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "t").unwrap();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        // 未埋设的 main 线索：默认会有 unused_thread Hint
+        create_thread(&paths, "长线", "", "main", None, None, None).unwrap();
+        let result = compile_project(dir).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_str() == "unused_thread"),
+            "默认应有 unused_thread"
+        );
+
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(
+            dir.join("config/compiler.toml"),
+            "[rules]\nthread_checks = \"off\"\n",
+        )
+        .unwrap();
+        let result = compile_project(dir).unwrap();
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_str() == "unused_thread"),
+            "thread_checks 关闭后 unused_thread 分级也应静默"
+        );
+    }
 
     fn completed_chapter(chapter_id: Option<String>, title: &str, volume_order: u32) -> ChapterOutlineDef {
         ChapterOutlineDef {
