@@ -153,8 +153,7 @@ impl AiProvider for AnthropicProvider {
         // Avoid "Cannot start a runtime from within a runtime" panic:
         // - Inside a tokio runtime → use block_in_place before block_on
         // - Outside → create a fresh temporary runtime
-        let stream_fn =
-            || async { HttpStreamClient::stream(&adapter, &request, &local_on).await };
+        let stream_fn = || async { HttpStreamClient::stream(&adapter, &request, &local_on).await };
 
         let result = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(stream_fn())),
@@ -397,6 +396,7 @@ impl ProviderAdapter for AnthropicAdapter {
                             id: id.to_string(),
                             name: name.to_string(),
                             arguments: input,
+                            thought_signature: None,
                         });
                     }
                 }
@@ -464,7 +464,12 @@ impl ProviderAdapter for AnthropicAdapter {
                         .unwrap_or("")
                         .to_string();
                     if !id.is_empty() && !name.is_empty() {
-                        return Some(StreamEvent::ToolUseStart { index, id, name });
+                        return Some(StreamEvent::ToolUseStart {
+                            index,
+                            id,
+                            name,
+                            signature: None,
+                        });
                     }
                 }
                 None
@@ -495,6 +500,7 @@ impl ProviderAdapter for AnthropicAdapter {
                         Some(StreamEvent::ToolUseDelta {
                             index,
                             partial_json: partial.to_string(),
+                            signature: None,
                         })
                     }
                     _ => None,
@@ -597,6 +603,7 @@ mod tests {
                         id: "toolu_01".to_string(),
                         name: "get_outline".to_string(),
                         arguments: serde_json::json!({}),
+                        thought_signature: None,
                     }],
                 ),
                 Message::tool(
@@ -665,11 +672,13 @@ mod tests {
                             id: "toolu_01".to_string(),
                             name: "get_outline".to_string(),
                             arguments: serde_json::json!({}),
+                            thought_signature: None,
                         },
                         ToolCall {
                             id: "toolu_02".to_string(),
                             name: "get_structure".to_string(),
                             arguments: serde_json::json!({}),
+                            thought_signature: None,
                         },
                     ],
                 ),
@@ -844,7 +853,9 @@ mod tests {
         let line = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01A","name":"write_fragment_text"}}"#;
         let event = adapter.parse_stream_chunk(line).unwrap();
         match event {
-            StreamEvent::ToolUseStart { index, id, name } => {
+            StreamEvent::ToolUseStart {
+                index, id, name, ..
+            } => {
                 assert_eq!(index, 1);
                 assert_eq!(id, "toolu_01A");
                 assert_eq!(name, "write_fragment_text");
@@ -866,6 +877,7 @@ mod tests {
             StreamEvent::ToolUseDelta {
                 index,
                 partial_json,
+                ..
             } => {
                 assert_eq!(index, 1);
                 assert!(partial_json.contains("fragment_id"));
@@ -876,6 +888,7 @@ mod tests {
             StreamEvent::ToolUseDelta {
                 index,
                 partial_json,
+                ..
             } => {
                 assert_eq!(index, 1);
                 assert!(partial_json.contains("正文"));

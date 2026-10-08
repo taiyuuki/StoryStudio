@@ -179,8 +179,7 @@ impl AiProvider for OpenAiProvider {
         // Avoid "Cannot start a runtime from within a runtime" panic:
         // - Inside a tokio runtime → use block_in_place before block_on
         // - Outside → create a fresh temporary runtime
-        let stream_fn =
-            || async { HttpStreamClient::stream(&*adapter, &request, &local_on).await };
+        let stream_fn = || async { HttpStreamClient::stream(&*adapter, &request, &local_on).await };
 
         let result = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(stream_fn())),
@@ -205,6 +204,51 @@ impl AiProvider for OpenAiProvider {
             Err(e) => Err(e),
         }
     }
+}
+
+// ============================================================================
+// Gemini thought_signature 提取 / 注入（OpenAI 兼容端点）
+// ============================================================================
+//
+// Gemini 2.5+/3 思考模型通过 OpenAI 兼容端点返回工具调用时，会在
+// tool_calls[] 上附带非标准字段 extra_content.google.thought_signature
+// （部分 LiteLLM 风格网关放在顶层 thought_signature）。
+// 多轮工具调用回放 assistant 历史时必须原样带回，否则 API 返回 400：
+// "Function call is missing a thought_signature in functionCall parts"。
+
+/// 从 OpenAI 格式的 tool_call JSON 中提取 thought_signature
+fn extract_thought_signature(tc: &serde_json::Value) -> Option<String> {
+    let sig = tc
+        .pointer("/extra_content/google/thought_signature")
+        .or_else(|| tc.get("thought_signature"))
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty());
+    sig.map(|s| s.to_string())
+}
+
+/// 把 thought_signature 注入 OpenAI 格式的 tool_call JSON
+/// （写在文档规定的 extra_content.google 路径，保留兄弟字段）
+fn inject_thought_signature(call: &mut serde_json::Value, signature: &str) {
+    if call
+        .pointer_mut("/extra_content/google")
+        .and_then(|g| g.as_object_mut())
+        .is_some()
+    {
+        call["extra_content"]["google"]["thought_signature"] =
+            serde_json::Value::String(signature.to_string());
+        return;
+    }
+    // extra_content 不存在或不是预期结构 → 原样保留兄弟键后重建
+    let mut extra = call
+        .get("extra_content")
+        .and_then(|e| e.as_object())
+        .cloned()
+        .unwrap_or_default();
+    extra.insert(
+        "google".to_string(),
+        serde_json::json!({ "thought_signature": signature }),
+    );
+    call["extra_content"] = serde_json::Value::Object(extra);
 }
 
 // ============================================================================
@@ -299,14 +343,19 @@ impl ProviderAdapter for OpenAiAdapter {
                     .tool_calls
                     .iter()
                     .map(|tc| {
-                        serde_json::json!({
+                        let mut call = serde_json::json!({
                             "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.name,
                                 "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default(),
                             }
-                        })
+                        });
+                        // Gemini thought_signature 回放：有则原样带回
+                        if let Some(ref sig) = tc.thought_signature {
+                            inject_thought_signature(&mut call, sig);
+                        }
+                        call
                     })
                     .collect();
                 msg_obj["tool_calls"] = serde_json::Value::Array(oai_calls);
@@ -386,6 +435,7 @@ impl ProviderAdapter for OpenAiAdapter {
                             id,
                             name,
                             arguments,
+                            thought_signature: extract_thought_signature(tc),
                         })
                     })
                     .collect()
@@ -465,10 +515,12 @@ impl ProviderAdapter for OpenAiAdapter {
 
         let delta = first_choice.get("delta")?;
 
-        // tool_calls 增量（首帧含 index+id+name，后续帧含 index+arguments 片段）
+        // tool_calls 增量（首帧含 index+id+name，后续帧含 index+arguments 片段；
+        // Gemini 兼容端点的 thought_signature 可能在任意一帧到达）
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             for tc in tool_calls {
                 let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                let signature = extract_thought_signature(tc);
                 // 首帧：function.name + id
                 if let (Some(id), Some(name)) = (
                     tc.get("id").and_then(|i| i.as_str()),
@@ -480,9 +532,11 @@ impl ProviderAdapter for OpenAiAdapter {
                         index,
                         id: id.to_string(),
                         name: name.to_string(),
+                        signature,
                     });
                 }
-                // 后续帧：function.arguments 片段
+                // 后续帧：function.arguments 片段；签名也可能单独成帧
+                // （partial_json 为空、仅携带 signature）
                 if let Some(args) = tc
                     .get("function")
                     .and_then(|f| f.get("arguments"))
@@ -492,8 +546,16 @@ impl ProviderAdapter for OpenAiAdapter {
                         return Some(StreamEvent::ToolUseDelta {
                             index,
                             partial_json: args.to_string(),
+                            signature,
                         });
                     }
+                }
+                if signature.is_some() {
+                    return Some(StreamEvent::ToolUseDelta {
+                        index,
+                        partial_json: String::new(),
+                        signature,
+                    });
                 }
             }
         }
@@ -710,6 +772,7 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
                         id,
                         name,
                         arguments,
+                        thought_signature: None,
                     });
                 }
                 _ => {}
@@ -789,7 +852,12 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
                         .and_then(|n| n.as_str())
                         .unwrap_or("")
                         .to_string();
-                    return Some(StreamEvent::ToolUseStart { index, id, name });
+                    return Some(StreamEvent::ToolUseStart {
+                        index,
+                        id,
+                        name,
+                        signature: None,
+                    });
                 }
                 None
             }
@@ -804,6 +872,7 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
                     return Some(StreamEvent::ToolUseDelta {
                         index,
                         partial_json: delta.to_string(),
+                        signature: None,
                     });
                 }
                 None
@@ -1047,7 +1116,9 @@ mod tests {
         let line = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"write_fragment_text","arguments":""}}]}}]}"#;
         let event = adapter.parse_stream_chunk(line).unwrap();
         match event {
-            StreamEvent::ToolUseStart { index, id, name } => {
+            StreamEvent::ToolUseStart {
+                index, id, name, ..
+            } => {
                 assert_eq!(index, 0);
                 assert_eq!(id, "call_abc");
                 assert_eq!(name, "write_fragment_text");
@@ -1066,6 +1137,7 @@ mod tests {
             StreamEvent::ToolUseDelta {
                 index,
                 partial_json,
+                ..
             } => {
                 assert_eq!(index, 0);
                 assert!(partial_json.contains("正文"));
@@ -1088,6 +1160,168 @@ mod tests {
             }
             other => panic!("应为 Done，实际: {other:?}"),
         }
+    }
+
+    // —— Gemini thought_signature 测试 ——
+
+    #[test]
+    fn parse_stream_tool_call_first_chunk_with_signature() {
+        // Gemini OpenAI 兼容端点：首帧 tool_call 附带 extra_content.google.thought_signature
+        let adapter = stream_adapter();
+        let line = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_project_stats","arguments":""},"extra_content":{"google":{"thought_signature":"CrICAdHtim"}}}]}}]}"#;
+        let event = adapter.parse_stream_chunk(line).unwrap();
+        match event {
+            StreamEvent::ToolUseStart {
+                index,
+                id,
+                name,
+                signature,
+            } => {
+                assert_eq!(index, 0);
+                assert_eq!(id, "call_abc");
+                assert_eq!(name, "get_project_stats");
+                assert_eq!(signature.as_deref(), Some("CrICAdHtim"));
+            }
+            other => panic!("应为 ToolUseStart，实际: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_stream_tool_call_signature_only_frame() {
+        // 签名可独立成帧（无 id/name，arguments 为空）
+        let adapter = stream_adapter();
+        let line = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"extra_content":{"google":{"thought_signature":"CrICAd"}}}]}}]}"#;
+        let event = adapter.parse_stream_chunk(line).unwrap();
+        match event {
+            StreamEvent::ToolUseDelta {
+                index,
+                partial_json,
+                signature,
+            } => {
+                assert_eq!(index, 0);
+                assert_eq!(partial_json, "");
+                assert_eq!(signature.as_deref(), Some("CrICAd"));
+            }
+            other => panic!("应为 ToolUseDelta，实际: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_stream_tool_call_top_level_signature_fallback() {
+        // LiteLLM 风格网关把签名放在 tool_call 顶层
+        let adapter = stream_adapter();
+        let line = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"f","arguments":""},"thought_signature":"TopLevel"}]}}]}"#;
+        let event = adapter.parse_stream_chunk(line).unwrap();
+        match event {
+            StreamEvent::ToolUseStart { signature, .. } => {
+                assert_eq!(signature.as_deref(), Some("TopLevel"));
+            }
+            other => panic!("应为 ToolUseStart，实际: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_response_tool_call_with_signature() {
+        // 非流式响应：tool_calls[].extra_content.google.thought_signature
+        let adapter = OpenAiAdapter {
+            shared: AdapterShared {
+                model: "gemini-3-pro".to_string(),
+                ..Default::default()
+            },
+        };
+        let response = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "get_project_stats", "arguments": "{}"},
+                        "extra_content": {"google": {"thought_signature": "CrICAdHtim"}}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+        let result = adapter.parse_response(&response).unwrap();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(
+            result.tool_calls[0].thought_signature.as_deref(),
+            Some("CrICAdHtim")
+        );
+    }
+
+    #[test]
+    fn build_request_body_replays_thought_signature() {
+        // 回放历史：assistant tool_calls 里的签名必须原样带回 extra_content.google
+        let adapter = OpenAiAdapter {
+            shared: AdapterShared {
+                model: "gemini-3-pro".to_string(),
+                ..Default::default()
+            },
+        };
+        let request = GenerateRequest {
+            system: String::new(),
+            messages: vec![
+                Message::user("调用工具"),
+                Message::assistant_with_tools(
+                    String::new(),
+                    vec![ToolCall {
+                        id: "call_123".to_string(),
+                        name: "get_project_stats".to_string(),
+                        arguments: serde_json::json!({}),
+                        thought_signature: Some("CrICAdHtim".to_string()),
+                    }],
+                ),
+                Message::tool("call_123".to_string(), "{}"),
+            ],
+            model: String::new(),
+            temperature: 0.7,
+            max_tokens: 2048,
+            tools: Vec::new(),
+        };
+
+        let body = adapter.to_request_body(&request);
+        let assistant = &body["messages"][1];
+        assert_eq!(
+            assistant["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            "CrICAdHtim"
+        );
+    }
+
+    #[test]
+    fn build_request_body_without_signature_stays_standard() {
+        // 无签名（非 Gemini provider / 并行调用的无签名兄弟项）时
+        // 保持 OpenAI 标准结构，不注入任何非标准字段
+        let adapter = OpenAiAdapter {
+            shared: AdapterShared {
+                model: "gpt-4o".to_string(),
+                ..Default::default()
+            },
+        };
+        let request = GenerateRequest {
+            system: String::new(),
+            messages: vec![Message::assistant_with_tools(
+                String::new(),
+                vec![ToolCall {
+                    id: "call_123".to_string(),
+                    name: "f".to_string(),
+                    arguments: serde_json::json!({}),
+                    thought_signature: None,
+                }],
+            )],
+            model: String::new(),
+            temperature: 0.7,
+            max_tokens: 2048,
+            tools: Vec::new(),
+        };
+
+        let body = adapter.to_request_body(&request);
+        let call = &body["messages"][0]["tool_calls"][0];
+        assert!(call.get("extra_content").is_none());
+        assert_eq!(call["function"]["name"], "f");
     }
 
     // ========================================================================
@@ -1215,6 +1449,7 @@ mod tests {
                         id: "call_123".to_string(),
                         name: "write_fragment".to_string(),
                         arguments: serde_json::json!({"text": "正文"}),
+                        thought_signature: None,
                     }],
                 ),
                 // 工具返回结果
@@ -1345,7 +1580,9 @@ mod tests {
         let line = r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_abc","name":"write_fragment","arguments":""}}"#;
         let event = adapter.parse_stream_chunk(line).unwrap();
         match event {
-            StreamEvent::ToolUseStart { index, id, name } => {
+            StreamEvent::ToolUseStart {
+                index, id, name, ..
+            } => {
                 assert_eq!(index, 0);
                 assert_eq!(id, "call_abc");
                 assert_eq!(name, "write_fragment");
@@ -1363,6 +1600,7 @@ mod tests {
             StreamEvent::ToolUseDelta {
                 index,
                 partial_json,
+                ..
             } => {
                 assert_eq!(index, 0);
                 assert!(partial_json.contains("正文"));

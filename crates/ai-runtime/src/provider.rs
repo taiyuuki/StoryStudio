@@ -179,6 +179,13 @@ pub struct ToolCall {
     pub name: String,
     /// 参数（JSON 对象）
     pub arguments: serde_json::Value,
+    /// Gemini 思考签名（OpenAI 兼容端点在 tool_calls[].extra_content.google
+    /// 里返回）。多轮工具调用回放 assistant 历史时必须原样带回，
+    /// 否则 Gemini 2.5+/3 思考模型会返回 400
+    /// "Function call is missing a thought_signature in functionCall parts"。
+    /// 并行工具调用时 Gemini 只给首个调用签名，其余保持 None 即可。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 /// 响应终止原因
@@ -243,13 +250,23 @@ pub enum StreamEvent {
     Error { message: String },
     /// tool_use 块开始 —— Anthropic 的 content_block_start(tool_use) 或 OpenAI 的 delta.tool_calls 首帧。
     /// `index` 标识该 tool_call 在本轮中的序号，用于关联后续的 ToolUseDelta。
+    /// `signature` 为 Gemini 兼容端点随首帧返回的 thought_signature（可能为 None，
+    /// 也可能延后到后续 Delta 帧才到达）。
     ToolUseStart {
         index: usize,
         id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     /// tool 参数 JSON 增量 —— 拼接所有同 index 的 partial_json 得到完整 arguments。
-    ToolUseDelta { index: usize, partial_json: String },
+    /// `signature` 同 ToolUseStart：签名可能出现在任意一帧（partial_json 可为空串）。
+    ToolUseDelta {
+        index: usize,
+        partial_json: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
 }
 
 // ============================================================================

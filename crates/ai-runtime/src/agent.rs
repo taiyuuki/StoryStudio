@@ -915,11 +915,13 @@ impl Agent {
             let full_text = std::sync::Mutex::new(String::new());
             let stream_error = std::sync::Mutex::new(None::<AiError>);
             let stream_usage = std::sync::Mutex::new(TokenUsage::default());
-            // 流式 tool_call 累积：index → (id, name, arguments_json_buffer)
+            // 流式 tool_call 累积：index → (id, name, arguments_json_buffer, thought_signature)
             // Anthropic/OpenAI 的 tool_call 跨多个 SSE 事件到达（Start + 若干 Delta），
-            // 需按 index 聚合后拼出完整 ToolCall。
+            // 需按 index 聚合后拼出完整 ToolCall。Gemini 的 thought_signature 可能
+            // 随 Start 帧或后续 Delta 帧到达，统一累积到第 4 位。
+            #[allow(clippy::type_complexity)]
             let tool_calls_acc: std::sync::Mutex<
-                std::collections::BTreeMap<usize, (String, String, String)>,
+                std::collections::BTreeMap<usize, (String, String, String, Option<String>)>,
             > = std::sync::Mutex::new(std::collections::BTreeMap::new());
             let final_stop_reason = std::sync::Mutex::new(None::<StopReason>);
 
@@ -942,18 +944,31 @@ impl Agent {
                         }
                     }
                 }
-                StreamEvent::ToolUseStart { index, id, name } => {
+                StreamEvent::ToolUseStart {
+                    index,
+                    id,
+                    name,
+                    signature,
+                } => {
                     if let Ok(mut acc) = tool_calls_acc.lock() {
-                        acc.insert(index, (id, name, String::new()));
+                        let entry = acc.entry(index).or_default();
+                        entry.0 = id;
+                        entry.1 = name;
+                        if let Some(sig) = signature {
+                            entry.3 = Some(sig);
+                        }
                     }
                 }
                 StreamEvent::ToolUseDelta {
                     index,
                     partial_json,
+                    signature,
                 } => {
                     if let Ok(mut acc) = tool_calls_acc.lock() {
-                        if let Some(entry) = acc.get_mut(&index) {
-                            entry.2.push_str(&partial_json);
+                        let entry = acc.entry(index).or_default();
+                        entry.2.push_str(&partial_json);
+                        if let Some(sig) = signature {
+                            entry.3 = Some(sig);
                         }
                     }
                 }
@@ -970,15 +985,18 @@ impl Agent {
                 }
                 let text = full_text.lock().unwrap().clone();
                 let usage = stream_usage.lock().unwrap().clone();
-                // 聚合 tool_calls（BTreeMap 按 index 排序）
+                // 聚合 tool_calls（BTreeMap 按 index 排序）。
+                // 过滤空 name 条目：签名-only 帧在 Start 之前到达时可能留下占位
                 let tool_calls: Vec<ToolCall> = tool_calls_acc
                     .lock()
                     .unwrap()
                     .values()
-                    .map(|(id, name, args_json)| ToolCall {
+                    .filter(|(_, name, _, _)| !name.is_empty())
+                    .map(|(id, name, args_json, signature)| ToolCall {
                         id: id.clone(),
                         name: name.clone(),
                         arguments: serde_json::from_str(args_json).unwrap_or(serde_json::json!({})),
+                        thought_signature: signature.clone(),
                     })
                     .collect();
                 let stop_reason = final_stop_reason
@@ -1484,7 +1502,10 @@ mod tests {
         let huge = "字".repeat(MAX_TOOL_RESULT_CHARS + 5000);
         let clamped = clamp_tool_result(&huge);
         assert!(clamped.contains("已截断"), "应包含截断说明");
-        assert!(clamped.contains("缩小到需要的部分"), "应包含改用过滤参数的引导");
+        assert!(
+            clamped.contains("缩小到需要的部分"),
+            "应包含改用过滤参数的引导"
+        );
         assert!(clamped.chars().count() < MAX_TOOL_RESULT_CHARS + 500);
         assert!(clamped.starts_with(&"字".repeat(100)), "保留原文前段");
     }
@@ -1644,6 +1665,7 @@ mod tests {
                     id: "tc_1".to_string(),
                     name: "echo".to_string(),
                     arguments: serde_json::json!({"message": "hello"}),
+                    thought_signature: None,
                 }],
             },
             GenerateResponse {
@@ -1706,6 +1728,7 @@ mod tests {
                     id: "tc_1".to_string(),
                     name: "echo".to_string(),
                     arguments: serde_json::json!({"message": "hello"}),
+                    thought_signature: None,
                 }],
             },
             // 第二轮：空文本 + MaxTokens 截断（thinking 挤满配额的典型表现）
@@ -1763,6 +1786,7 @@ mod tests {
                     id: format!("tc_{i}"),
                     name: "delete_item".to_string(),
                     arguments: serde_json::json!({"index": "1"}), // 相同参数
+                    thought_signature: None,
                 }],
             });
         }
@@ -1863,6 +1887,7 @@ mod tests {
                     id: "tc_1".to_string(),
                     name: "outline_reader".to_string(),
                     arguments: serde_json::json!({}),
+                    thought_signature: None,
                 }],
             },
             // 第二轮：基于工具结果回复
@@ -1933,6 +1958,7 @@ mod tests {
                     id: "tc_1".to_string(),
                     name: "failing_tool".to_string(),
                     arguments: serde_json::json!({}),
+                    thought_signature: None,
                 }],
             },
             GenerateResponse {
@@ -2238,6 +2264,7 @@ mod tests {
                 id: "tc_loop".to_string(),
                 name: "echo".to_string(),
                 arguments: serde_json::json!({"message": "same"}),
+                thought_signature: None,
             }],
         };
         // 返回足够多次，确保不靠 max_tool_turns 兜底
@@ -2530,14 +2557,18 @@ mod tests {
                     index: 0,
                     id: "toolu_001".to_string(),
                     name: "echo".to_string(),
+                    signature: None,
                 },
                 StreamEvent::ToolUseDelta {
                     index: 0,
                     partial_json: r#"{"message":"#.to_string(),
+                    signature: None,
                 },
                 StreamEvent::ToolUseDelta {
                     index: 0,
                     partial_json: r#""流式工具调用"}"#.to_string(),
+                    // Gemini 兼容端点：签名可延后到参数分片帧才到达
+                    signature: Some("CrICAdHtim".to_string()),
                 },
                 StreamEvent::Done {
                     full_text: String::new(),
@@ -2601,6 +2632,11 @@ mod tests {
             tc.arguments,
             serde_json::json!({"message": "流式工具调用"}),
             "分片 JSON 应正确拼接"
+        );
+        assert_eq!(
+            tc.thought_signature.as_deref(),
+            Some("CrICAdHtim"),
+            "签名应从 Delta 帧累积进 ToolCall，供下轮请求回放"
         );
         // 工具结果应包含 echo 的回复
         assert_eq!(msgs[2].role, Role::Tool);
