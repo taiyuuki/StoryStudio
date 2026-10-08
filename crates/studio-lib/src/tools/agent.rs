@@ -238,7 +238,25 @@ fn global_agent_factory(provider: Arc<dyn AiProvider>) -> AgentFactory {
     })
 }
 
+/// 妙笔每轮对话默认工具调用轮数上限（连续请求次数）
+const DEFAULT_MAX_TOOL_TURNS: usize = 40;
+/// 用户可调的硬边界：通读全书、批量改稿等长任务可调高，
+/// 但过高意味着 token 消耗失控与纠偏困难
+const MAX_TOOL_TURNS_LIMIT: u32 = 200;
+
+/// 解析配置中的工具轮数上限：None → 默认 40；有值则 clamp 到 1–200。
+fn resolve_max_tool_turns(configured: Option<u32>) -> usize {
+    configured
+        .map(|n| n.clamp(1, MAX_TOOL_TURNS_LIMIT) as usize)
+        .unwrap_or(DEFAULT_MAX_TOOL_TURNS)
+}
+
 fn default_agent_config() -> AgentConfig {
+    let max_tool_turns = resolve_max_tool_turns(
+        crate::ai::read_global_ai_config()
+            .ok()
+            .and_then(|c| c.agent_max_tool_turns),
+    );
     AgentConfig {
         model: String::new(),
         temperature: 0.7,
@@ -246,7 +264,7 @@ fn default_agent_config() -> AgentConfig {
         // 计入 max_tokens，平均消耗 30k+。8192 连思考都装不下会导致空输出截断。
         // 65536 是 GLM-5.2 官方示例值，覆盖绝大多数思考场景。
         max_tokens: 65536,
-        max_tool_turns: 40,
+        max_tool_turns,
         max_context_tokens: profile_context_budget(),
         ..AgentConfig::default()
     }
@@ -467,4 +485,19 @@ pub fn run_agent_global_streaming(
         on_step(step.clone());
     }
     Ok(trace)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_max_tool_turns_defaults_and_clamps() {
+        assert_eq!(resolve_max_tool_turns(None), 40, "未配置用默认值");
+        assert_eq!(resolve_max_tool_turns(Some(80)), 80, "范围内原样生效");
+        assert_eq!(resolve_max_tool_turns(Some(1)), 1, "下边界");
+        assert_eq!(resolve_max_tool_turns(Some(200)), 200, "上边界");
+        assert_eq!(resolve_max_tool_turns(Some(0)), 1, "0 拉回下边界");
+        assert_eq!(resolve_max_tool_turns(Some(9999)), 200, "超上限拉回 200");
+    }
 }

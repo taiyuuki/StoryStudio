@@ -412,6 +412,8 @@ export interface AiConfigDto {
   activeProfile: string | null
   /** 用途 → 档案 id（write / agent / workflow…），未列出的用途回退激活档案 */
   purposeProfiles: Record<string, string> | null
+  /** 妙笔每轮对话的最大工具调用轮数（null = 默认 40，生效时 clamp 1–200） */
+  agentMaxToolTurns: number | null
 }
 
 export interface ExportOutputDto {

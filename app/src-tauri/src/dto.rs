@@ -451,6 +451,8 @@ pub struct AiConfigDto {
     /// 用途 → 档案 id 分配（write / agent / workflow…），
     /// 未列出的用途回退激活档案
     pub purpose_profiles: Option<std::collections::BTreeMap<String, String>>,
+    /// 妙笔每轮对话的最大工具调用轮数（None = 默认 40，生效时 clamp 1–200）
+    pub agent_max_tool_turns: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,6 +552,7 @@ impl From<&story_studio_lib::ai::GlobalAiConfig> for AiConfigDto {
                 .unwrap_or_default(),
             active_profile: c.active_profile.clone(),
             purpose_profiles: c.purpose_profiles.clone(),
+            agent_max_tool_turns: c.agent_max_tool_turns,
         }
     }
 }
@@ -594,6 +597,7 @@ impl From<&AiConfigDto> for story_studio_lib::ai::GlobalAiConfig {
             profiles: Some(c.profiles.iter().map(Into::into).collect()),
             active_profile: c.active_profile.clone(),
             purpose_profiles: c.purpose_profiles.clone(),
+            agent_max_tool_turns: c.agent_max_tool_turns,
             ..Default::default()
         }
     }

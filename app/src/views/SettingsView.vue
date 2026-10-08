@@ -13,7 +13,7 @@ import {
 const router = useRouter()
 
 // ── 配置状态 ────────────────────────────────────────────
-const config = ref<AiConfigDto>({ profiles: [], activeProfile: null, purposeProfiles: null })
+const config = ref<AiConfigDto>({ profiles: [], activeProfile: null, purposeProfiles: null, agentMaxToolTurns: null })
 const loaded = ref(false)
 const saving = ref(false)
 const editingId = ref<string | null>(null)
@@ -424,6 +424,24 @@ function purposesOf(id: string): string {
     .join(' · ')
 }
 
+// ── 妙笔对话：每轮工具调用上限 ──────────────────────────
+const AGENT_TURNS_DEFAULT = 40
+const AGENT_TURNS_MAX = 200
+
+const agentTurns = computed(() => config.value.agentMaxToolTurns ?? AGENT_TURNS_DEFAULT)
+
+async function setAgentTurns(raw: string, target: HTMLInputElement) {
+  const n = Math.round(Number(raw))
+  if (!Number.isFinite(n) || n < 1 || n > AGENT_TURNS_MAX) {
+    ElMessage.warning(`每轮工具调用上限需在 1–${AGENT_TURNS_MAX} 之间`)
+    target.value = String(agentTurns.value) // 非法输入回退当前生效值
+    return
+  }
+  if (n === agentTurns.value) return
+  config.value.agentMaxToolTurns = n
+  await persist(`妙笔每轮上限已设为 ${n}`)
+}
+
 // ── 页面加载 / 返回 ────────────────────────────────────
 onMounted(async () => {
   try {
@@ -524,6 +542,33 @@ function goBack() {
                 </select>
               </div>
             </div>
+          </div>
+
+          <!-- 妙笔对话：每轮工具调用上限 -->
+          <div class="fusion-card sv-agent-card">
+            <div class="card-head">
+              <i class="fa-solid fa-wand-magic-sparkles" />
+              <span>妙笔对话</span>
+            </div>
+            <div class="sv-agent-row">
+              <div class="sv-purpose-meta">
+                <span class="sv-purpose-label">每轮工具调用上限</span>
+                <span class="sv-purpose-hint">一轮对话里最多连续请求工具的次数</span>
+              </div>
+              <input
+                class="num sv-agent-input"
+                type="number"
+                min="1"
+                :max="AGENT_TURNS_MAX"
+                step="1"
+                :value="agentTurns"
+                @change="setAgentTurns(($event.target as HTMLInputElement).value, $event.target as HTMLInputElement)"
+              />
+            </div>
+            <p class="sv-purpose-sub">
+              默认 40。通读全书、批量改稿等长任务可调高（上限 200）；越高越费
+              token，中途纠偏也越难。改完对妙笔的下一轮对话生效。
+            </p>
           </div>
         </aside>
 
@@ -1019,6 +1064,37 @@ function goBack() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+// ── 妙笔对话上限卡片 ────────────────────────────────────
+.sv-agent-card .sv-purpose-sub {
+  margin: 0;
+}
+
+.sv-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sv-agent-input {
+  width: 76px;
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--ui-border);
+  background: var(--input-bg);
+  color: var(--ink-main);
+  font-family: inherit;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.2s;
+
+  &:focus {
+    border-color: var(--ink-accent);
+  }
 }
 
 // ── 编辑区 ──────────────────────────────────────────────

@@ -853,6 +853,11 @@ pub struct GlobalAiConfig {
     /// 用强模型）。悬空分配（档案已删）自动回退激活档案。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose_profiles: Option<std::collections::BTreeMap<String, String>>,
+    /// 妙笔每轮对话的最大工具调用轮数（连续请求次数上限）。
+    /// None = 默认 40；读取处 clamp 到 1–200（通读全书等长任务可调高，
+    /// 过高意味着 token 消耗与失控风险）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_max_tool_turns: Option<u32>,
 
     // ── 旧字段（保留用于向后兼容读取；新数据写入 profiles 后这些字段不再使用）──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1309,6 +1314,7 @@ mod purpose_tests {
             ]),
             active_profile: Some("p1".to_string()),
             purpose_profiles: None,
+            agent_max_tool_turns: None,
             default_provider: None,
             default_model: None,
             api_key: None,
