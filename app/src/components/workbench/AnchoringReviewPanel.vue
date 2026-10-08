@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { EntityKind, UnresolvedRefDto } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -13,6 +14,43 @@ const pending = computed(() => refs.value.filter((r) => r.status === 'pending'))
 const visible = computed(() =>
   showAll.value ? refs.value.filter((r) => r.status !== 'pending') : pending.value,
 )
+
+/** 批量勾选（仅在待处置视图下可用），key = fragmentId::quote */
+const selected = ref(new Set<string>())
+const selectedCount = computed(() => selected.value.size)
+const allSelected = computed(
+  () => pending.value.length > 0 && pending.value.every((r) => selected.value.has(keyOf(r))),
+)
+
+function toggleSelect(r: UnresolvedRefDto) {
+  const key = keyOf(r)
+  const next = new Set(selected.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  selected.value = next
+}
+
+function toggleSelectAll() {
+  selected.value = allSelected.value
+    ? new Set()
+    : new Set(pending.value.map((r) => keyOf(r)))
+}
+
+async function ignoreSelected() {
+  const items = pending.value.filter((r) => selected.value.has(keyOf(r)))
+  if (items.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `将忽略 ${items.length} 条指代，后续锚定不再提示。确定？`,
+      '批量忽略',
+      { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  const ok = await store.ignoreUnresolvedRefs(items.map((r) => [r.fragmentId, r.quote]))
+  if (ok) selected.value = new Set()
+}
 
 const entityOptions = computed(() =>
   (store.ws?.entities ?? []).map((e) => ({ id: e.id, label: `${e.displayName}（${e.id}）` })),
@@ -99,13 +137,28 @@ const kindOptions: { value: EntityKind; label: string }[] = [
         锚定待审 · {{ pending.length }} 条
         <template v-if="refs.length > pending.length">（已处置 {{ refs.length - pending.length }}）</template>
       </span>
-      <button
-        v-if="refs.length > pending.length"
-        class="ink-btn ink-btn--sm"
-        @click="showAll = !showAll"
-      >
-        {{ showAll ? '只看待处置' : '看已处置' }}
-      </button>
+      <div class="ap-head-actions">
+        <template v-if="!showAll && pending.length > 0">
+          <button class="ink-btn ink-btn--sm" @click="toggleSelectAll">
+            {{ allSelected ? '取消全选' : '全选' }}
+          </button>
+          <button
+            class="ink-btn ink-btn--sm"
+            :disabled="selectedCount === 0"
+            title="忽略所选的一次性背景指代，后续锚定不再提示"
+            @click="ignoreSelected"
+          >
+            <i class="fa-solid fa-eye-slash" /> 忽略所选{{ selectedCount > 0 ? `（${selectedCount}）` : '' }}
+          </button>
+        </template>
+        <button
+          v-if="refs.length > pending.length"
+          class="ink-btn ink-btn--sm"
+          @click="showAll = !showAll"
+        >
+          {{ showAll ? '只看待处置' : '看已处置' }}
+        </button>
+      </div>
     </div>
 
     <div v-if="visible.length === 0" class="ap-empty">
@@ -120,9 +173,12 @@ const kindOptions: { value: EntityKind; label: string }[] = [
       v-for="r in visible"
       :key="keyOf(r)"
       class="ap-card"
-      :class="{ 'is-done': r.status !== 'pending' }"
+      :class="{ 'is-done': r.status !== 'pending', 'is-selected': selected.has(keyOf(r)) }"
     >
       <div class="ap-quote">
+        <label v-if="r.status === 'pending'" class="ap-check" @click.prevent.stop="toggleSelect(r)">
+          <input type="checkbox" :checked="selected.has(keyOf(r))" />
+        </label>
         <i class="fa-solid fa-quote-left" />
         {{ r.quote }}
       </div>
@@ -205,6 +261,30 @@ const kindOptions: { value: EntityKind; label: string }[] = [
   align-items: center;
   justify-content: space-between;
   font-size: 12px;
+}
+
+.ap-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ap-check {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+
+  input {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--ink-accent);
+    cursor: pointer;
+  }
+}
+
+.ap-card.is-selected {
+  border-color: var(--ink-accent);
+  background: var(--ink-accent-soft);
 }
 
 .ap-empty {

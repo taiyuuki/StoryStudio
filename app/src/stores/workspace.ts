@@ -453,6 +453,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  /** 批量忽略未锚定指代（背景人物等一次性代称） */
+  async function ignoreUnresolvedRefs(refs: [string, string][]): Promise<boolean> {
+    if (!root.value || refs.length === 0) return false
+    try {
+      const summary = await api.ignoreUnresolvedRefs(root.value, refs)
+      ElMessage.success(summary)
+      await refresh()
+      scheduleCompile()
+      return true
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+      return false
+    }
+  }
+
   async function addRelation(from: string, to: string, relation: string): Promise<void> {
     if (!root.value) return
     try {
@@ -725,6 +740,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     deleteEntity,
     mergeEntities,
     resolveUnresolved,
+    ignoreUnresolvedRefs,
     addRelation,
     removeRelation,
     createThread,

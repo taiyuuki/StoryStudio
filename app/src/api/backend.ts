@@ -903,6 +903,10 @@ export const api = {
       kind: opts?.kind,
     })
   },
+  /** 批量忽略未锚定指代；refs 为 [fragmentId, quote] 数组 */
+  ignoreUnresolvedRefs(root: string, refs: [string, string][]) {
+    return call<string>('ignore_unresolved_refs', { root, refs })
+  },
   addRelation(root: string, from: string, to: string, relation: string) {
     return call<RelationDto>('add_relation', { root, from, to, relation })
   },
