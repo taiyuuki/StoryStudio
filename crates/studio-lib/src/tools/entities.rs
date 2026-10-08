@@ -1207,9 +1207,10 @@ impl Tool for GetSceneContextTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "get_scene_context".into(),
-            description: "获取指定场景的完整上下文：POV、出场角色、片段列表、所属章节、\
-            本章脉络（目标/节拍/钩子）、本章线索及各观察者的最新认知（该透露多少、\
-            隐瞒多少一目了然）。动笔前调用可一屏对齐设计意图。"
+            description: "获取指定场景的完整上下文：POV、涉及角色（章节脉络预设 ∪ POV ∪\
+            本场景已锚定角色）、片段列表、所属章节、本章脉络（目标/节拍/钩子）、\
+            本章线索及各观察者的最新认知（该透露多少、隐瞒多少一目了然）。\
+            动笔前调用可一屏对齐设计意图。"
                 .into(),
             parameters: object_schema(vec![("scene_id", "string", "场景 ID（如 sc_01_01）", true)]),
         }
@@ -1257,8 +1258,23 @@ impl Tool for GetSceneContextTool {
         // 本章涉及角色清单：从 chapters.toml 的脉络里按 chapter_id 匹配读取。
         // 失败时静默跳过——此为增强上下文，不阻断主流程。
         let pov_id_str = pov_id.map(|s| s.as_str());
+        // 本场景片段的锚点实体：在场角色并入速查清单（预设名单之外的也带上）
+        let scene_anchor_ids: Vec<String> = parse_output
+            .ir
+            .document
+            .fragments_of_scene(&sid)
+            .iter()
+            .filter_map(|fid| parse_output.ir.document.get_fragment(fid))
+            .flat_map(|frag| frag.anchors.iter().map(|a| a.entity.as_str().to_string()))
+            .collect();
         let characters_block = chapter_info.as_ref().and_then(|(ch_id_str, _)| {
-            collect_chapter_characters(&self.ctx, ch_id_str, pov_id_str, &parse_output.ir.semantic)
+            collect_chapter_characters(
+                &self.ctx,
+                ch_id_str,
+                pov_id_str,
+                &scene_anchor_ids,
+                &parse_output.ir.semantic,
+            )
         });
 
         let pov_display = match (pov_name.as_deref(), pov_id_str) {
@@ -1434,6 +1450,7 @@ fn collect_chapter_characters(
     ctx: &ToolContext,
     chapter_id: &str,
     pov_id: Option<&str>,
+    scene_anchor_ids: &[String],
     semantic: &SemanticGraph,
 ) -> Option<String> {
     let file = crate::mutations::load_chapters_file(&ctx.paths()).ok()?;
@@ -1442,11 +1459,21 @@ fn collect_chapter_characters(
         .iter()
         .find(|c| c.chapter_id.as_deref() == Some(chapter_id))?;
 
-    // 脉络名单 ∪ POV：POV 未列入名单时也补入（写场景时最需要其速查要点）
+    // 脉络名单 ∪ POV ∪ 本场景片段锚定的角色：在场角色的档案速查对下笔
+    // 最有用——锚定了但未列入预设名单的角色（如临时加入的配角）也要出现
     let mut ids: Vec<String> = outline.characters.clone();
     if let Some(pov) = pov_id {
         if !ids.iter().any(|c| c == pov) {
             ids.push(pov.to_string());
+        }
+    }
+    for aid in scene_anchor_ids {
+        // 只并入角色类锚点（地点/道具锚点不属于「涉及角色」清单）；
+        // 无法解析的锚点 ID 是坏引用，编译检查会另行报告
+        if let Some(node) = semantic.get(&StableId::new_unchecked(aid)) {
+            if node.type_name() == "character" && !ids.iter().any(|c| c == aid) {
+                ids.push(aid.clone());
+            }
         }
     }
     if ids.is_empty() {
@@ -2033,6 +2060,63 @@ status = "writing"
         assert!(
             result.contains("林风（c_0001") && result.contains("[POV]"),
             "got: {result}"
+        );
+    }
+
+    /// 本场景片段锚定的角色（未列入脉络预设名单）也应并入「本章涉及角色」。
+    #[test]
+    fn get_scene_context_includes_scene_anchored_characters() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        write_minimal_character(dir, "c_0001", "林风"); // POV
+        write_minimal_character(dir, "c_0005", "洛青"); // 锚定出场、不在预设名单
+        // 地点锚点不应混入角色清单
+        std::fs::write(
+            dir.join("entities/locations/l_0002.toml"),
+            "id = \"l_0002\"\ndisplay_name = \"青云城\"\naliases = []\n",
+        )
+        .unwrap();
+
+        let structure = r#"[book]
+id = "b_root"
+title = "测试小说"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[scene.sc_01_01]
+title = "开场"
+pov = "c_0001"
+fragments = ["f_0001"]
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+        // 脉络只预设 POV，不列 c_0005
+        std::fs::write(
+            dir.join("chapters.toml"),
+            "[[chapters]]\nchapter_id = \"ch_01\"\ntitle = \"第一章\"\nstatus = \"writing\"\n",
+        )
+        .unwrap();
+        // 片段锚定 c_0005（角色）与 l_0002（地点）
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\nanchors:\n  - entity: c_0005\n    role: appears\n  - entity: l_0002\n    role: mentioned\n---\n\n洛青在青云城外等他。",
+        )
+        .unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let result = GetSceneContextTool::new(ctx)
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+
+        assert!(result.contains("本章涉及角色"), "got: {result}");
+        assert!(result.contains("洛青"), "锚定的角色应并入清单: {result}");
+        // 地点锚点不进角色清单（清单行以 "- " 开头；正文预览里出现不算）
+        assert!(
+            !result.lines().any(|l| l.starts_with("    - ") && l.contains("青云城")),
+            "地点锚点不应混入清单: {result}"
         );
     }
 
