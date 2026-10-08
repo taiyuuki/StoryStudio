@@ -131,10 +131,14 @@ fn parse_full(dir: &Path) -> Result<ParseOutput, StudioError> {
 ///
 /// compiler 只知道结构层（structure/fragments），不该读设计层的 chapters.toml；
 /// 「该卷埋没埋」的判断放编排层做：
-/// - due_volume 已到（已完稿章节的最大卷号 ≥ due_volume）仍 Planned → Warning
-///   「本卷该埋未埋」；
+/// - due_volume 已到（该卷已封卷仍 Planned）→ Warning「本卷该埋未埋」；
 /// - due_volume 未到 → 已排期，不报警；
 /// - 未设 due_volume → 全书长线，降为 Hint（消除写作期长期挂着的黄色告警）。
+///
+/// 封卷判定：更大卷号里存在已动笔（writing/completed）的章节，其前的卷即封卷。
+/// 不能只看本卷已有章节是否全部 completed——章节随写随录入，连载到一半时
+/// 本卷已录章节全部完稿是常态，据此判「卷完稿」会在写作期频繁误报
+/// （更大卷里只有规划章也不算：本卷之后仍可能补章）。
 fn grade_unused_thread_diagnostics(paths: &ProjectPaths, diagnostics: &mut Diagnostics) {
     use story_compiler::{Diagnostic, DiagnosticSource, Severity, SourceLocation};
 
@@ -150,12 +154,13 @@ fn grade_unused_thread_diagnostics(paths: &ProjectPaths, diagnostics: &mut Diagn
     // 卷号语义依赖统一卷结构（outline.toml 为唯一真相源），走迁移读取
     let chapters = crate::mutations::load_chapters_file(&paths).unwrap_or_default();
 
-    // 已完稿章节的最大卷号（writing 的卷不算到期——还在写）
+    // 封卷卷号：已动笔的最大卷号 - 1（该卷之前的全部封卷）；
+    // 只立了规划章的更大卷不算——作者可能回到前卷继续补章
     let done_volume = chapters
         .chapters
         .iter()
-        .filter(|c| c.status == "completed")
-        .map(|c| c.volume_order)
+        .filter(|c| c.status != story_project_format::STATUS_PLANNED)
+        .map(|c| c.volume_order.saturating_sub(1))
         .max()
         .unwrap_or(0);
 
@@ -254,11 +259,25 @@ mod tests {
         let sc = create_scene(&paths, &ch, "场景", None).unwrap();
         create_thread(&paths, "已埋设", "", "main", Some(&sc), None).unwrap();
 
-        // 第一卷已完稿
+        // 作者已动笔第二卷 → 第一卷封卷
         let mut chapters = load_chapters_file(&paths).unwrap();
         chapters
             .chapters
             .push(completed_chapter(Some(ch), "第一章", 1));
+        chapters.chapters.push(ChapterOutlineDef {
+            chapter_id: None,
+            title: "第二卷首章".into(),
+            volume_order: 2,
+            summary: None,
+            goal: None,
+            beats: vec![],
+            characters: vec![],
+            threads: vec![],
+            scenes: vec![],
+            hook: None,
+            notes: None,
+            status: "writing".into(),
+        });
         save_chapters_file(&paths, &chapters).unwrap();
 
         let result = compile_project(dir).unwrap();
@@ -330,6 +349,83 @@ mod tests {
                 .all(|d| !d.message.contains("写作中卷的线索")),
             "写作中的卷不应触发 unused_thread: {:?}",
             unused.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn completed_chapters_in_writing_volume_not_counted_as_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "t").unwrap();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        // 报告中的误报场景：连载开篇，第一卷已录入章节全部完稿、
+        // 后续卷尚未动笔——第一卷仍在写作中，不该报「本卷该埋未埋」
+        create_thread(&paths, "连载线索", "", "main", None, Some(1)).unwrap();
+        let mut chapters = load_chapters_file(&paths).unwrap();
+        for i in 1..=3 {
+            chapters
+                .chapters
+                .push(completed_chapter(None, &format!("第{i}章"), 1));
+        }
+        save_chapters_file(&paths, &chapters).unwrap();
+
+        let result = compile_project(dir).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| !d.message.contains("连载线索")),
+            "未封卷不应触发 unused_thread: {:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn planned_only_later_volume_not_counted_as_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "t").unwrap();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        // 更大卷里只有规划章：作者可能回到前卷补章，前卷不算封卷
+        create_thread(&paths, "排期线索", "", "main", None, Some(1)).unwrap();
+        let mut chapters = load_chapters_file(&paths).unwrap();
+        chapters
+            .chapters
+            .push(completed_chapter(None, "第一章", 1));
+        chapters.chapters.push(ChapterOutlineDef {
+            chapter_id: None,
+            title: "第二卷规划章".into(),
+            volume_order: 2,
+            summary: None,
+            goal: None,
+            beats: vec![],
+            characters: vec![],
+            threads: vec![],
+            scenes: vec![],
+            hook: None,
+            notes: None,
+            status: "planned".into(),
+        });
+        save_chapters_file(&paths, &chapters).unwrap();
+
+        let result = compile_project(dir).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| !d.message.contains("排期线索")),
+            "只有规划章的后续卷不应封前卷: {:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 }

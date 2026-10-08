@@ -23,6 +23,7 @@ pub mod worldview_file;
 pub use anchoring_file::{AnchoringFile, AnchoringFileError, UnresolvedRefDef};
 pub use chapters_file::{
     is_valid_status, ChapterOutlineDef, ChaptersFile, ChaptersFileError, VolumeGroupDef,
+    STATUS_COMPLETED, STATUS_PLANNED, STATUS_WRITING,
 };
 pub use compiler_toml::CompilerConfigFile;
 pub use entity_file::{EntityFile, EntityFileError};
