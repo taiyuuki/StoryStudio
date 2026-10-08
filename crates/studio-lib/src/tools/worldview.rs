@@ -4,6 +4,7 @@
 //! - 地理 / 势力：已统一为实体（`entities/locations/`、`entities/organizations/`），
 //!   此处只做聚合展示，增删改走 create_location / create_organization / delete_entity。
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use story_ai_runtime::{Tool, ToolDef};
@@ -31,132 +32,210 @@ impl Tool for GetWorldviewTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "get_worldview".into(),
-            description: "读取世界观设定：基础概念（worldview/concepts.toml）、体系设定（worldview/systems.toml）、\
-            地理（entities/locations/）、势力（entities/organizations/）。"
+            description: "读取世界观设定，可用 section 过滤：concepts=基础概念（worldview/concepts.toml）、\
+            systems=体系设定（worldview/systems.toml）、locations=地理（entities/locations/）、\
+            organizations=势力（entities/organizations/）。\
+            长篇后期地点/势力较多时建议按需过滤（单个地点/势力也可用 search_entities 检索、\
+            get_entity_detail 查详情），避免全量输出过长被截断。"
                 .into(),
-            parameters: object_schema(vec![]),
+            parameters: object_schema(vec![(
+                "section",
+                "string",
+                "要读取的分节：concepts / systems / locations / organizations，\
+                逗号分隔可多选（如 \"concepts,systems\"）。省略 = 全部",
+                false,
+            )]),
         }
     }
 
-    fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let selected = parse_worldview_sections(get_str_opt(arguments, "section"))?;
+        let want = |name: &str| selected.as_ref().is_none_or(|s| s.contains(name));
+
         let paths = self.ctx.paths();
-        let concepts: ConceptsFile = load_section(&paths.worldview_concepts_toml())?;
-        let systems: SystemsFile = load_section(&paths.worldview_systems_toml())?;
-        let locations = load_entities(&paths.locations_dir());
-        let organizations = load_entities(&paths.organizations_dir());
 
         let mut result = String::new();
 
         // Concepts
-        if !concepts.concepts.is_empty() {
-            result.push_str("## 基础概念\n");
-            for (i, c) in concepts.concepts.iter().enumerate() {
-                result.push_str(&format!("{}. {}", i + 1, c.name));
-                if let Some(ref k) = c.category {
-                    result.push_str(&format!(" [{k}]"));
-                }
-                result.push('\n');
-                if let Some(ref s) = c.summary {
-                    result.push_str(&format!("   {s}\n"));
-                }
-                if let Some(ref d) = c.details {
-                    result.push_str(&format!("   详情: {d}\n"));
-                }
-            }
-            result.push('\n');
+        if want("concepts") {
+            let concepts: ConceptsFile = load_section(&paths.worldview_concepts_toml())?;
+            render_concepts(&concepts, &mut result);
         }
 
         // Systems
-        if !systems.systems.is_empty() {
-            result.push_str("## 体系设定\n");
-            for (i, s) in systems.systems.iter().enumerate() {
-                result.push_str(&format!("{}. {}", i + 1, s.name));
-                if let Some(ref k) = s.kind {
-                    result.push_str(&format!(" [{k}]"));
-                }
-                result.push('\n');
-                if let Some(ref l) = s.levels {
-                    result.push_str(&format!("   等级: {l}\n"));
-                }
-                if let Some(ref r) = s.rules {
-                    result.push_str(&format!("   规则: {r}\n"));
-                }
-                if let Some(ref sm) = s.summary {
-                    result.push_str(&format!("   {sm}\n"));
-                }
-            }
-            result.push('\n');
+        if want("systems") {
+            let systems: SystemsFile = load_section(&paths.worldview_systems_toml())?;
+            render_systems(&systems, &mut result);
         }
 
         // 地理（Location 实体；父地点 ID 解析为名称展示）
-        if !locations.is_empty() {
-            let name_of = |id: &str| {
-                locations
-                    .iter()
-                    .find(|e| e.id == id)
-                    .map(|e| e.display_name.clone())
-                    .unwrap_or_else(|| id.to_string())
-            };
-            result.push_str("## 地理\n");
-            for (i, e) in locations.iter().enumerate() {
-                result.push_str(&format!("{}. {}（{}）", i + 1, e.display_name, e.id));
-                if let Some(ref geo) = e.geography {
-                    if let Some(ref k) = geo.kind {
-                        result.push_str(&format!(" [{k}]"));
-                    }
-                    if let Some(ref p) = geo.parent {
-                        result.push_str(&format!(" (上级: {})", name_of(p)));
-                    }
-                }
-                result.push('\n');
-                if let Some(ref geo) = e.geography {
-                    if let Some(ref f) = geo.features {
-                        result.push_str(&format!("   特征: {f}\n"));
-                    }
-                    if let Some(ref s) = geo.summary {
-                        result.push_str(&format!("   {s}\n"));
-                    }
-                }
-            }
-            result.push('\n');
+        if want("locations") {
+            let locations = load_entities(&paths.locations_dir());
+            render_locations(&locations, &mut result);
         }
 
         // 势力（Organization 实体）
-        if !organizations.is_empty() {
-            result.push_str("## 势力\n");
-            for (i, e) in organizations.iter().enumerate() {
-                result.push_str(&format!("{}. {}（{}）", i + 1, e.display_name, e.id));
-                if let Some(ref org) = e.org {
-                    if let Some(ref k) = org.kind {
-                        result.push_str(&format!(" [{k}]"));
-                    }
-                }
-                result.push('\n');
-                if let Some(ref org) = e.org {
-                    if let Some(ref l) = org.leader {
-                        result.push_str(&format!("   首领: {l}\n"));
-                    }
-                    if let Some(ref t) = org.territory {
-                        result.push_str(&format!("   范围: {t}\n"));
-                    }
-                    if let Some(ref idg) = org.ideology {
-                        result.push_str(&format!("   理念: {idg}\n"));
-                    }
-                    if let Some(ref s) = org.summary {
-                        result.push_str(&format!("   {s}\n"));
-                    }
-                }
-            }
-            result.push('\n');
+        if want("organizations") {
+            let organizations = load_entities(&paths.organizations_dir());
+            render_organizations(&organizations, &mut result);
         }
 
         if result.is_empty() {
-            Ok("世界观尚未创建或为空。使用 set_worldview_item 添加概念/体系，\
-            create_location / create_organization 添加地点与势力。"
-                .to_string())
+            if selected.is_some() {
+                Ok("所选分节尚未创建或为空。".to_string())
+            } else {
+                Ok("世界观尚未创建或为空。使用 set_worldview_item 添加概念/体系，\
+                create_location / create_organization 添加地点与势力。"
+                    .to_string())
+            }
         } else {
             Ok(result.trim_end().to_string())
         }
+    }
+}
+
+/// 解析 get_worldview 的 section 过滤参数。
+///
+/// 返回 `None` = 不过滤（省略 / "all" / 空串）。
+/// 支持逗号多选（中英文逗号均可）与单数别名（concept → concepts 等），
+/// 未知取值整体报错并列出合法值。
+fn parse_worldview_sections(raw: Option<String>) -> Result<Option<HashSet<String>>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut set = HashSet::new();
+    for part in raw.split([',', '，', ' ', '/']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let canonical = match part.to_ascii_lowercase().as_str() {
+            "concepts" | "concept" => "concepts",
+            "systems" | "system" => "systems",
+            "locations" | "location" | "geo" | "geography" => "locations",
+            "organizations" | "organization" | "orgs" | "factions" => "organizations",
+            "all" => return Ok(None),
+            other => {
+                return Err(format!(
+                    "未知 section: {other}（支持: concepts / systems / locations / organizations，\
+                    逗号分隔多选；省略 = 全部）"
+                ))
+            }
+        };
+        set.insert(canonical.to_string());
+    }
+    if set.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(set))
+}
+
+fn render_concepts(concepts: &ConceptsFile, result: &mut String) {
+    if !concepts.concepts.is_empty() {
+        result.push_str("## 基础概念\n");
+        for (i, c) in concepts.concepts.iter().enumerate() {
+            result.push_str(&format!("{}. {}", i + 1, c.name));
+            if let Some(ref k) = c.category {
+                result.push_str(&format!(" [{k}]"));
+            }
+            result.push('\n');
+            if let Some(ref s) = c.summary {
+                result.push_str(&format!("   {s}\n"));
+            }
+            if let Some(ref d) = c.details {
+                result.push_str(&format!("   详情: {d}\n"));
+            }
+        }
+        result.push('\n');
+    }
+}
+
+fn render_systems(systems: &SystemsFile, result: &mut String) {
+    if !systems.systems.is_empty() {
+        result.push_str("## 体系设定\n");
+        for (i, s) in systems.systems.iter().enumerate() {
+            result.push_str(&format!("{}. {}", i + 1, s.name));
+            if let Some(ref k) = s.kind {
+                result.push_str(&format!(" [{k}]"));
+            }
+            result.push('\n');
+            if let Some(ref l) = s.levels {
+                result.push_str(&format!("   等级: {l}\n"));
+            }
+            if let Some(ref r) = s.rules {
+                result.push_str(&format!("   规则: {r}\n"));
+            }
+            if let Some(ref sm) = s.summary {
+                result.push_str(&format!("   {sm}\n"));
+            }
+        }
+        result.push('\n');
+    }
+}
+
+/// 地理（Location 实体；父地点 ID 解析为名称展示）
+fn render_locations(locations: &[EntityFile], result: &mut String) {
+    if !locations.is_empty() {
+        let name_of = |id: &str| {
+            locations
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.display_name.clone())
+                .unwrap_or_else(|| id.to_string())
+        };
+        result.push_str("## 地理\n");
+        for (i, e) in locations.iter().enumerate() {
+            result.push_str(&format!("{}. {}（{}）", i + 1, e.display_name, e.id));
+            if let Some(ref geo) = e.geography {
+                if let Some(ref k) = geo.kind {
+                    result.push_str(&format!(" [{k}]"));
+                }
+                if let Some(ref p) = geo.parent {
+                    result.push_str(&format!(" (上级: {})", name_of(p)));
+                }
+            }
+            result.push('\n');
+            if let Some(ref geo) = e.geography {
+                if let Some(ref f) = geo.features {
+                    result.push_str(&format!("   特征: {f}\n"));
+                }
+                if let Some(ref s) = geo.summary {
+                    result.push_str(&format!("   {s}\n"));
+                }
+            }
+        }
+        result.push('\n');
+    }
+}
+
+/// 势力（Organization 实体）
+fn render_organizations(organizations: &[EntityFile], result: &mut String) {
+    if !organizations.is_empty() {
+        result.push_str("## 势力\n");
+        for (i, e) in organizations.iter().enumerate() {
+            result.push_str(&format!("{}. {}（{}）", i + 1, e.display_name, e.id));
+            if let Some(ref org) = e.org {
+                if let Some(ref k) = org.kind {
+                    result.push_str(&format!(" [{k}]"));
+                }
+            }
+            result.push('\n');
+            if let Some(ref org) = e.org {
+                if let Some(ref l) = org.leader {
+                    result.push_str(&format!("   首领: {l}\n"));
+                }
+                if let Some(ref t) = org.territory {
+                    result.push_str(&format!("   范围: {t}\n"));
+                }
+                if let Some(ref idg) = org.ideology {
+                    result.push_str(&format!("   理念: {idg}\n"));
+                }
+                if let Some(ref s) = org.summary {
+                    result.push_str(&format!("   {s}\n"));
+                }
+            }
+        }
+        result.push('\n');
     }
 }
 
@@ -580,5 +659,57 @@ mod tests {
             !dir.join("worldview/concepts.toml").exists(),
             "批量整体失败时不应落盘任何条目"
         );
+    }
+
+    /// section 过滤：单选 / 逗号多选 / 单数别名 / 未知值报错 / 省略全量。
+    #[test]
+    fn get_worldview_section_filter() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+
+        // 准备：1 概念 + 1 体系 + 1 地点
+        SetWorldviewItemTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                "items": "[{\"section\": \"concept\", \"name\": \"红档\", \"summary\": \"禁忌档案\"},\
+                          {\"section\": \"system\", \"name\": \"灵潮\", \"kind\": \"magic\"}]"
+            }))
+            .unwrap();
+        crate::tools::CreateLocationTool::new(ctx.clone())
+            .execute(&serde_json::json!({"name": "青云城"}))
+            .unwrap();
+
+        let tool = GetWorldviewTool::new(ctx);
+        // 省略 = 全部（默认行为不变）
+        let all = tool.execute(&serde_json::json!({})).unwrap();
+        assert!(all.contains("## 基础概念"), "{all}");
+        assert!(all.contains("## 体系设定"), "{all}");
+        assert!(all.contains("## 地理"), "{all}");
+
+        // 单选：只概念
+        let out = tool
+            .execute(&serde_json::json!({"section": "concepts"}))
+            .unwrap();
+        assert!(out.contains("## 基础概念"), "{out}");
+        assert!(!out.contains("## 体系设定"), "{out}");
+        assert!(!out.contains("## 地理"), "{out}");
+
+        // 逗号多选 + 单数别名
+        let out = tool
+            .execute(&serde_json::json!({"section": "concept,systems"}))
+            .unwrap();
+        assert!(out.contains("## 基础概念"), "{out}");
+        assert!(out.contains("## 体系设定"), "{out}");
+        assert!(!out.contains("## 地理"), "{out}");
+
+        // unknown → 明确报错
+        let err = tool
+            .execute(&serde_json::json!({"section": "characters"}))
+            .unwrap_err();
+        assert!(err.contains("未知 section"), "{err}");
+
+        // "all" 等价省略
+        let out = tool.execute(&serde_json::json!({"section": "all"})).unwrap();
+        assert!(out.contains("## 地理"), "{out}");
     }
 }

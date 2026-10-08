@@ -1270,7 +1270,7 @@ fn clamp_tool_result(raw: &str) -> String {
     format!(
         "{}\n\n⚠️ 工具结果过长（共 {total} 字），已截断只保留前 {MAX_TOOL_RESULT_CHARS} 字。\
          这通常意味着查询范围太大：请改用工具的过滤 / 范围参数（如 volume_order、status、\
-         scope、chapter_id 等）缩小到需要的部分，或分批获取；不要原样重复这次调用。",
+         scope、chapter_id、section 等）缩小到需要的部分，或分批获取；不要原样重复这次调用。",
         truncate_chars(raw, MAX_TOOL_RESULT_CHARS)
     )
 }
