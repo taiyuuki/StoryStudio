@@ -334,12 +334,20 @@ pub trait ProviderAdapter: Send + Sync {
     /// 解析响应 JSON
     fn parse_response(&self, body: &serde_json::Value) -> Result<GenerateResponse, AiError>;
 
-    /// 解析流式 SSE 数据行，返回 StreamEvent
+    /// 解析流式 SSE 数据行，返回该行产生的全部 StreamEvent
     ///
     /// `line` 是 SSE "data:" 之后的内容（已去除 "data: " 前缀）。
-    /// 返回 `None` 表示该行不包含有效数据（如 [DONE] 标记）。
-    /// 返回 `Some(StreamEvent)` 表示解析到增量或错误。
-    fn parse_stream_chunk(&self, line: &str) -> Option<StreamEvent>;
+    /// 返回空 Vec 表示该行不包含有效数据（如 [DONE] 标记）。
+    ///
+    /// 一行可能产生多个事件：单帧完整工具调用（Gemini 兼容端点把
+    /// id/name/arguments 放在同一帧）需要 ToolUseStart + ToolUseDelta
+    /// 两个事件；并行工具调用也可能在同一个 delta 里携带多个 tool_calls。
+    fn parse_stream_chunks(&self, line: &str) -> Vec<StreamEvent>;
+
+    /// 单事件兼容封装（测试与旧调用方）：取首个事件
+    fn parse_stream_chunk(&self, line: &str) -> Option<StreamEvent> {
+        self.parse_stream_chunks(line).into_iter().next()
+    }
 }
 
 // ============================================================================
@@ -749,7 +757,7 @@ impl HttpStreamClient {
                         // Stream complete — adapter should have already tracked full_text
                         continue;
                     }
-                    if let Some(event) = adapter.parse_stream_chunk(data) {
+                    for event in adapter.parse_stream_chunks(data) {
                         on_event(event);
                     }
                 }
@@ -863,8 +871,8 @@ mod tests {
         fn parse_response(&self, _body: &serde_json::Value) -> Result<GenerateResponse, AiError> {
             unreachable!()
         }
-        fn parse_stream_chunk(&self, _line: &str) -> Option<crate::provider::StreamEvent> {
-            None
+        fn parse_stream_chunks(&self, _line: &str) -> Vec<crate::provider::StreamEvent> {
+            Vec::new()
         }
     }
 

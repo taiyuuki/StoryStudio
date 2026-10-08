@@ -438,55 +438,75 @@ impl ProviderAdapter for AnthropicAdapter {
         })
     }
 
-    fn parse_stream_chunk(&self, line: &str) -> Option<StreamEvent> {
+    fn parse_stream_chunks(&self, line: &str) -> Vec<StreamEvent> {
         let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(_) => return None,
+            Err(_) => return Vec::new(),
         };
 
-        let event_type = value.get("type")?.as_str()?;
+        let Some(event_type) = value.get("type").and_then(|t| t.as_str()) else {
+            return Vec::new();
+        };
 
         match event_type {
             "content_block_start" => {
                 // tool_use 块开始：{"type":"content_block_start","index":N,
                 //   "content_block":{"type":"tool_use","id":"toolu_...","name":"tool_name"}}
-                let block = value.get("content_block")?;
-                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                    let index = value.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                    let id = block
-                        .get("id")
-                        .and_then(|i| i.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let name = block
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !id.is_empty() && !name.is_empty() {
-                        return Some(StreamEvent::ToolUseStart {
+                let Some(block) = value.get("content_block") else {
+                    return Vec::new();
+                };
+                if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                    return Vec::new();
+                }
+                let index = value.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                let id = block
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = block
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if id.is_empty() || name.is_empty() {
+                    return Vec::new();
+                }
+                let mut events = vec![StreamEvent::ToolUseStart {
+                    index,
+                    id,
+                    name,
+                    signature: None,
+                }];
+                // 部分兼容网关（如 Gemini→Anthropic 代理）不走 input_json_delta，
+                // 直接在 content_block_start 内联完整 input 对象——补发一条 Delta，
+                // 否则参数会被丢成空 {}
+                if let Some(input) = block.get("input").filter(|i| i.is_object()) {
+                    if input.as_object().is_some_and(|o| !o.is_empty()) {
+                        events.push(StreamEvent::ToolUseDelta {
                             index,
-                            id,
-                            name,
+                            partial_json: input.to_string(),
                             signature: None,
                         });
                     }
                 }
-                None
+                events
             }
             "content_block_delta" => {
-                let delta = value.get("delta")?;
+                let Some(delta) = value.get("delta") else {
+                    return Vec::new();
+                };
                 let delta_type = delta.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 match delta_type {
                     "text_delta" => {
                         // 文本增量
                         let text = delta.get("text").and_then(|t| t.as_str()).unwrap_or("");
                         if text.is_empty() {
-                            None
+                            Vec::new()
                         } else {
-                            Some(StreamEvent::Delta {
+                            vec![StreamEvent::Delta {
                                 delta: text.to_string(),
-                            })
+                            }]
                         }
                     }
                     "input_json_delta" => {
@@ -497,13 +517,13 @@ impl ProviderAdapter for AnthropicAdapter {
                             .get("partial_json")
                             .and_then(|p| p.as_str())
                             .unwrap_or("");
-                        Some(StreamEvent::ToolUseDelta {
+                        vec![StreamEvent::ToolUseDelta {
                             index,
                             partial_json: partial.to_string(),
                             signature: None,
-                        })
+                        }]
                     }
-                    _ => None,
+                    _ => Vec::new(),
                 }
             }
             "message_delta" => {
@@ -523,18 +543,18 @@ impl ProviderAdapter for AnthropicAdapter {
                     .and_then(|d| d.get("stop_reason"))
                     .and_then(|r| r.as_str())
                     .and_then(parse_anthropic_stop_reason);
-                Some(StreamEvent::Done {
+                vec![StreamEvent::Done {
                     full_text: String::new(),
                     usage: TokenUsage {
                         input_tokens,
                         output_tokens,
                     },
                     stop_reason,
-                })
+                }]
             }
-            "message_stop" => None, // stream end marker
-            "ping" => None,
-            _ => None,
+            "message_stop" => Vec::new(), // stream end marker
+            "ping" => Vec::new(),
+            _ => Vec::new(),
         }
     }
 }
@@ -927,5 +947,29 @@ mod tests {
         let line =
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
         assert!(adapter.parse_stream_chunk(line).is_none());
+    }
+
+    #[test]
+    fn parse_content_block_start_with_inline_input() {
+        // 部分兼容网关（Gemini→Anthropic 代理）不走 input_json_delta，
+        // 直接在 content_block_start 内联完整 input 对象：
+        // 应补发一条 Delta，否则参数被丢成空 {}
+        let adapter = stream_adapter();
+        let line = r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"update_thread","input":{"thread_id":"t_007","scope":"pov"}}}"#;
+        let events = adapter.parse_stream_chunks(line);
+        assert_eq!(events.len(), 2, "应产生 Start + Delta: {events:?}");
+        match &events[1] {
+            StreamEvent::ToolUseDelta {
+                index,
+                partial_json,
+                ..
+            } => {
+                assert_eq!(*index, 0);
+                let args: serde_json::Value = serde_json::from_str(partial_json).unwrap();
+                assert_eq!(args["thread_id"], "t_007");
+                assert_eq!(args["scope"], "pov");
+            }
+            other => panic!("第二条应为 ToolUseDelta，实际: {other:?}"),
+        }
     }
 }

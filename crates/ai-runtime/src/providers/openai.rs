@@ -428,9 +428,14 @@ impl ProviderAdapter for OpenAiAdapter {
                         let id = tc.get("id")?.as_str()?.to_string();
                         let func = tc.get("function")?;
                         let name = func.get("name")?.as_str()?.to_string();
-                        let args_str = func.get("arguments")?.as_str().unwrap_or("{}");
-                        let arguments: serde_json::Value =
-                            serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                        // arguments 兼容两种形态：JSON 字符串（OpenAI 标准）或
+                        // 直接内联对象（部分网关），否则对象形态会被静默丢成 {}
+                        let args_val = func.get("arguments");
+                        let arguments = args_val
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| serde_json::from_str(s).ok())
+                            .or_else(|| args_val.filter(|v| v.is_object()).cloned())
+                            .unwrap_or(serde_json::json!({}));
                         Some(ToolCall {
                             id,
                             name,
@@ -477,14 +482,19 @@ impl ProviderAdapter for OpenAiAdapter {
         })
     }
 
-    fn parse_stream_chunk(&self, line: &str) -> Option<StreamEvent> {
+    fn parse_stream_chunks(&self, line: &str) -> Vec<StreamEvent> {
         let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(_) => return None,
+            Err(_) => return Vec::new(),
         };
 
-        let choices = value.get("choices")?.as_array()?;
-        let first_choice = choices.first()?;
+        let Some(first_choice) = value
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+        else {
+            return Vec::new();
+        };
 
         // finish_reason 出现在最后一个 chunk（delta 可能为空对象）
         let finish_reason = first_choice.get("finish_reason").and_then(|r| r.as_str());
@@ -500,7 +510,7 @@ impl ProviderAdapter for OpenAiAdapter {
                 "length" => Some(StopReason::MaxTokens),
                 _ => Some(StopReason::EndTurn),
             };
-            return Some(StreamEvent::Done {
+            return vec![StreamEvent::Done {
                 full_text: String::new(),
                 usage: TokenUsage {
                     input_tokens: usage
@@ -510,48 +520,66 @@ impl ProviderAdapter for OpenAiAdapter {
                     output_tokens,
                 },
                 stop_reason,
-            });
+            }];
         }
 
-        let delta = first_choice.get("delta")?;
+        let Some(delta) = first_choice.get("delta") else {
+            return Vec::new();
+        };
 
-        // tool_calls 增量（首帧含 index+id+name，后续帧含 index+arguments 片段；
-        // Gemini 兼容端点的 thought_signature 可能在任意一帧到达）
+        let mut events: Vec<StreamEvent> = Vec::new();
+
+        // tool_calls 增量。OpenAI 原生把首帧（index+id+name，arguments 空）与
+        // 后续 arguments 片段分开；Gemini 兼容端点则常把 id/name/完整 arguments
+        // 放在同一帧、并行调用也可能挤在一个 delta 里——逐条完整解析，
+        // 不能只处理数组首个后提前 return（会丢参数或丢并行调用）。
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             for tc in tool_calls {
                 let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
                 let signature = extract_thought_signature(tc);
-                // 首帧：function.name + id
-                if let (Some(id), Some(name)) = (
-                    tc.get("id").and_then(|i| i.as_str()),
-                    tc.get("function")
-                        .and_then(|f| f.get("name"))
-                        .and_then(|n| n.as_str()),
-                ) {
-                    return Some(StreamEvent::ToolUseStart {
+                let func = tc.get("function");
+                // arguments 兼容两种形态：字符串片段（OpenAI 标准）或完整对象
+                // （部分网关单帧调用直接给对象）
+                let args_str = func
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|a| a.as_str().map(str::to_string))
+                    .or_else(|| {
+                        func.and_then(|f| f.get("arguments"))
+                            .filter(|a| a.is_object())
+                            .map(|a| a.to_string())
+                    });
+
+                // 首帧：function.name + id；同帧若已带完整/部分 arguments，
+                // 紧跟一条 Delta 补发（Gemini 单帧调用否则参数会被丢弃）
+                let is_start = matches!(
+                    (
+                        tc.get("id").and_then(|i| i.as_str()),
+                        func.and_then(|f| f.get("name")).and_then(|n| n.as_str()),
+                    ),
+                    (Some(_), Some(_))
+                );
+                if is_start {
+                    events.push(StreamEvent::ToolUseStart {
                         index,
-                        id: id.to_string(),
-                        name: name.to_string(),
-                        signature,
+                        id: tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+                        name: func
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        signature: signature.clone(),
                     });
                 }
-                // 后续帧：function.arguments 片段；签名也可能单独成帧
-                // （partial_json 为空、仅携带 signature）
-                if let Some(args) = tc
-                    .get("function")
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(|a| a.as_str())
-                {
-                    if !args.is_empty() {
-                        return Some(StreamEvent::ToolUseDelta {
-                            index,
-                            partial_json: args.to_string(),
-                            signature,
-                        });
-                    }
-                }
-                if signature.is_some() {
-                    return Some(StreamEvent::ToolUseDelta {
+                // arguments 片段（首帧同带的完整参数也走这里）
+                if let Some(args) = args_str.filter(|a| !a.is_empty()) {
+                    events.push(StreamEvent::ToolUseDelta {
+                        index,
+                        partial_json: args,
+                        signature: signature.clone(),
+                    });
+                } else if !is_start && signature.is_some() {
+                    // 签名单独成帧（partial_json 为空、仅携带 signature）
+                    events.push(StreamEvent::ToolUseDelta {
                         index,
                         partial_json: String::new(),
                         signature,
@@ -560,16 +588,16 @@ impl ProviderAdapter for OpenAiAdapter {
             }
         }
 
-        // Regular content delta
+        // Regular content delta（与 tool_calls 同帧时两者都保留）
         if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
             if !content.is_empty() {
-                return Some(StreamEvent::Delta {
+                events.push(StreamEvent::Delta {
                     delta: content.to_string(),
                 });
             }
         }
 
-        None
+        events
     }
 }
 
@@ -813,30 +841,35 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
         })
     }
 
-    fn parse_stream_chunk(&self, line: &str) -> Option<StreamEvent> {
+    fn parse_stream_chunks(&self, line: &str) -> Vec<StreamEvent> {
         let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(_) => return None,
+            Err(_) => return Vec::new(),
         };
 
         // Responses 流式事件在 data JSON 内用 type 字段标识事件类型
-        let event_type = value.get("type").and_then(|t| t.as_str())?;
+        let Some(event_type) = value.get("type").and_then(|t| t.as_str()) else {
+            return Vec::new();
+        };
 
         match event_type {
             // 文本增量
             "response.output_text.delta" => {
                 let delta = value.get("delta").and_then(|d| d.as_str()).unwrap_or("");
                 if !delta.is_empty() {
-                    return Some(StreamEvent::Delta {
+                    vec![StreamEvent::Delta {
                         delta: delta.to_string(),
-                    });
+                    }]
+                } else {
+                    Vec::new()
                 }
-                None
             }
             // 新 output item（function_call 在此声明 call_id + name）
             "response.output_item.added" => {
-                let item = value.get("item")?;
-                let item_type = item.get("type").and_then(|t| t.as_str())?;
+                let Some(item) = value.get("item") else {
+                    return Vec::new();
+                };
+                let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 if item_type == "function_call" {
                     let index = value
                         .get("output_index")
@@ -852,14 +885,15 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
                         .and_then(|n| n.as_str())
                         .unwrap_or("")
                         .to_string();
-                    return Some(StreamEvent::ToolUseStart {
+                    vec![StreamEvent::ToolUseStart {
                         index,
                         id,
                         name,
                         signature: None,
-                    });
+                    }]
+                } else {
+                    Vec::new()
                 }
-                None
             }
             // function_call arguments 增量
             "response.function_call_arguments.delta" => {
@@ -869,13 +903,14 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
                     .unwrap_or(0) as usize;
                 let delta = value.get("delta").and_then(|d| d.as_str()).unwrap_or("");
                 if !delta.is_empty() {
-                    return Some(StreamEvent::ToolUseDelta {
+                    vec![StreamEvent::ToolUseDelta {
                         index,
                         partial_json: delta.to_string(),
                         signature: None,
-                    });
+                    }]
+                } else {
+                    Vec::new()
                 }
-                None
             }
             // 流结束：携带完整 response（含 usage）
             "response.completed" => {
@@ -912,19 +947,19 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
                     Some(StopReason::EndTurn)
                 };
 
-                Some(StreamEvent::Done {
+                vec![StreamEvent::Done {
                     full_text: String::new(),
                     usage: TokenUsage {
                         input_tokens,
                         output_tokens,
                     },
                     stop_reason,
-                })
+                }]
             }
             // 其余事件（response.created / response.in_progress / response.output_item.done /
             // response.output_text.done / response.function_call_arguments.done / *.failed 等）
             // 不携带需要转发的增量，忽略。
-            _ => None,
+            _ => Vec::new(),
         }
     }
 }
@@ -1216,8 +1251,7 @@ mod tests {
             StreamEvent::ToolUseStart { signature, .. } => {
                 assert_eq!(signature.as_deref(), Some("TopLevel"));
             }
-            other => panic!("应为 ToolUseStart，实际: {other:?}"),
-        }
+            other => panic!("应为 ToolUseStart，实际: {other:?}"),        }
     }
 
     #[test]
@@ -1251,6 +1285,131 @@ mod tests {
             result.tool_calls[0].thought_signature.as_deref(),
             Some("CrICAdHtim")
         );
+    }
+
+    // —— 参数丢失回归（P0：Gemini 兼容端点单帧完整工具调用） ——
+
+    #[test]
+    fn parse_stream_single_frame_complete_tool_call() {
+        // Gemini OpenAI 兼容端点：id/name/完整 arguments 同在一帧。
+        // 旧实现首帧分支只取 id/name 后提前 return，同帧 arguments 被丢弃，
+        // 导致所有工具调用参数变成空 {}（「缺少参数」批量报错）。
+        let adapter = stream_adapter();
+        let line = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"update_thread","arguments":"{\"thread_id\":\"t_007\",\"scope\":\"pov\"}"}}]}}]}"#;
+        let events = adapter.parse_stream_chunks(line);
+        assert_eq!(events.len(), 2, "应产生 Start + Delta 两个事件: {events:?}");
+        match (&events[0], &events[1]) {
+            (
+                StreamEvent::ToolUseStart { index, name, .. },
+                StreamEvent::ToolUseDelta {
+                    index: i2,
+                    partial_json,
+                    ..
+                },
+            ) => {
+                assert_eq!(*index, 0);
+                assert_eq!(name, "update_thread");
+                assert_eq!(*i2, 0);
+                let args: serde_json::Value = serde_json::from_str(partial_json).unwrap();
+                assert_eq!(args["thread_id"], "t_007");
+                assert_eq!(args["scope"], "pov");
+            }
+            other => panic!("应为 Start + Delta，实际: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_stream_parallel_tool_calls_in_one_chunk() {
+        // 同一 delta 携带多个并行 tool_calls：逐条解析，不能只留第一个
+        let adapter = stream_adapter();
+        let line = r#"{"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"call_a","type":"function","function":{"name":"get_structure","arguments":"{\"chapter_id\":\"ch_03\"}"}},
+            {"index":1,"id":"call_b","type":"function","function":{"name":"get_threads","arguments":"{}"}}
+        ]}}]}"#;
+        let events = adapter.parse_stream_chunks(line);
+        let starts: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolUseStart { index, name, .. } => Some((*index, name.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts.len(), 2, "两个并行调用都应解析: {events:?}");
+        assert_eq!(starts[0], (0, "get_structure".to_string()));
+        assert_eq!(starts[1], (1, "get_threads".to_string()));
+        // index 0 的完整参数以 Delta 补发
+        assert!(events.iter().any(|e| matches!(e,
+            StreamEvent::ToolUseDelta { index: 0, partial_json, .. }
+                if partial_json.contains("ch_03"))));
+    }
+
+    #[test]
+    fn parse_stream_tool_call_object_arguments() {
+        // 部分网关单帧调用的 arguments 直接给 JSON 对象（而非字符串）
+        let adapter = stream_adapter();
+        let line = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"search_entities","arguments":{"query":"苏格"}}}]}}]}"#;
+        let events = adapter.parse_stream_chunks(line);
+        assert!(events.iter().any(|e| matches!(e,
+            StreamEvent::ToolUseDelta { partial_json, .. }
+                if partial_json.contains("苏格"))), "对象形态参数应转成 Delta: {events:?}");
+    }
+
+    #[test]
+    fn parse_response_object_arguments() {
+        // 非流式：arguments 为内联对象时不应被静默丢成 {}
+        let adapter = OpenAiAdapter {
+            shared: AdapterShared {
+                model: "gpt-4o".to_string(),
+                ..Default::default()
+            },
+        };
+        let response = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_x",
+                        "type": "function",
+                        "function": {"name": "search_entities", "arguments": {"query": "苏格"}}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+        let result = adapter.parse_response(&response).unwrap();
+        assert_eq!(result.tool_calls[0].arguments["query"], "苏格");
+    }
+
+    #[test]
+    fn parse_response_missing_arguments_field_yields_empty_object() {
+        // 无参工具的 arguments 字段缺失：仍应保留该调用（空参数）而非整个丢弃
+        let adapter = OpenAiAdapter {
+            shared: AdapterShared {
+                model: "gpt-4o".to_string(),
+                ..Default::default()
+            },
+        };
+        let response = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_x",
+                        "type": "function",
+                        "function": {"name": "get_project_stats"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+        let result = adapter.parse_response(&response).unwrap();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "get_project_stats");
+        assert!(result.tool_calls[0].arguments.is_object());
     }
 
     #[test]
