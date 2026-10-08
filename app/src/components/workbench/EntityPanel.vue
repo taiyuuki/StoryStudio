@@ -68,6 +68,29 @@ const aliasText = computed({
   },
 })
 
+// ── 描述性别名警示 ────────────────────────────────────────
+// 锚定层对别名做全文精确子串匹配：描述性短语（银发女/红衣人/摆的人）会把
+// 正文中任何字面相同的路人也锚到本实体。编辑时即时提示，不阻断保存。
+const DESCRIPTIVE_ALIAS_MARKERS = [
+  '银发', '白发', '黑发', '红衣', '白衣', '黑衣', '青衣', '灰袍', '白袍', '红袍',
+  '高个', '矮个', '独眼', '驼背', '胖子', '瘦子', '胡子',
+  '老者', '老妇', '老头', '妇人', '少女', '少年', '男子', '女子', '男人', '女人',
+  '男孩', '女孩', '婴儿', '中年', '年轻', '年迈',
+]
+
+const riskyAliases = computed(() => {
+  const flagged = new Set<string>()
+  for (const a of draft.aliases) {
+    if (DESCRIPTIVE_ALIAS_MARKERS.some((m) => a.includes(m))) {
+      flagged.add(a)
+    } else if (a.length <= 4 && /[女男人者汉]$/.test(a)) {
+      // 短且以泛称收尾（银发女/红衣人/摆的人/黑衣者）：无专名信号的别名
+      flagged.add(a)
+    }
+  }
+  return [...flagged]
+})
+
 async function create() {
   const name = newName.value.trim()
   if (!name) {
@@ -271,6 +294,11 @@ function label(r: string): string {
         <label>别名</label>
         <input v-model="aliasText" placeholder="多个别名用、分隔" />
       </div>
+      <p v-if="riskyAliases.length" class="alias-warn">
+        <i class="fa-solid fa-triangle-exclamation" />
+        「{{ riskyAliases.join('、') }}」是描述性或泛称别的写法：锚定按字面全文匹配，
+        正文里路人角色的同类描述也会被算作本角色的出场。若非专属称呼，建议删去。
+      </p>
 
       <template v-if="activeTab === 'character' && draft.profile">
         <div class="d-row d-grid">
@@ -724,6 +752,23 @@ function label(r: string): string {
   }
 }
 
+// 描述性别名警示（不阻断保存，只提示误锚风险）
+.alias-warn {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  margin: -8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--state-warning);
+
+  i {
+    flex-shrink: 0;
+    margin-top: 3px;
+    font-size: 11px;
+  }
+}
+
 .d-row {
   display: flex;
   flex-direction: column;
@@ -734,7 +779,6 @@ function label(r: string): string {
     color: var(--ink-sec);
     letter-spacing: 0.06em;
   }
-
   input,
   textarea,
   select {
