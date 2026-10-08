@@ -170,6 +170,65 @@ impl GetWritingGuideTool {
 
         None
     }
+
+    /// 读取 outline.toml 的 story.genre 作为默认类型标签。
+    ///
+    /// 混合题材（如「武侠悬疑」）先按整串解析；解析不到再按分隔符拆分，
+    /// 仍不行则扫描已知题材词的子串命中。
+    fn outline_genre_tags(&self) -> Vec<String> {
+        let Ok(content) = std::fs::read_to_string(self.ctx.paths().outline_toml()) else {
+            return Vec::new();
+        };
+        let Ok(outline) = story_project_format::OutlineFile::from_toml_str(&content) else {
+            return Vec::new();
+        };
+        let Some(genre) = outline
+            .story
+            .genre
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+        else {
+            return Vec::new();
+        };
+
+        // 整串能解析（含 normalize 表里的复合写法，如「奇幻玄幻」）
+        if self.resolve_guide(genre).is_some() {
+            return vec![genre.to_string()];
+        }
+        // 按常见分隔符拆分（如「悬疑/推理」「都市·异能」）
+        let split: Vec<String> = genre
+            .split(['/', '·', '、', '+', '，', ',', ' '])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if split.len() > 1 {
+            return split;
+        }
+        // 无分隔符的连写混合题材：扫描已知题材词
+        split_compound_genre(genre)
+    }
+}
+
+/// 在无分隔符的复合题材串（如「武侠悬疑」）中扫描已知题材词。
+/// 按内置指导的固定顺序输出，保证结果稳定。
+fn split_compound_genre(genre: &str) -> Vec<String> {
+    const KNOWN_TAGS: &[&str] = &[
+        "武侠", "悬疑", "推理", "言情", "奇幻", "玄幻", "都市", "异能", "科幻", "历史", "游戏",
+        "电竞", "军事", "仙侠", "修真", "灵异", "惊悚", "轻小说", "现实",
+    ];
+    let hits: Vec<&str> = KNOWN_TAGS
+        .iter()
+        .copied()
+        .filter(|t| genre.contains(t))
+        .collect();
+    // 至少命中两个才算「复合」；只命中一个时整串本来就是未知题材，交给上层报 missing
+    if hits.len() >= 2 {
+        hits.into_iter().map(str::to_string).collect()
+    } else {
+        vec![genre.to_string()]
+    }
 }
 
 impl Tool for GetWritingGuideTool {
@@ -180,7 +239,8 @@ impl Tool for GetWritingGuideTool {
                 内置类型：武侠/悬疑推理/言情/奇幻玄幻/都市异能/科幻/历史/游戏电竞/军事/仙侠修真/\
                 灵异惊悚/轻小说/现实题材。动笔前、遇到类型相关的叙事决策（如武侠的打斗写法、\
                 悬疑的线索铺排、都市文的打脸节奏）时调用。支持多标签聚合：\
-                如 [\"武侠\",\"悬疑\"] 会返回两份指导。项目 guides/ 目录可放置同名 .md 覆盖内置内容。"
+                如 [\"武侠\",\"悬疑\"] 会返回两份指导。省略 genres 时自动使用 outline.toml \
+                的题材（story.genre）。项目 guides/ 目录可放置同名 .md 覆盖内置内容。"
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -190,17 +250,16 @@ impl Tool for GetWritingGuideTool {
                         "items": { "type": "string" },
                         "description": "作品类型标签。常用值：武侠、悬疑、言情、奇幻、玄幻、仙侠、\
                             都市、异能、科幻、历史、游戏、电竞、军事、灵异、轻小说、现实。\
-                            可从 outline.story.genre 推断；混合类型传多个标签。"
+                            混合类型传多个标签；省略时使用 outline.story.genre。"
                     }
-                },
-                "required": ["genres"]
+                }
             }),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         // 接受数组；也容错接受单个字符串（转成单元素数组）
-        let genres: Vec<String> =
+        let mut genres: Vec<String> =
             if let Some(arr) = arguments.get("genres").and_then(|v| v.as_array()) {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
@@ -221,8 +280,18 @@ impl Tool for GetWritingGuideTool {
                 }
             };
 
+        // 缺参回退：outline.toml 的题材（story.genre）
+        let mut used_outline_fallback = false;
         if genres.is_empty() {
-            return Err("缺少参数: genres（类型标签数组，如 [\"武侠\",\"悬疑\"]）".to_string());
+            genres = self.outline_genre_tags();
+            used_outline_fallback = !genres.is_empty();
+        }
+
+        if genres.is_empty() {
+            return Err(
+                "缺少参数: genres（类型标签数组，如 [\"武侠\",\"悬疑\"]；项目未设置 outline.toml 题材，无法自动回退）"
+                    .to_string(),
+            );
         }
 
         let mut sections: Vec<String> = Vec::new();
@@ -244,6 +313,12 @@ impl Tool for GetWritingGuideTool {
         }
 
         let mut out = String::new();
+        if used_outline_fallback {
+            out.push_str(&format!(
+                "（未传 genres，已按 outline.toml 题材回退：{}）\n\n",
+                genres.join("、")
+            ));
+        }
         if !sections.is_empty() {
             out.push_str(&sections.join("\n\n---\n\n"));
         }
@@ -445,8 +520,43 @@ mod tests {
         let ctx = ToolContext::new(dir.path());
         let tool = GetWritingGuideTool::new(ctx);
 
+        // 无 outline.toml 也无 genres：仍报错
         let args = serde_json::json!({"genres": []});
         assert!(tool.execute(&args).is_err());
+        assert!(tool.execute(&serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn tool_falls_back_to_outline_genre() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("outline.toml"),
+            "[story]\ngenre = \"武侠\"\n",
+        )
+        .unwrap();
+        let ctx = ToolContext::new(dir.path());
+        let tool = GetWritingGuideTool::new(ctx);
+
+        let result = tool.execute(&serde_json::json!({})).unwrap();
+        assert!(result.contains("江湖氛围"), "应回退到 outline 题材: {result}");
+        assert!(result.contains("已按 outline.toml 题材回退"), "got: {result}");
+    }
+
+    #[test]
+    fn tool_falls_back_to_compound_outline_genre() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("outline.toml"),
+            "[story]\ngenre = \"武侠悬疑\"\n",
+        )
+        .unwrap();
+        let ctx = ToolContext::new(dir.path());
+        let tool = GetWritingGuideTool::new(ctx);
+
+        // 无分隔符的复合题材：拆分为武侠 + 悬疑两份指导
+        let result = tool.execute(&serde_json::json!({})).unwrap();
+        assert!(result.contains("江湖氛围"), "got: {result}");
+        assert!(result.contains("线索公平性"), "got: {result}");
     }
 
     #[test]
