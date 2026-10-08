@@ -1381,12 +1381,20 @@ fn collect_chapter_characters(
         .chapters
         .iter()
         .find(|c| c.chapter_id.as_deref() == Some(chapter_id))?;
-    if outline.characters.is_empty() {
+
+    // 脉络名单 ∪ POV：POV 未列入名单时也补入（写场景时最需要其速查要点）
+    let mut ids: Vec<String> = outline.characters.clone();
+    if let Some(pov) = pov_id {
+        if !ids.iter().any(|c| c == pov) {
+            ids.push(pov.to_string());
+        }
+    }
+    if ids.is_empty() {
         return None;
     }
 
-    let mut lines = Vec::with_capacity(outline.characters.len());
-    for cid in &outline.characters {
+    let mut lines = Vec::with_capacity(ids.len());
+    for cid in &ids {
         let resolved = semantic.get(&StableId::new_unchecked(cid));
         let entry = match resolved {
             Some(node) => {
@@ -1398,14 +1406,53 @@ fn collect_chapter_characters(
             }
             None => format!("{cid}（档案缺失）"),
         };
+        // 词表速查：外貌/习惯一行带过（自由文本压平、截断控 token）
+        let codex = appearance_habits_brief(&ctx.paths(), cid);
+        let codex_part = codex.map(|c| format!("｜{c}")).unwrap_or_default();
         let marked = if pov_id == Some(cid.as_str()) {
-            format!("    - {entry} [POV]")
+            format!("    - {entry} [POV]{codex_part}")
         } else {
-            format!("    - {entry}")
+            format!("    - {entry}{codex_part}")
         };
         lines.push(marked);
     }
     Some(lines.join("\n") + "\n")
+}
+
+/// 角色档案的外貌/习惯速查行（如「外貌: 灰白长袍｜习惯: 口头禅…」）。
+/// 多行自由文本压平为单行并截断；无外貌也无习惯时返回 None。
+fn appearance_habits_brief(paths: &story_project_format::ProjectPaths, cid: &str) -> Option<String> {
+    let path = paths.file_for_id(cid)?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let entity = story_project_format::EntityFile::from_toml_str(&content).ok()?;
+    let profile = entity.profile.as_ref()?;
+
+    let flat = |s: &str| {
+        let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        truncate_chars(&collapsed, 50)
+    };
+    let mut parts = Vec::new();
+    if let Some(a) = profile.appearance.as_deref().filter(|a| !a.trim().is_empty()) {
+        parts.push(format!("外貌: {}", flat(a)));
+    }
+    if let Some(h) = profile.habits.as_deref().filter(|h| !h.trim().is_empty()) {
+        parts.push(format!("习惯: {}", flat(h)));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("｜"))
+    }
+}
+
+/// 按字符数截断（中文友好），超出加省略号
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{truncated}…")
+    }
 }
 
 // ============================================================================
@@ -1927,6 +1974,61 @@ status = "writing"
             result.contains("林风（c_0001") && result.contains("[POV]"),
             "got: {result}"
         );
+    }
+
+    #[test]
+    fn get_scene_context_includes_appearance_habits() {
+        // 词表速查：涉及角色行的外貌/习惯要点；POV 未列入脉络名单时也补入
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            r#"id = "c_0001"
+display_name = "林风"
+aliases = []
+
+[profile]
+appearance = "身长七尺，眉目清朗"
+habits = "口头禅『不过如此』"
+"#,
+        )
+        .unwrap();
+
+        let structure = r#"[book]
+id = "b_root"
+title = "测试小说"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[scene.sc_01_01]
+title = "开场"
+pov = "c_0001"
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        // 脉络未列任何角色：POV 也应补入并带速查要点
+        let chapters = r#"[[chapters]]
+chapter_id = "ch_01"
+title = "第一章"
+status = "writing"
+"#;
+        std::fs::write(dir.join("chapters.toml"), chapters).unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = GetSceneContextTool::new(ctx);
+        let result = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+
+        assert!(result.contains("本章涉及角色"), "got: {result}");
+        assert!(result.contains("[POV]"), "POV 应补入角色清单: {result}");
+        assert!(result.contains("外貌: 身长七尺"), "got: {result}");
+        assert!(result.contains("习惯: 口头禅"), "got: {result}");
     }
 
     #[test]
