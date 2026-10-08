@@ -977,26 +977,70 @@ impl GetCharacterStateTool {
     }
 }
 
+/// 写作最前沿场景：阅读序中最后一个设置了 POV 的场景。
+///
+/// 供缺参工具（如 get_character_state 未传 entity_id）做默认回退——
+/// 阅读序的末尾即写作进度的最前沿，其 POV 通常是此刻笔下的角色。
+fn frontier_scene_with_pov(document: &story_ir::DocumentGraph) -> Option<&story_ir::SceneNode> {
+    document
+        .all_nodes()
+        .filter_map(|(_, node)| match node {
+            story_ir::DocNode::Scene(s) => Some(s),
+            _ => None,
+        })
+        .filter(|s| s.pov.is_some())
+        .max_by_key(|s| document.reading_index(&s.id).unwrap_or(0))
+}
+
 impl Tool for GetCharacterStateTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "get_character_state".into(),
             description: "获取某角色的当前状态快照：聚合所有 active 断言（年龄/存活/持有物/位置/\
             身份等）+ 关系网 + 最近出场。用于写涉及该角色的场景前，快速了解其当前状态，\
-            避免描述前后矛盾。"
+            避免描述前后矛盾。省略 entity_id 时默认取写作最前沿场景的 POV 角色。"
                 .into(),
             parameters: object_schema(vec![(
                 "entity_id",
                 "string",
-                "角色或实体 ID（如 c_0001）",
-                true,
+                "角色或实体 ID（如 c_0001）；省略则取写作最前沿场景的 POV",
+                false,
             )]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let entity_id = get_str(arguments, "entity_id")?;
         let parse_output = self.ctx.parse()?;
+
+        // 缺参回退：写作最前沿场景（阅读序最后一个设了 POV 的场景）的 POV 角色
+        let (entity_id, fallback_note) = match get_str_opt(arguments, "entity_id") {
+            Some(id) => (id, String::new()),
+            None => {
+                let scene = frontier_scene_with_pov(&parse_output.ir.document).ok_or_else(
+                    || {
+                        "缺少参数: entity_id（项目中也无线索场景可回退——\
+                          请指定角色 ID，如 c_0001）"
+                            .to_string()
+                    },
+                )?;
+                let pov = scene.pov.as_ref().unwrap();
+                let pov_id = pov.as_str().to_string();
+                let title = scene
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| pov_id.clone());
+                let name = parse_output
+                    .ir
+                    .semantic
+                    .get(pov)
+                    .map(|n| n.display_name().to_string())
+                    .unwrap_or_else(|| pov_id.clone());
+                (
+                    pov_id,
+                    format!("（未指定 entity_id，默认取写作最前沿场景「{title}」的 POV：{name}）\n\n"),
+                )
+            }
+        };
         let sid = StableId::new_unchecked(&entity_id);
 
         // 实体存在性校验
@@ -1008,6 +1052,7 @@ impl Tool for GetCharacterStateTool {
             .ok_or_else(|| format!("实体 '{entity_id}' 不存在"))?;
 
         let mut out = String::new();
+        out.push_str(&fallback_note);
         out.push_str(&format!("角色状态快照: {}({})\n", entity_name, entity_id));
 
         // 档案摘要（写前保护）：即使角色从未出场（断言/关系/出场全空），
@@ -1848,6 +1893,68 @@ fragments = ["f_0001"]
         assert!(result.contains("叶知秋"));
         assert!(result.contains("无 active 断言"));
         assert!(result.contains("无关系记录"));
+    }
+
+    #[test]
+    fn get_character_state_defaults_to_frontier_pov() {
+        // 缺参回退：取阅读序最后一个设了 POV 的场景（写作最前沿）的 POV 角色
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+
+        let structure = r#"[book]
+id = "b_root"
+title = "测试小说"
+chapters = ["ch_01", "ch_02"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[chapter.ch_02]
+title = "第二章"
+scenes = ["sc_02_01"]
+
+[scene.sc_01_01]
+title = "开场"
+pov = "c_0001"
+
+[scene.sc_02_01]
+title = "夜探"
+pov = "c_0002"
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+        std::fs::create_dir_all(dir.join("entities/characters")).ok();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"林风\"\naliases = []\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0002.toml"),
+            "id = \"c_0002\"\ndisplay_name = \"叶知秋\"\naliases = []\n",
+        )
+        .unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = GetCharacterStateTool::new(ctx);
+        let result = tool.execute(&serde_json::json!({})).unwrap();
+
+        // 最前沿场景是 sc_02_01（第二章），POV 为叶知秋，而非第一章的林风
+        assert!(result.contains("夜探"), "应注明回退来源场景: {result}");
+        assert!(result.contains("叶知秋"), "got: {result}");
+        assert!(!result.contains("林风"), "不应取第一章 POV: {result}");
+    }
+
+    #[test]
+    fn get_character_state_no_pov_fallback_errors() {
+        // 无任何场景设 POV 时，缺参仍报错且提示明确
+        let tmp = setup_test_project();
+        write_fixture_with_summary(tmp.path()); // 场景无 pov
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = GetCharacterStateTool::new(ctx);
+        let result = tool.execute(&serde_json::json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("缺少参数"));
     }
 
     // —— get_project_stats ——
