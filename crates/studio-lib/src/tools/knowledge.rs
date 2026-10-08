@@ -1139,7 +1139,9 @@ impl Tool for EditFragmentTextTool {
                 "精准修改片段正文的局部内容：在指定片段中搜索 old_text，替换为 new_text。\
             适用于只改几句话或一个段落的场景（比 rewrite_fragment 更精确可控，不依赖 LLM 改写）。\
             ⚠️ 参数顺序勿颠倒：old_text 是正文里【已有】的文字，new_text 是【要改成】的文字。\
-            ⚠️ old_text 必须与正文中逐字一致（含空格、标点、换行），建议先 read_fragment_text 确认原文。\
+            ⚠️ old_text 应从正文中原样复制（先 read_scene_full_text / read_fragment_text 取原文）。\
+            匹配为精确优先，失败自动模糊兜底：容忍空白/换行/全角空格差异与中英文引号互换，\
+            但其余文字与标点须逐字一致。\
             默认要求 old_text 在正文中唯一出现；若多次出现需加 replace_all=true（否则报错并列出所有位置）。\
             要覆盖整篇正文请用 write_fragment_text，要续写请用 append_fragment_text。"
                     .into(),
@@ -1153,7 +1155,7 @@ impl Tool for EditFragmentTextTool {
                 (
                     "old_text",
                     "string",
-                    "要被替换的原文片段（必须与正文中逐字一致，含标点/空格/换行）",
+                    "要被替换的原文片段，从正文中原样复制。精确匹配优先，失败自动容忍空白/换行/引号差异，其余须逐字一致",
                     true,
                 ),
                 (
@@ -1218,9 +1220,10 @@ impl Tool for EditFragmentTextTool {
                 _ => {
                     // 模糊匹配也失败 → 找最接近的片段帮助定位
                     let hint = find_closest_excerpt(&frag.text, &old_text);
-                    let mut msg = "old_text 未在正文中找到（精确匹配和模糊匹配均失败）。\n\
-                        可能原因：不可见字符差异、Unicode 规范化（全角/半角）、标点变体。\n\
-                        建议：用 read_fragment_text 重新读取，复制精确文本。\n"
+                    let mut msg = "old_text 未在正文中找到（精确匹配和模糊匹配均失败；\
+                        模糊匹配已容忍空白/换行差异及常见中英文标点互换）。\n\
+                        可能原因：不可见字符差异、罕见的标点/符号变体、文字本身有出入。\n\
+                        建议：用 read_scene_full_text / read_fragment_text 重新读取，复制精确文本。\n"
                         .to_string();
                     // 填反检测：old_text 找不到而 new_text 能在正文中精确找到，
                     // 十有八九是两个参数互换了（反向替换的前兆）
@@ -1241,7 +1244,7 @@ impl Tool for EditFragmentTextTool {
         };
 
         if matched_via_fuzzy {
-            eprintln!("[edit_fragment_text] {fragment_id} 使用了模糊匹配（空白容错）");
+            eprintln!("[edit_fragment_text] {fragment_id} 使用了模糊匹配（空白/标点容错）");
         }
 
         if ranges.len() > 1 && !replace_all {
@@ -1373,6 +1376,14 @@ fn normalize_char(c: char) -> char {
     match c {
         '\u{201C}' | '\u{201D}' => '"',  // 中文双引号 "" → "
         '\u{2018}' | '\u{2019}' => '\'', // 中文单引号 '' → '
+        '，' => ',',
+        '。' => '.',
+        '；' => ';',
+        '：' => ':',
+        '（' => '(',
+        '）' => ')',
+        '！' => '!',
+        '？' => '?',
         _ => c,
     }
 }
@@ -3068,6 +3079,36 @@ fragments = []
         let content = std::fs::read_to_string(tmp.path().join("fragments/f_0001.md")).unwrap();
         assert!(content.contains("推开大门"));
         assert!(content.contains("屋里很暗"));
+    }
+
+    #[test]
+    fn edit_fuzzy_matches_fullwidth_punctuation_variants() {
+        // 模型输出的半角标点（, . ( )）应匹配正文的全角标点（，。（））
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let create = WriteFragmentTextTool::new(ctx.clone());
+        create
+            .execute(&serde_json::json!({
+                "scene_id": "sc_01_01",
+                "text": "他压低声音说（别出声），然后熄了灯。"
+            }))
+            .unwrap();
+
+        let tool = EditFragmentTextTool::new(ctx);
+        let result = tool
+            .execute(&serde_json::json!({
+                "fragment_id": "f_0001",
+                "old_text": "他压低声音说(别出声), 然后熄了灯.",
+                "new_text": "他低声道（嘘），吹熄了灯。"
+            }))
+            .unwrap();
+        assert!(result.contains("已修改"), "{result}");
+
+        let content = std::fs::read_to_string(tmp.path().join("fragments/f_0001.md")).unwrap();
+        assert!(content.contains("吹熄了灯"), "{content}");
+        assert!(!content.contains("别出声"), "{content}");
     }
 
     #[test]
