@@ -153,6 +153,8 @@ pub struct ThreadDto {
     pub goal: Option<String>,
     /// main | minor
     pub priority: String,
+    /// 可见性范围：reader（默认，明线）| pov（暗线：回收不要求先揭示）
+    pub scope: Option<String>,
     /// 计划埋设卷号（None = 全书长线）
     pub due_volume: Option<u32>,
     pub tags: Vec<String>,
@@ -683,6 +685,7 @@ pub fn to_thread_dto(t: &ThreadDef) -> ThreadDto {
         description: t.description.clone(),
         goal: t.goal.clone(),
         priority: t.priority.clone(),
+        scope: t.scope.clone(),
         due_volume: t.due_volume,
         tags: t.tags.clone(),
         planted_at: t.planted_at.clone(),

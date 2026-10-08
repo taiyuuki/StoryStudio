@@ -127,6 +127,7 @@ pub fn run() {
             commands::save_entity,
             commands::merge_entities,
             commands::resolve_unresolved,
+            commands::ignore_unresolved_refs,
             commands::add_relation,
             commands::remove_relation,
             // 叙事线索

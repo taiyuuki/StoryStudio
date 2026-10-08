@@ -331,6 +331,16 @@ pub fn resolve_unresolved(
     .map_err(e)
 }
 
+/// 批量忽略未锚定指代（一次性背景人物等低价值代称）
+#[tauri::command]
+pub fn ignore_unresolved_refs(
+    root: String,
+    refs: Vec<(String, String)>,
+) -> R<String> {
+    mutations::resolve_unresolved_refs(&paths(&root), &refs, "ignore", None, None, None, None)
+        .map_err(e)
+}
+
 // ============================================================================
 // 叙事线索
 // ============================================================================
@@ -342,6 +352,7 @@ pub fn create_thread(
     description: String,
     priority: String,
     due_volume: Option<u32>,
+    scope: Option<String>,
 ) -> R<ThreadDto> {
     let id = mutations::create_thread(
         &paths(&root),
@@ -350,6 +361,7 @@ pub fn create_thread(
         &priority,
         None,
         due_volume,
+        scope.as_deref(),
     )
     .map_err(e)?;
     load_thread(&root, &id)
@@ -363,6 +375,7 @@ pub fn update_thread(
     description: Option<String>,
     goal: Option<String>,
     priority: Option<String>,
+    scope: Option<String>,
     // 计划埋设卷号：不传 = 不变；0 = 清除（恢复全书长线）；n = 设为第 n 卷
     due_volume: Option<u32>,
 ) -> R<()> {
@@ -381,6 +394,7 @@ pub fn update_thread(
         priority.as_deref(),
         None,
         due,
+        scope.as_deref(),
     )
     .map_err(e)
     .map(|_| ())
