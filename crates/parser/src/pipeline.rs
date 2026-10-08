@@ -360,6 +360,7 @@ fn load_threads(
             description: def.description.clone(),
             goal: def.goal.clone(),
             priority: story_ir::ThreadPriority::from_str(&def.priority),
+            scope: story_ir::ThreadScope::from_str(def.scope.as_deref().unwrap_or("reader")),
             tags: def.tags.clone(),
             assertions: def.assertions.iter().map(StableId::new_unchecked).collect(),
             planted_at: def.planted_at.as_ref().map(StableId::new_unchecked),

@@ -30,6 +30,10 @@ pub struct ThreadDef {
     /// 优先级：main | minor（默认 minor）
     #[serde(default = "default_priority")]
     pub priority: String,
+    /// 可见性范围：reader（默认，面向读者的明线）| pov（暗线：POV 私人闭环，
+    /// 允许 planted 直接 resolved，不触发「已回收未揭示」告警）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// 计划埋设卷号（1-based，对应 chapters.toml 的 volume_order）。
     /// 未设置视为全书长线；已到卷仍未埋设时诊断升级为「本卷该埋未埋」。
     #[serde(default, skip_serializing_if = "Option::is_none")]

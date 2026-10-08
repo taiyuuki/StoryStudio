@@ -776,7 +776,7 @@ fn scene_time_of_fragment(
 /// 检查项（RFC-0017 §7.1）：
 /// - premature_reveal: revealed_at 早于 planted_at → Error
 /// - thread_resolve_cycle: resolves 图存在环 → Error
-/// - resolve_without_reveal: resolved_at 有但 revealed_at 无 → Warning
+/// - resolve_without_reveal: resolved_at 有但 revealed_at 无 → Warning（scope=pov 暗线豁免）
 /// - orphan_thread_ref: 引用不存在的 Entity/Scene/Assertion → Warning
 /// - unused_thread: Planned 状态到全书结束 → Warning(main)/Info(minor)
 /// - abandoned_thread: abandoned=true → Info
@@ -858,8 +858,13 @@ impl Rule for ThreadChecker {
                 }
             }
 
-            // resolve_without_reveal → Warning
-            if thread.resolved_at.is_some() && thread.revealed_at.is_none() {
+            // resolve_without_reveal → Warning。
+            // 暗线（scope = pov）豁免：POV 私人闭环允许 planted 直接走向 resolved，
+            // 无需面向读者 revealed（RFC-0017 状态机的明线假设不适用于暗线）
+            if thread.resolved_at.is_some()
+                && thread.revealed_at.is_none()
+                && thread.scope != story_ir::ThreadScope::Pov
+            {
                 ctx.warning(
                     self.id(),
                     "resolve_without_reveal",
@@ -1514,6 +1519,7 @@ mod tests {
             description: None,
             goal: None,
             priority: story_ir::ThreadPriority::Main,
+            scope: story_ir::ThreadScope::Reader,
             tags: vec![],
             assertions: vec![],
             planted_at: Some(StableId::new_unchecked(planted)),
@@ -1525,6 +1531,35 @@ mod tests {
             knowledge: vec![],
             relationships: vec![],
         }
+    }
+
+    #[test]
+    fn pov_scope_thread_resolves_without_reveal_silently() {
+        // 暗线（scope=pov）：planted 直接 resolved 是合法的私人闭环，不告警
+        let ir = ir_with_scenes(&["sc_1", "sc_2"]);
+        let mut tc = story_ir::ThreadCollection::default();
+        let mut t = thread_with("sc_1", "sc_1");
+        t.scope = story_ir::ThreadScope::Pov;
+        t.revealed_at = None;
+        t.resolved_at = Some(StableId::new_unchecked("sc_2"));
+        tc.insert(t);
+        let codes = run_rule_with_threads(&ThreadChecker, &ir, &tc);
+        assert!(
+            !codes.contains(&"resolve_without_reveal".to_string()),
+            "暗线不应触发 resolve_without_reveal: {codes:?}"
+        );
+
+        // 明线（默认 reader）：同样状态应告警
+        let mut tc2 = story_ir::ThreadCollection::default();
+        let mut t2 = thread_with("sc_1", "sc_1");
+        t2.revealed_at = None;
+        t2.resolved_at = Some(StableId::new_unchecked("sc_2"));
+        tc2.insert(t2);
+        let codes2 = run_rule_with_threads(&ThreadChecker, &ir, &tc2);
+        assert!(
+            codes2.contains(&"resolve_without_reveal".to_string()),
+            "明线应触发 resolve_without_reveal: {codes2:?}"
+        );
     }
 
     #[test]

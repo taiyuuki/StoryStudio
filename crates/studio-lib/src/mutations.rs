@@ -2871,6 +2871,7 @@ pub fn create_thread(
     priority: &str,
     planted_at: Option<&str>,
     due_volume: Option<u32>,
+    scope: Option<&str>,
 ) -> Result<String, StudioError> {
     let threads_path = paths.root().join("threads.toml");
     let mut file: ThreadsFile = ThreadsFile::load_or_default(&threads_path)?;
@@ -2894,6 +2895,8 @@ pub fn create_thread(
             } else {
                 priority.to_string()
             },
+            // 仅暗线落盘 scope 字段，明线（reader）保持缺省
+            scope: (scope.map(str::trim) == Some("pov")).then(|| "pov".to_string()),
             due_volume: due_volume.filter(|v| *v > 0),
             planted_at: planted_at.map(|s| s.to_string()),
             revealed_at: None,
@@ -3004,6 +3007,7 @@ pub fn update_thread(
     priority: Option<&str>,
     tags: Option<&[String]>,
     due_volume: Option<Option<u32>>,
+    scope: Option<&str>,
 ) -> Result<Vec<&'static str>, StudioError> {
     let threads_path = paths.threads_toml();
     let mut file: ThreadsFile = ThreadsFile::load_or_default(&threads_path)?;
@@ -3052,6 +3056,17 @@ pub fn update_thread(
         // None=全书长线（清除），Some(n)=计划第 n 卷埋设（0 视为清除）
         thread.due_volume = v.filter(|n| *n > 0);
         changed.push("due_volume");
+    }
+    if let Some(v) = scope {
+        // reader/空串 = 恢复明线（清除字段），pov = 暗线
+        if !matches!(v.trim(), "pov" | "reader" | "") {
+            return Err(StudioError::Config(format!(
+                "非法的线索范围 '{}'，应为 pov / reader",
+                v.trim()
+            )));
+        }
+        thread.scope = (v.trim() == "pov").then(|| "pov".to_string());
+        changed.push("scope");
     }
 
     file.save(&threads_path)?;
@@ -3538,7 +3553,7 @@ mod tests {
         assertions.save(&paths.assertions_toml()).unwrap();
 
         // 线索：观察者为 placeholder
-        let t_id = create_thread(&paths, "真凶线", "描述", "main", Some(&sc2), None).unwrap();
+        let t_id = create_thread(&paths, "真凶线", "描述", "main", Some(&sc2), None, None).unwrap();
         let mut threads = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
         threads.threads[0].knowledge.push(
             story_project_format::threads_file::KnowledgeDef {
@@ -4035,7 +4050,7 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id = create_thread(&paths, "伏笔", "测试描述", "main", None, None).unwrap();
+        let id = create_thread(&paths, "伏笔", "测试描述", "main", None, None, None).unwrap();
         assert_eq!(id, "t_001");
 
         let path = paths.root().join("threads.toml");
@@ -4050,7 +4065,7 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id = create_thread(&paths, "原标题", "原描述", "minor", None, None).unwrap();
+        let id = create_thread(&paths, "原标题", "原描述", "minor", None, None, None).unwrap();
 
         // 修改部分字段
         let changed = update_thread(
@@ -4061,6 +4076,7 @@ mod tests {
             Some("击败反派"),
             Some("main"),
             Some(&["foreshadowing".into(), "identity".into()]),
+            None,
             None,
         )
         .unwrap();
@@ -4077,7 +4093,7 @@ mod tests {
 
         // 非法 priority 被拒绝
         let err =
-            update_thread(&paths, &id, None, None, None, Some("bogus"), None, None).unwrap_err();
+            update_thread(&paths, &id, None, None, None, Some("bogus"), None, None, None).unwrap_err();
         assert!(matches!(err, StudioError::Config(_)));
 
         // 修改 description；goal 传空串 = 清除
@@ -4090,6 +4106,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(changed, vec!["description", "goal"]);
@@ -4099,33 +4116,51 @@ mod tests {
         assert_eq!(t.goal, None);
 
         // description 传空串 = 清除；title 空串被拒绝
-        update_thread(&paths, &id, None, Some(""), None, None, None, None).unwrap();
+        update_thread(&paths, &id, None, Some(""), None, None, None, None, None).unwrap();
         let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
         assert_eq!(
             file.threads.iter().find(|t| t.id == id).unwrap().description,
             None
         );
-        let err = update_thread(&paths, &id, Some("  "), None, None, None, None, None).unwrap_err();
+        let err = update_thread(&paths, &id, Some("  "), None, None, None, None, None, None).unwrap_err();
         assert!(matches!(err, StudioError::Config(_)));
 
         // 不存在的线索
         let err =
-            update_thread(&paths, "t_999", Some("x"), None, None, None, None, None).unwrap_err();
+            update_thread(&paths, "t_999", Some("x"), None, None, None, None, None, None).unwrap_err();
         assert!(matches!(err, StudioError::NotFound(_)));
 
         // due_volume 设置与清除
-        update_thread(&paths, &id, None, None, None, None, None, Some(Some(2))).unwrap();
+        update_thread(&paths, &id, None, None, None, None, None, Some(Some(2)), None).unwrap();
         let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
         assert_eq!(
             file.threads.iter().find(|t| t.id == id).unwrap().due_volume,
             Some(2)
         );
-        update_thread(&paths, &id, None, None, None, None, None, Some(None)).unwrap();
+        update_thread(&paths, &id, None, None, None, None, None, Some(None), None).unwrap();
         let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
         assert_eq!(
             file.threads.iter().find(|t| t.id == id).unwrap().due_volume,
             None
         );
+
+        // scope：pov = 暗线；reader/空串 = 恢复明线（字段清除）
+        update_thread(&paths, &id, None, None, None, None, None, None, Some("pov")).unwrap();
+        let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
+        assert_eq!(
+            file.threads.iter().find(|t| t.id == id).unwrap().scope.as_deref(),
+            Some("pov")
+        );
+        update_thread(&paths, &id, None, None, None, None, None, None, Some("reader")).unwrap();
+        let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
+        assert_eq!(
+            file.threads.iter().find(|t| t.id == id).unwrap().scope,
+            None
+        );
+        // 非法值被拒绝
+        let err = update_thread(&paths, &id, None, None, None, None, None, None, Some("bogus"))
+            .unwrap_err();
+        assert!(matches!(err, StudioError::Config(_)));
     }
 
     #[test]
@@ -4134,7 +4169,7 @@ mod tests {
         let paths = ProjectPaths::new(tmp.path());
 
         // 创建时 planted_at = None（planned 状态）
-        let id = create_thread(&paths, "伏笔", "测试", "main", None, None).unwrap();
+        let id = create_thread(&paths, "伏笔", "测试", "main", None, None, None).unwrap();
 
         // planted → planted_at 被设置，保留之前的 None 不影响
         let s = advance_thread(&paths, &id, "planted", Some("sc_01_02")).unwrap();
@@ -4168,7 +4203,7 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id = create_thread(&paths, "伏笔", "测试", "minor", None, None).unwrap();
+        let id = create_thread(&paths, "伏笔", "测试", "minor", None, None, None).unwrap();
 
         // 非法 status
         let err = advance_thread(&paths, &id, "bogus", Some("sc_01")).unwrap_err();
@@ -4192,8 +4227,8 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let t1 = create_thread(&paths, "真凶线", "描述", "main", None, None).unwrap();
-        let t2 = create_thread(&paths, "旧案线", "描述", "minor", None, None).unwrap();
+        let t1 = create_thread(&paths, "真凶线", "描述", "main", None, None, None).unwrap();
+        let t2 = create_thread(&paths, "旧案线", "描述", "minor", None, None, None).unwrap();
 
         // 批量推进：多条线索一次落盘
         let results = advance_threads(
@@ -4259,8 +4294,8 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id1 = create_thread(&paths, "线索1", "描述", "main", None, None).unwrap();
-        let id2 = create_thread(&paths, "线索2", "描述", "minor", None, None).unwrap();
+        let id1 = create_thread(&paths, "线索1", "描述", "main", None, None, None).unwrap();
+        let id2 = create_thread(&paths, "线索2", "描述", "minor", None, None, None).unwrap();
 
         let path = paths.threads_toml();
         let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
@@ -4289,7 +4324,7 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id = create_thread(&paths, "皇子身份", "秘密", "main", None, None).unwrap();
+        let id = create_thread(&paths, "皇子身份", "秘密", "main", None, None, None).unwrap();
         let path = paths.threads_toml();
 
         // 1. 新观察者：reader 在 sc_01 开始怀疑
@@ -4621,7 +4656,7 @@ mod tests {
         let fid = create_fragment(&paths, &sc_id, "正文。").unwrap();
 
         // 场景 POV 即 char_id
-        let t_id = create_thread(&paths, "伏笔", "描述", "main", Some(&sc_id), None).unwrap();
+        let t_id = create_thread(&paths, "伏笔", "描述", "main", Some(&sc_id), None, None).unwrap();
 
         let file = ThreadsFile::load_or_default(&paths.root().join("threads.toml")).unwrap();
         let thread = file.threads.iter().find(|t| t.id == t_id).unwrap();
@@ -4646,7 +4681,7 @@ mod tests {
         assert!(has_reader, "reader 应初始化: {:?}", thread.knowledge);
 
         // 无 planted_at 时不应初始化
-        let t2 = create_thread(&paths, "伏笔2", "描述", "minor", None, None).unwrap();
+        let t2 = create_thread(&paths, "伏笔2", "描述", "minor", None, None, None).unwrap();
         let file = ThreadsFile::load_or_default(&paths.root().join("threads.toml")).unwrap();
         let thread2 = file.threads.iter().find(|t| t.id == t2).unwrap();
         assert!(thread2.knowledge.is_empty());
@@ -4731,7 +4766,7 @@ mod tests {
         let fid = create_fragment(&paths, &sc_id, "正文。").unwrap();
 
         // 埋设点传片段 ID（工具契约允许），应解析到所属场景并初始化
-        let t_id = create_thread(&paths, "伏笔", "描述", "main", Some(&fid), None).unwrap();
+        let t_id = create_thread(&paths, "伏笔", "描述", "main", Some(&fid), None, None).unwrap();
 
         let file = ThreadsFile::load_or_default(&paths.root().join("threads.toml")).unwrap();
         let thread = file.threads.iter().find(|t| t.id == t_id).unwrap();
@@ -4783,7 +4818,7 @@ mod tests {
         let char_id = create_entity(&paths, EntityKind::Character, "角色").unwrap();
         let sc_id = create_scene(&paths, &ch_id, "场景", Some(&char_id)).unwrap();
 
-        let t_id = create_thread(&paths, "伏笔", "描述", "main", Some(&sc_id), None).unwrap();
+        let t_id = create_thread(&paths, "伏笔", "描述", "main", Some(&sc_id), None, None).unwrap();
 
         // 推进到 revealed → reader 自动置为 known
         advance_thread(&paths, &t_id, "revealed", Some(&sc_id)).unwrap();
@@ -4805,7 +4840,7 @@ mod tests {
         let sc_id = create_scene(&paths, &ch_id, "场景", None).unwrap();
         let fid = create_fragment(&paths, &sc_id, "正文。").unwrap();
 
-        let t_id = create_thread(&paths, "伏笔", "描述", "minor", None, None).unwrap();
+        let t_id = create_thread(&paths, "伏笔", "描述", "minor", None, None, None).unwrap();
 
         // 揭示锚点传片段 ID → 解析到所属场景记 reader
         advance_thread(&paths, &t_id, "resolved", Some(&fid)).unwrap();
@@ -4846,7 +4881,7 @@ mod tests {
         let sc1 = create_scene(&paths, &ch_id, "场景一", None).unwrap();
         let sc2 = create_scene(&paths, &ch_id, "场景二", None).unwrap();
 
-        let t_id = create_thread(&paths, "伏笔", "描述", "main", Some(&sc1), None).unwrap();
+        let t_id = create_thread(&paths, "伏笔", "描述", "main", Some(&sc1), None, None).unwrap();
         advance_thread(&paths, &t_id, "revealed", Some(&sc2)).unwrap();
 
         // revealed → planted 回退：应报错且不改写 planted_at

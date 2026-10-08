@@ -380,6 +380,13 @@ impl Tool for CreateThreadTool {
                 ("title", "string", "线索标题", true),
                 ("description", "string", "线索描述", true),
                 ("priority", "string", "优先级（main/minor）", false),
+                (
+                    "scope",
+                    "string",
+                    "可见性范围：reader（默认，面向读者的明线，须先揭示后回收）/ \
+                    pov（暗线：POV 角色私人闭环，允许直接回收，不要求先揭示）",
+                    false,
+                ),
                 ("planted_at", "string", "埋设位置（场景 ID 或片段 ID，如 sc_01_01 / f_0003）", false),
                 (
                     "due_volume",
@@ -398,6 +405,7 @@ impl Tool for CreateThreadTool {
         let priority = get_str_opt(arguments, "priority").unwrap_or_else(|| "minor".to_string());
         let planted = get_str_opt(arguments, "planted_at");
         let due_volume = get_u32_opt(arguments, "due_volume");
+        let scope = get_str_opt(arguments, "scope");
 
         let paths = self.ctx.paths();
         let new_id = crate::mutations::create_thread(
@@ -407,6 +415,7 @@ impl Tool for CreateThreadTool {
             &priority,
             planted.as_deref(),
             due_volume,
+            scope.as_deref(),
         )
         .map_err(|e| e.to_string())?;
 
@@ -508,12 +517,25 @@ impl Tool for GetThreadsTool {
             })
             .map(|t| {
                 let status = derive_thread_status(t);
+                let scope = if t.scope.as_deref() == Some("pov") {
+                    "/pov暗线"
+                } else {
+                    ""
+                };
                 let desc = t
                     .description
                     .as_deref()
                     .map(|d| format!(" — {d}"))
                     .unwrap_or_default();
-                format!("{} [{}/{}] {}{}", t.id, t.priority, status, t.title, desc)
+                format!(
+                    "{} [{}/{}{}] {}{}",
+                    t.id,
+                    t.priority,
+                    status,
+                    scope,
+                    t.title,
+                    desc
+                )
             })
             .collect();
 
@@ -546,7 +568,7 @@ impl Tool for UpdateThreadTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "update_thread".into(),
-            description: "修改已有线索的核心字段（title/description/goal/priority/tags/due_volume），\
+            description: "修改已有线索的核心字段（title/description/goal/priority/tags/due_volume/scope），\
             只更新提供的字段。tags 以逗号分隔，整体覆盖。操作前先 get_threads 确认 ID。"
                 .into(),
             parameters: object_schema(vec![
@@ -555,6 +577,12 @@ impl Tool for UpdateThreadTool {
                 ("description", "string", "线索描述", false),
                 ("goal", "string", "叙事目标（给 AI 的上下文）", false),
                 ("priority", "string", "优先级: main / minor", false),
+                (
+                    "scope",
+                    "string",
+                    "可见性范围: reader（明线，默认）/ pov（暗线，回收不要求先揭示）",
+                    false,
+                ),
                 ("tags", "string", "标签，逗号分隔（整体覆盖）", false),
                 (
                     "due_volume",
@@ -581,6 +609,7 @@ impl Tool for UpdateThreadTool {
         let due_volume = arguments.get("due_volume").map(|_| {
             get_u32_opt(arguments, "due_volume")
         });
+        let scope = get_str_opt(arguments, "scope");
 
         let paths = self.ctx.paths();
         let changed = crate::mutations::update_thread(
@@ -592,6 +621,7 @@ impl Tool for UpdateThreadTool {
             priority.as_deref(),
             tags.as_deref(),
             due_volume,
+            scope.as_deref(),
         )
         .map_err(|e| e.to_string())?;
 

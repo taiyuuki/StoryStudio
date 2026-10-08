@@ -69,6 +69,8 @@ export interface ThreadDto {
   description: string | null
   goal: string | null
   priority: 'main' | 'minor' | string
+  /** 可见性范围：reader（默认，明线）| pov（暗线：回收不要求先揭示） */
+  scope: 'reader' | 'pov' | null
   /** 计划埋设卷号（null = 全书长线） */
   dueVolume: number | null
   tags: string[]
@@ -932,6 +934,8 @@ export const api = {
       description?: string
       goal?: string
       priority?: string
+      /** 可见性范围：reader（明线）/ pov（暗线） */
+      scope?: string
       /** 传 0 表示清除（恢复全书长线） */
       dueVolume?: number
     },

@@ -743,8 +743,16 @@ pub fn save_book_world(root: &Path, draft: &WorldDraft) -> Result<WorldSaveRepor
             continue;
         }
         let priority = if t.priority == "main" { "main" } else { "minor" };
-        if mutations::create_thread(&paths, t.title.trim(), &t.description, priority, None, None)
-            .is_ok()
+        if mutations::create_thread(
+            &paths,
+            t.title.trim(),
+            &t.description,
+            priority,
+            None,
+            None,
+            None,
+        )
+        .is_ok()
         {
             threads += 1;
         }

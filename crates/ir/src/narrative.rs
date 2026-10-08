@@ -89,6 +89,40 @@ impl ThreadPriority {
 }
 
 // ============================================================================
+// ThreadScope
+// ============================================================================
+
+/// 线索的可见性范围。
+///
+/// - `Reader`（默认）：面向读者的明线——状态机要求先 revealed 再 resolved；
+/// - `Pov`：暗线/私人闭环（POV 角色自证、读者可先于世人知晓）——
+///   允许 planted 直接走向 resolved，不触发 resolve_without_reveal 告警。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum ThreadScope {
+    Pov,
+    #[default]
+    Reader,
+}
+
+impl ThreadScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ThreadScope::Pov => "pov",
+            ThreadScope::Reader => "reader",
+        }
+    }
+
+    /// 从字符串解析，未识别值回落到 `Reader`。
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "pov" => ThreadScope::Pov,
+            _ => ThreadScope::Reader,
+        }
+    }
+}
+
+// ============================================================================
 // Observer / KnowledgeState
 // ============================================================================
 
@@ -169,6 +203,9 @@ pub struct Thread {
     pub description: Option<String>,
     pub goal: Option<String>,
     pub priority: ThreadPriority,
+    /// 可见性范围（默认 Reader；Pov 为暗线，见 [`ThreadScope`]）
+    #[serde(default)]
+    pub scope: ThreadScope,
     pub tags: Vec<String>,
     pub assertions: Vec<StableId>,
     pub planted_at: Option<StableId>,
@@ -257,6 +294,7 @@ mod tests {
             description: None,
             goal: None,
             priority: ThreadPriority::Minor,
+            scope: ThreadScope::Reader,
             tags: vec![],
             assertions: vec![],
             planted_at: None,

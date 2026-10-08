@@ -445,7 +445,7 @@ mod tests {
         assert!(Arc::ptr_eq(&third, &fourth), "ctx.clone() 应共享缓存");
 
         // threads.toml 变化（增量机制不追踪）→ 强制全量，能读到新线索
-        crate::mutations::create_thread(&paths, "新线索", "描述", "main", None, None).unwrap();
+        crate::mutations::create_thread(&paths, "新线索", "描述", "main", None, None, None).unwrap();
         let fifth = ctx.parse().unwrap();
         assert!(
             fifth.threads.all().count() >= 1,

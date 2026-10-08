@@ -252,12 +252,12 @@ mod tests {
         let paths = ProjectPaths::new(dir);
 
         // 到期未埋（due 1）、已排期未到期（due 2）、全书长线（无 due）、已埋设
-        create_thread(&paths, "到期未埋", "", "main", None, Some(1)).unwrap();
-        create_thread(&paths, "已排期", "", "main", None, Some(2)).unwrap();
-        create_thread(&paths, "全书长线", "", "main", None, None).unwrap();
+        create_thread(&paths, "到期未埋", "", "main", None, Some(1), None).unwrap();
+        create_thread(&paths, "已排期", "", "main", None, Some(2), None).unwrap();
+        create_thread(&paths, "全书长线", "", "main", None, None, None).unwrap();
         let ch = create_chapter(&paths, "第一章").unwrap();
         let sc = create_scene(&paths, &ch, "场景", None).unwrap();
-        create_thread(&paths, "已埋设", "", "main", Some(&sc), None).unwrap();
+        create_thread(&paths, "已埋设", "", "main", Some(&sc), None, None).unwrap();
 
         // 作者已动笔第二卷 → 第一卷封卷
         let mut chapters = load_chapters_file(&paths).unwrap();
@@ -318,7 +318,7 @@ mod tests {
         let dir = tmp.path();
         let paths = ProjectPaths::new(dir);
 
-        create_thread(&paths, "写作中卷的线索", "", "main", None, Some(1)).unwrap();
+        create_thread(&paths, "写作中卷的线索", "", "main", None, Some(1), None).unwrap();
         let mut chapters = load_chapters_file(&paths).unwrap();
         chapters.chapters.push(ChapterOutlineDef {
             chapter_id: None,
@@ -361,7 +361,7 @@ mod tests {
 
         // 报告中的误报场景：连载开篇，第一卷已录入章节全部完稿、
         // 后续卷尚未动笔——第一卷仍在写作中，不该报「本卷该埋未埋」
-        create_thread(&paths, "连载线索", "", "main", None, Some(1)).unwrap();
+        create_thread(&paths, "连载线索", "", "main", None, Some(1), None).unwrap();
         let mut chapters = load_chapters_file(&paths).unwrap();
         for i in 1..=3 {
             chapters
@@ -393,7 +393,7 @@ mod tests {
         let paths = ProjectPaths::new(dir);
 
         // 更大卷里只有规划章：作者可能回到前卷补章，前卷不算封卷
-        create_thread(&paths, "排期线索", "", "main", None, Some(1)).unwrap();
+        create_thread(&paths, "排期线索", "", "main", None, Some(1), None).unwrap();
         let mut chapters = load_chapters_file(&paths).unwrap();
         chapters
             .chapters

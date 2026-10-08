@@ -22,7 +22,7 @@ pub use id::{EdgeId, IdPrefix, StableId, Symbol, SymbolTable};
 pub use ir::{Appearance, IRVersion, LocationIndex, Revision, StoryIR};
 pub use narrative::{
     KnowledgeState, Observer, StateTimelineEntry, Thread, ThreadCollection, ThreadKnowledge,
-    ThreadPriority, ThreadRelationship, ThreadStatus,
+    ThreadPriority, ThreadRelationship, ThreadScope, ThreadStatus,
 };
 pub use semantic::{
     AttributeValue, CharacterNode, ConceptNode, Entity, EntityAttributes, EventNode, ItemNode,

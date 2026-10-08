@@ -498,6 +498,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       description?: string
       goal?: string
       priority?: string
+      /** reader（明线）/ pov（暗线） */
+      scope?: string
       /** 0 = 清除（恢复全书长线） */
       dueVolume?: number
     },

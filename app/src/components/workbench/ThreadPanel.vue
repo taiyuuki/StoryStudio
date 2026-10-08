@@ -10,7 +10,7 @@ const store = useWorkspaceStore()
 const creating = ref(false)
 const form = ref({ title: '', description: '', priority: 'minor', dueVolume: 0 })
 const editingId = ref<string | null>(null)
-const editDraft = ref({ title: '', description: '', goal: '', priority: 'minor', dueVolume: 0 })
+const editDraft = ref({ title: '', description: '', goal: '', priority: 'minor', scope: 'reader', dueVolume: 0 })
 
 /** 卷列表（计划埋设卷下拉用）；0 = 全书长线 */
 const volumes = ref<VolumeGroupDto[]>([])
@@ -92,6 +92,7 @@ function startEdit(t: ThreadDto) {
     description: t.description ?? '',
     goal: t.goal ?? '',
     priority: t.priority,
+    scope: t.scope ?? 'reader',
     dueVolume: t.dueVolume ?? 0,
   }
 }
@@ -107,6 +108,7 @@ async function saveEdit(id: string) {
     description: editDraft.value.description.trim(),
     goal: editDraft.value.goal.trim(),
     priority: editDraft.value.priority,
+    scope: editDraft.value.scope,
     // 0 = 清除，恢复全书长线
     dueVolume: editDraft.value.dueVolume,
   })
@@ -253,6 +255,10 @@ function removeKnowledge(t: ThreadDto, k: ThreadKnowledgeDto) {
             <option value="main">主线</option>
             <option value="minor">支线</option>
           </select>
+          <select v-model="editDraft.scope" title="可见性范围：暗线允许直接回收，不要求先向读者揭示">
+            <option value="reader">明线</option>
+            <option value="pov">暗线</option>
+          </select>
           <select v-model="editDraft.dueVolume" title="计划埋设卷；到卷未埋会升级为「本卷该埋未埋」">
             <option :value="0">全书长线</option>
             <option v-for="v in volumeOptions" :key="v" :value="v">第{{ v }}卷埋设</option>
@@ -268,6 +274,13 @@ function removeKnowledge(t: ThreadDto, k: ThreadKnowledgeDto) {
           </span>
           <span class="tc-status" :class="statusMeta[statusOf(t)].cls">
             {{ statusMeta[statusOf(t)].label }}
+          </span>
+          <span
+            v-if="t.scope === 'pov'"
+            class="tc-scope"
+            title="暗线：POV 私人闭环，允许直接回收而不先向读者揭示"
+          >
+            暗线
           </span>
           <span
             v-if="statusOf(t) === 'planned' && t.dueVolume"
@@ -517,6 +530,14 @@ textarea.ed-input {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.tc-scope {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ink-sec) 14%, transparent);
+  color: var(--ink-sec);
 }
 
 .tc-act {
