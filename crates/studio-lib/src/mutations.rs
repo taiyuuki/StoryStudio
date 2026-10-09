@@ -1550,6 +1550,140 @@ pub fn update_scene(
     Ok(changes)
 }
 
+/// 场景拆分：at_fragment_id 及其后的片段移入新场景，新场景插到原场景之后
+/// （保持阅读序）。片段文件不动，只调整归属列表。返回新场景 ID。
+pub fn split_scene(
+    paths: &ProjectPaths,
+    scene_id: &str,
+    at_fragment_id: &str,
+    new_title: Option<&str>,
+) -> Result<String, StudioError> {
+    let structure = load_structure(paths)?;
+    let old = structure
+        .scene
+        .get(scene_id)
+        .ok_or_else(|| StudioError::NotFound(format!("场景 '{scene_id}' 不存在")))?;
+    let pos = old
+        .fragments
+        .iter()
+        .position(|f| f == at_fragment_id)
+        .ok_or_else(|| {
+            StudioError::NotFound(format!("片段 '{at_fragment_id}' 不在场景 '{scene_id}' 中"))
+        })?;
+    if pos == 0 {
+        return Err(StudioError::Config(
+            "拆分点不能是场景的第一个片段（新场景会没有内容）".to_string(),
+        ));
+    }
+    let ch_id = structure
+        .chapter
+        .iter()
+        .find(|(_, ch)| ch.scenes.iter().any(|s| s == scene_id))
+        .map(|(id, _)| id.clone())
+        .ok_or_else(|| StudioError::NotFound(format!("场景 '{scene_id}' 未归属任何章节")))?;
+    let title = format!(
+        "{}（下）",
+        old.title.clone().unwrap_or_else(|| "场景".to_string())
+    );
+    let title = new_title.unwrap_or(&title).to_string();
+
+    let new_id = create_scene(paths, &ch_id, &title, None)?;
+    // create_scene 已保存（新场景在章末），重载后搬运片段并调整顺序
+    let mut structure = load_structure(paths)?;
+    let tail: Vec<String> = structure
+        .scene
+        .get_mut(scene_id)
+        .unwrap()
+        .fragments
+        .split_off(pos);
+    structure
+        .scene
+        .get_mut(&new_id)
+        .unwrap()
+        .fragments = tail;
+    let chapter = structure.chapter.get_mut(&ch_id).unwrap();
+    chapter.scenes.retain(|s| s != &new_id);
+    let at = chapter.scenes.iter().position(|s| s == scene_id).unwrap();
+    chapter.scenes.insert(at + 1, new_id.clone());
+    structure.save(&paths.structure_toml())?;
+
+    // 脉络 scenes 引用同步（best-effort）
+    if let Some(index) = load_chapters_file(paths)
+        .ok()
+        .and_then(|f| {
+            f.chapters
+                .iter()
+                .position(|c| c.scenes.iter().any(|s| s == scene_id))
+                .map(|i| i + 1)
+        })
+    {
+        let _ = append_chapter_outline_scene(paths, index, &new_id);
+    }
+    Ok(new_id)
+}
+
+/// 合并场景：secondary 的片段按序追加到 primary 末尾，secondary 移除
+/// （片段文件不动）。两场景须同章。
+pub fn merge_scenes(
+    paths: &ProjectPaths,
+    primary_id: &str,
+    secondary_id: &str,
+) -> Result<(), StudioError> {
+    if primary_id == secondary_id {
+        return Err(StudioError::Config("两个场景不能相同".to_string()));
+    }
+    let mut structure = load_structure(paths)?;
+    let (ch_id, sec_pos) = structure
+        .chapter
+        .iter()
+        .find_map(|(id, ch)| {
+            ch.scenes
+                .iter()
+                .position(|s| s == secondary_id)
+                .map(|p| (id.clone(), p))
+        })
+        .ok_or_else(|| StudioError::NotFound(format!("场景 '{secondary_id}' 不存在")))?;
+    let has_primary = structure
+        .chapter
+        .get(&ch_id)
+        .is_some_and(|ch| ch.scenes.iter().any(|s| s == primary_id));
+    if !has_primary {
+        return Err(StudioError::Config(format!(
+            "场景 '{primary_id}' 与 '{secondary_id}' 不在同一章节，不能合并"
+        )));
+    }
+
+    let moved: Vec<String> = structure.scene.remove(secondary_id)
+        .ok_or_else(|| StudioError::NotFound(format!("场景 '{secondary_id}' 不存在")))?
+        .fragments;
+    structure
+        .scene
+        .get_mut(primary_id)
+        .ok_or_else(|| StudioError::NotFound(format!("场景 '{primary_id}' 不存在")))?
+        .fragments
+        .extend(moved);
+    let chapter = structure.chapter.get_mut(&ch_id).unwrap();
+    chapter.scenes.remove(sec_pos);
+    structure.save(&paths.structure_toml())?;
+
+    // 脉络 scenes 引用收拢到 primary（best-effort）
+    if let Ok(mut file) = load_chapters_file(paths) {
+        let mut changed = false;
+        for entry in &mut file.chapters {
+            let before = entry.scenes.len();
+            entry.scenes.retain(|s| s != secondary_id);
+            if !entry.scenes.iter().any(|s| s == primary_id) && before != entry.scenes.len() {
+                entry.scenes.push(primary_id.to_string());
+            }
+            changed |= before != entry.scenes.len();
+        }
+        if changed {
+            let _ = save_chapters_file(paths, &file);
+        }
+    }
+    Ok(())
+}
+
 /// 删除场景（硬级联）
 ///
 /// 从所属 chapter.scenes 移除 + 删除 scene 条目。
@@ -6001,6 +6135,43 @@ scope = "pov"
         assert_eq!(file.threads[0].revealed_at.as_deref(), Some("sc_03_01"));
         assert_eq!(file.threads[1].revealed_at.as_deref(), Some("sc_02_01"));
         assert!(file.threads[2].revealed_at.is_none(), "pov 暗线不应回填");
+    }
+
+    #[test]
+    fn split_and_merge_scene_move_fragments() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc1 = create_scene(&paths, &ch, "场景一", None).unwrap();
+        create_scene(&paths, &ch, "场景二", None).unwrap(); // 场景顺序占位
+        let f1 = create_fragment(&paths, &sc1, "片段一").unwrap();
+        let f2 = create_fragment(&paths, &sc1, "片段二").unwrap();
+        let f3 = create_fragment(&paths, &sc1, "片段三").unwrap();
+
+        // 拆分：f2 起移入新场景，插在 sc1 之后（sc2 之前）
+        let new_id = split_scene(&paths, &sc1, &f2, None).unwrap();
+        let structure = load_structure(&paths).unwrap();
+        assert_eq!(structure.scene[&sc1].fragments, vec![f1.clone()]);
+        assert_eq!(structure.scene[&new_id].fragments, vec![f2.clone(), f3.clone()]);
+        let order = &structure.chapter[&ch].scenes;
+        let p1 = order.iter().position(|s| s == &sc1).unwrap();
+        let pn = order.iter().position(|s| s == &new_id).unwrap();
+        assert_eq!(pn, p1 + 1, "新场景应紧随原场景: {order:?}");
+
+        // 合并：新场景并回 sc1（片段顺序保持），新场景移除
+        merge_scenes(&paths, &sc1, &new_id).unwrap();
+        let structure = load_structure(&paths).unwrap();
+        assert_eq!(
+            structure.scene[&sc1].fragments,
+            vec![f1.clone(), f2.clone(), f3.clone()]
+        );
+        assert!(!structure.scene.contains_key(&new_id));
+        assert!(!structure.chapter[&ch].scenes.contains(&new_id));
+
+        // 跨章合并拒绝
+        let ch2 = create_chapter(&paths, "另一章").unwrap();
+        let sc3 = create_scene(&paths, &ch2, "场景三", None).unwrap();
+        assert!(merge_scenes(&paths, &sc1, &sc3).is_err());
     }
 
     #[test]

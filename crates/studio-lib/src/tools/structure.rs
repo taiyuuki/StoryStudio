@@ -391,6 +391,80 @@ impl Tool for DeleteChapterTool {
 }
 
 // ============================================================================
+// split_scene / merge_scenes
+// ============================================================================
+
+pub struct SplitSceneTool {
+    ctx: ToolContext,
+}
+impl SplitSceneTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for SplitSceneTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "split_scene".into(),
+            description: "把一个场景拆成两个：拆分片段（at_fragment_id）及其之后的片段移入新场景，\n            新场景插到原场景之后保持阅读序；片段文件与锚点不动，只调整归属。\n            单章容量超标、需要在场景边界切开时使用（片段级切开用 split_fragment）。"
+                .into(),
+            parameters: object_schema(vec![
+                ("scene_id", "string", "要拆分的场景 ID", true),
+                ("at_fragment_id", "string", "拆分点片段 ID：该片段及其之后移入新场景（不能是第一个片段）", true),
+                ("new_title", "string", "新场景标题（省略为「原标题（下）」）", false),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let scene_id = get_str(arguments, "scene_id")?;
+        let at = get_str(arguments, "at_fragment_id")?;
+        let new_title = get_str_opt(arguments, "new_title");
+        let paths = self.ctx.paths();
+        let new_id = crate::mutations::split_scene(&paths, &scene_id, &at, new_title.as_deref())
+            .map_err(|e| e.to_string())?;
+        Ok(format!(
+            "场景已拆分：{scene_id} 保留前半，新场景 {new_id} 承接拆分点之后的片段（已插到其后）"
+        ))
+    }
+}
+
+pub struct MergeScenesTool {
+    ctx: ToolContext,
+}
+impl MergeScenesTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for MergeScenesTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "merge_scenes".into(),
+            description: "合并同章两个场景：secondary 的片段按序追加到 primary 末尾，\n            secondary 移除（片段文件不动）。两个场景节奏拖沓需要并场删减时使用；\n            片段级合并用 merge_fragments。"
+                .into(),
+            parameters: object_schema(vec![
+                ("primary_id", "string", "合并目标场景 ID（保留此场景）", true),
+                ("secondary_id", "string", "被合并场景 ID（片段并入 primary 后移除）", true),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let primary = get_str(arguments, "primary_id")?;
+        let secondary = get_str(arguments, "secondary_id")?;
+        let paths = self.ctx.paths();
+        crate::mutations::merge_scenes(&paths, &primary, &secondary)
+            .map_err(|e| e.to_string())?;
+        Ok(format!(
+            "场景已合并：{secondary} 的片段已按序并入 {primary}，{secondary} 已移除"
+        ))
+    }
+}
+
+// ============================================================================
 // update_scene
 // ============================================================================
 

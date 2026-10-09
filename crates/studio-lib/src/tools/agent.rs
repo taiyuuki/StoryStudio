@@ -150,6 +150,8 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(SaveSceneSummariesTool::new(ctx.clone())));
     registry.register(Box::new(RepairProjectTool::new(ctx.clone())));
     registry.register(Box::new(DeleteSceneTool::new(ctx.clone())));
+    registry.register(Box::new(SplitSceneTool::new(ctx.clone())));
+    registry.register(Box::new(MergeScenesTool::new(ctx.clone())));
     registry.register(Box::new(UpdateChapterTool::new(ctx.clone())));
     registry.register(Box::new(DeleteChapterTool::new(ctx.clone())));
     registry.register(Box::new(AddAssertionTool::new(ctx.clone())));
