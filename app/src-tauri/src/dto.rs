@@ -476,7 +476,7 @@ pub struct AiProfileDto {
     /// 来源预设 id（deepseek 等；空 = 手动配置）
     pub preset: Option<String>,
     pub name: String,
-    /// anthropic | openai
+    /// anthropic | openai | gemini
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
@@ -492,7 +492,7 @@ pub struct AiProfileDto {
     /// 模型是否支持 100 万 token 长上下文；None = 跟随默认预算
     pub long_context: Option<bool>,
     /// OpenAI 接口模式：chat（Chat Completions，兼容最广）| responses（OpenAI 原生，GPT-5/o 系列）
-    /// 仅 provider="openai" 生效；anthropic 恒为 None
+    /// 仅 provider="openai" 生效；anthropic / gemini 恒为 None
     pub api_mode: Option<String>,
     /// 私有参数（deep merge 进请求体，支持 provider 私有字段）
     pub extra_body: Option<serde_json::Value>,
@@ -591,7 +591,7 @@ impl From<&AiProfileDto> for story_studio_lib::ai::ProviderProfile {
             timeout_secs: p.timeout_secs,
             max_tokens: p.max_tokens,
             long_context: p.long_context,
-            // anthropic provider 不使用该字段（恒 None）
+            // 非 openai provider（anthropic / gemini）不使用该字段（恒 None）
             api_mode: if p.provider.as_deref() == Some("openai") {
                 match p.api_mode.as_deref() {
                     Some("responses") => Some(story_ai_runtime::ApiMode::Responses),

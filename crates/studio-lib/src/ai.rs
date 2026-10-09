@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use story_ai_runtime::{
     AiError, AiProvider, AnthropicProvider, ApiMode, AssertionDraft, CancelToken, ContextBuilder,
-    ExtractAssertionsTask, FragmentDraft, GenerateRequest, Message, OpenAiProvider, StreamEvent,
-    Task, ThinkingConfig, WriteFragmentTask, stream_generate_with_cancel,
+    ExtractAssertionsTask, FragmentDraft, GenerateRequest, GeminiProvider, Message, OpenAiProvider,
+    StreamEvent, Task, ThinkingConfig, WriteFragmentTask, stream_generate_with_cancel,
 };
 use story_ir::{DocNode, SemanticNode, StableId};
 use story_parser::parse_project;
@@ -662,7 +662,7 @@ fn prev_texts_tail(texts: &[String], count: usize, max_chars: usize) -> String {
 
 /// 根据名称和模型创建 AI Provider
 ///
-/// provider_name: "anthropic" / "openai"
+/// provider_name: "anthropic" / "openai" / "gemini"
 /// model_name: None 时使用默认模型
 /// api_key: 用户配置的 API Key（优先于环境变量）
 /// api_url: 用户配置的 API URL（优先于默认 endpoint）
@@ -689,6 +689,8 @@ pub fn create_provider(
     let model_name = model_name.unwrap_or(match provider_name {
         "anthropic" => "claude-sonnet-4-5",
         "openai" => "gpt-4o",
+        // Gemini 官方入门档模型（档案建议显式配模型或点「拉取」选择）
+        "gemini" => "gemini-2.5-flash",
         _ => "claude-sonnet-4-5",
     });
 
@@ -728,8 +730,19 @@ pub fn create_provider(
             timeout_owned,
             max_tokens_owned,
         ))),
+        "gemini" => Ok(Box::new(GeminiProvider::new(
+            model_name,
+            api_key_owned,
+            api_url_owned,
+            api_url_full,
+            extra_body_owned,
+            extra_headers_owned,
+            thinking_owned,
+            timeout_owned,
+            max_tokens_owned,
+        ))),
         other => Err(StudioError::Config(format!(
-            "未知 Provider: {other}（支持: anthropic, openai）"
+            "未知 Provider: {other}（支持: anthropic, openai, gemini）"
         ))),
     }
 }
@@ -754,7 +767,7 @@ pub struct ProviderProfile {
     pub last_test: Option<ProfileTestRecord>,
     /// 用户可读的档案名称
     pub name: String,
-    /// Provider 类型："anthropic" / "openai"
+    /// Provider 类型："anthropic" / "openai" / "gemini"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// 默认模型
@@ -1109,7 +1122,7 @@ pub struct ProviderPreset {
     pub id: String,
     /// 展示名
     pub name: String,
-    /// Provider 类型："anthropic" / "openai"
+    /// Provider 类型："anthropic" / "openai" / "gemini"
     pub provider: String,
     /// API URL（None = 官方默认端点）
     pub api_url: Option<String>,
@@ -1133,7 +1146,7 @@ pub fn provider_presets() -> Vec<ProviderPreset> {
         ("qwen", "通义千问（百炼）", "openai", Some("https://dashscope.aliyuncs.com/compatible-mode"), false, Some("qwen-plus"), Some("bailian.console.aliyun.com 生成 Key；开启思考自动发 enable_thinking 参数")),
         ("openrouter", "OpenRouter", "openai", Some("https://openrouter.ai/api/v1/chat/completions"), true, None, Some("openrouter.ai 聚合平台，一个 Key 用多家模型")),
         ("siliconflow", "硅基流动", "openai", Some("https://api.siliconflow.cn"), false, None, Some("siliconflow.cn 生成 Key")),
-        ("gemini", "Google Gemini", "openai", Some("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"), true, None, Some("aistudio.google.com 生成 Key")),
+        ("gemini", "Google Gemini", "gemini", None, false, None, Some("aistudio.google.com 生成 Key；原生 generateContent 接口，思考参数与工具调用签名自动适配；模型点「拉取」选择")),
         ("ollama", "Ollama（本地）", "openai", Some("http://localhost:11434"), false, None, Some("本机运行 Ollama 即可，无需 Key")),
     ]
     .into_iter()
@@ -1521,7 +1534,7 @@ mod preset_tests {
         assert_eq!(ids.len(), presets.len());
         for p in &presets {
             assert!(
-                p.provider == "openai" || p.provider == "anthropic",
+                p.provider == "openai" || p.provider == "anthropic" || p.provider == "gemini",
                 "{} 的 provider 非法",
                 p.id
             );

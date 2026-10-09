@@ -46,6 +46,7 @@ const presets = ref<ProviderPresetDto[]>([])
 const CUSTOM_OPTIONS = [
   { value: 'custom:openai', label: '自定义 · OpenAI 兼容' },
   { value: 'custom:anthropic', label: '自定义 · Anthropic 兼容' },
+  { value: 'custom:gemini', label: '自定义 · Gemini 原生' },
 ]
 
 /** 预设 → 图标：`/` 开头取 public 静态图，否则按 FontAwesome 类名渲染 */
@@ -71,6 +72,7 @@ function shortLabel(label: string): string {
 
 const providerValue = computed(() => {
   if (draft.preset && presets.value.some((p) => p.id === draft.preset)) return draft.preset
+  if (draft.provider === 'gemini') return 'custom:gemini'
   return draft.provider === 'anthropic' ? 'custom:anthropic' : 'custom:openai'
 })
 
@@ -104,14 +106,15 @@ function applyProvider(value: string) {
     if (nameFromPreset) draft.name = preset.name
   } else {
     draft.preset = null
-    draft.provider = value === 'custom:anthropic' ? 'anthropic' : 'openai'
+    draft.provider =
+      value === 'custom:anthropic' ? 'anthropic' : value === 'custom:gemini' ? 'gemini' : 'openai'
     draft.apiUrl = ''
     draft.apiUrlFull = false
   }
   // 换服务商不继承旧 Key（不同服务的 Key 不通用，留着容易忘改导致鉴权失败）
   if (switching) draft.apiKey = ''
-  // Anthropic 档案不使用接口模式；切到 Anthropic 时归位
-  if (draft.provider === 'anthropic') draft.apiMode = 'chat'
+  // 非 OpenAI 档案不使用接口模式；切换时归位
+  if (draft.provider !== 'openai') draft.apiMode = 'chat'
 }
 
 // ── 档案选择 / 增删 ────────────────────────────────────
@@ -511,7 +514,7 @@ function goBack() {
                 <div class="sv-item-main">
                   <span class="sv-item-name">{{ p.name }}</span>
                   <span class="sv-item-sub num">
-                    {{ p.provider === 'anthropic' ? 'Anthropic' : p.apiMode === 'responses' ? 'OpenAI · Responses' : 'OpenAI · Chat' }}
+                    {{ p.provider === 'gemini' ? 'Gemini' : p.provider === 'anthropic' ? 'Anthropic' : p.apiMode === 'responses' ? 'OpenAI · Responses' : 'OpenAI · Chat' }}
                     <template v-if="p.model"> · {{ p.model }}</template>
                   </span>
                   <span v-if="purposesOf(p.id)" class="sv-item-purposes">{{ purposesOf(p.id) }}</span>

@@ -38,7 +38,7 @@ pub use provider::{
     AiError, AiProvider, GenerateRequest, GenerateResponse, Message, ProviderRegistry, Role,
     StopReason, StreamEvent, TokenUsage, ToolCall, ToolDef,
 };
-pub use providers::{AnthropicProvider, ApiMode, OpenAiProvider, ThinkingConfig};
+pub use providers::{AnthropicProvider, ApiMode, GeminiProvider, OpenAiProvider, ThinkingConfig};
 pub use session::{AgentFactory, DeltaCallback, SessionHandle, SessionStore, StepCallback};
 pub use stream_cancel::stream_generate_with_cancel;
 pub use task::{

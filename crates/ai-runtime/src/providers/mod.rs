@@ -1,12 +1,15 @@
 //! Providers — 真实 AI Provider 实现
 //!
 //! 共享 HTTP 基础设施 + per-provider 的请求/响应转换。
-//! v0.1 支持 Anthropic Claude 和 OpenAI GPT，非流式 + 流式。
+//! v0.1 支持 Anthropic Claude、OpenAI GPT 与 Google Gemini（原生 generateContent），
+//! 非流式 + 流式。
 
 pub mod anthropic;
+pub mod gemini;
 pub mod openai;
 
 pub use anthropic::AnthropicProvider;
+pub use gemini::GeminiProvider;
 pub use openai::{ApiMode, OpenAiProvider};
 
 use crate::provider::{AiError, GenerateRequest, GenerateResponse, StreamEvent};
@@ -266,15 +269,97 @@ pub(crate) fn apply_overrides(
                         obj.insert("temperature".to_string(), serde_json::Value::from(1.0_f64));
                     }
                 }
+                "gemini" => {
+                    // Gemini 的思考参数嵌在 generationConfig.thinkingConfig：
+                    // - 3.x 系列 → thinkingLevel 档位（minimal/low/medium/high；
+                    //   「不能关思考」的模型如 3.1 Pro 拒绝 minimal，应选 Auto）
+                    // - 2.5 系列 → thinkingBudget token 预算（0 = 关闭，Flash 上限 24576）
+                    // 按 adapter.model() 区分（模型名走 URL，body 里没有 model 字段）。
+                    let gen3 = adapter.model().contains("gemini-3");
+                    let (thinking_cfg, reserve) = if gen3 {
+                        let level = match tc {
+                            ThinkingConfig::Off => "minimal",
+                            ThinkingConfig::Low => "low",
+                            ThinkingConfig::Medium => "medium",
+                            ThinkingConfig::High | ThinkingConfig::Budget(_) => "high",
+                            // 上方守卫已排除 Auto（该档位不发送思考参数）
+                            ThinkingConfig::Auto => unreachable!(),
+                        };
+                        // 档位没有确定预算，按中档思考预留配额（minimal 不消耗）
+                        let reserve = if matches!(tc, ThinkingConfig::Off) {
+                            0
+                        } else {
+                            16_384
+                        };
+                        (serde_json::json!({ "thinkingLevel": level }), reserve)
+                    } else {
+                        let budget = match tc {
+                            ThinkingConfig::Off => 0,
+                            ThinkingConfig::Low => 2048,
+                            ThinkingConfig::Medium => 8000,
+                            ThinkingConfig::High => 24000,
+                            ThinkingConfig::Budget(n) => *n,
+                            ThinkingConfig::Auto => unreachable!(),
+                        };
+                        let reserve = if budget > 0 {
+                            budget.min(24_576) as usize
+                        } else {
+                            0
+                        };
+                        (serde_json::json!({ "thinkingBudget": budget }), reserve)
+                    };
+
+                    // maxOutputTokens 是包含思考 token 的硬截断：
+                    // 不抬高配额时思考会把正文吃空（finishReason=MAX_TOKENS 且空正文）。
+                    // 与 Anthropic 的 budget 抬高同思路；65535 为主流 Gemini 模型输出上限。
+                    if let Some(gc) = obj
+                        .entry("generationConfig")
+                        .or_insert_with(|| serde_json::json!({}))
+                        .as_object_mut()
+                    {
+                        gc.insert("thinkingConfig".to_string(), thinking_cfg);
+                        if reserve > 0 {
+                            let current = gc
+                                .get("maxOutputTokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(max_tokens as u64);
+                            gc.insert(
+                                "maxOutputTokens".to_string(),
+                                serde_json::Value::from((current + reserve as u64).min(65_535)),
+                            );
+                        }
+                    }
+                }
                 _ => {}
             }
         }
     }
 
     // 2. extra_body 深合并（用户自定义，覆盖优先级最高）
+    //
+    // 对象类型递归合并而非整体替换：Gemini 等嵌套结构（generationConfig.thinkingConfig）
+    // 允许只覆盖子字段而保留 temperature / maxOutputTokens 等兄弟字段；
+    // 标量与数组仍是整体替换。
     if let Some(custom) = adapter.custom_body() {
-        for (k, v) in custom {
-            obj.insert(k.clone(), v.clone());
+        deep_merge_into(obj, custom);
+    }
+}
+
+/// 把 `custom` 的键值深合并进 `target`：双方都是 object 时递归合并，否则整体替换
+fn deep_merge_into(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    custom: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (k, v) in custom {
+        match target.get_mut(k) {
+            Some(existing) if existing.is_object() && v.is_object() => {
+                if let (Some(eo), Some(vo)) = (existing.as_object_mut(), v.as_object()) {
+                    deep_merge_into(eo, vo);
+                }
+            }
+            _ => {
+                target.insert(k.clone(), v.clone());
+            }
         }
     }
 }
@@ -296,6 +381,26 @@ pub trait ProviderAdapter: Send + Sync {
 
     /// API endpoint URL（完整路径）
     fn endpoint(&self) -> String;
+
+    /// 流式端点 URL。默认与非流式相同（body 加 stream 标记区分）；
+    /// Gemini 原生 API 走独立方法路径 `:streamGenerateContent?alt=sse`。
+    fn stream_endpoint(&self) -> String {
+        self.endpoint()
+    }
+
+    /// 流式请求需要注入 body 的标记字段。默认 `("stream", true)`；
+    /// Gemini 不接受未知字段（直接 400），返回 None 跳过注入。
+    fn stream_flag(&self) -> Option<(String, serde_json::Value)> {
+        Some((
+            "stream".to_string(),
+            serde_json::Value::Bool(true),
+        ))
+    }
+
+    /// 模型名（apply_overrides 需要按模型差异映射参数，如 Gemini 3.x vs 2.5 的思考参数）
+    fn model(&self) -> &str {
+        ""
+    }
 
     /// 从环境变量读取 API Key
     fn api_key(&self) -> Result<String, AiError>;
@@ -361,8 +466,9 @@ pub trait ProviderAdapter: Send + Sync {
 
 /// 拉取 Provider 支持的模型 ID 列表（按字母序、去重）。
 ///
-/// `api_key` 留空时读环境变量（anthropic → ANTHROPIC_API_KEY，其余 →
-/// OPENAI_API_KEY）；Ollama 等本地服务无 Key 也能成功。
+/// `api_key` 留空时读环境变量（anthropic → ANTHROPIC_API_KEY，gemini →
+/// GEMINI_API_KEY / GOOGLE_API_KEY，其余 → OPENAI_API_KEY）；
+/// Ollama 等本地服务无 Key 也能成功。
 pub fn list_models(
     provider_name: &str,
     api_url: Option<&str>,
@@ -370,11 +476,19 @@ pub fn list_models(
     api_key: Option<&str>,
 ) -> Result<Vec<String>, AiError> {
     let is_anthropic = provider_name == "anthropic";
+    let is_gemini = provider_name == "gemini";
     let key = match api_key.map(str::trim).filter(|k| !k.is_empty()) {
         Some(k) => k.to_string(),
         None => {
             let env = if is_anthropic {
                 "ANTHROPIC_API_KEY"
+            } else if is_gemini {
+                // AI Studio 用 GEMINI_API_KEY，gcloud 生态用 GOOGLE_API_KEY
+                if std::env::var("GEMINI_API_KEY").is_err() {
+                    "GOOGLE_API_KEY"
+                } else {
+                    "GEMINI_API_KEY"
+                }
             } else {
                 "OPENAI_API_KEY"
             };
@@ -387,7 +501,9 @@ pub fn list_models(
         .timeout(std::time::Duration::from_secs(20))
         .build();
     let mut req = agent.get(&url);
-    if is_anthropic {
+    if is_gemini {
+        req = req.set("x-goog-api-key", &key);
+    } else if is_anthropic {
         // Anthropic 用 x-api-key + 版本头（与其 messages API 一致）
         req = req
             .set("x-api-key", &key)
@@ -428,16 +544,39 @@ pub fn list_models(
     )
     .map_err(|e| AiError::Parse(format!("模型列表解析失败: {e}")))?;
 
-    let mut ids: Vec<String> = body
-        .get("data")
-        .and_then(|d| d.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|m| m.get("id").and_then(|x| x.as_str()))
-                .map(|s| s.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut ids: Vec<String> = if is_gemini {
+        // Gemini 的模型列表是 {models:[{name:"models/xxx", supportedGenerationMethods:[...]}]}
+        // 只保留支持 generateContent 的（排除 embedding / image / video 专用模型）
+        body.get("models")
+            .and_then(|m| m.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| {
+                        let methods = m
+                            .get("supportedGenerationMethods")
+                            .and_then(|s| s.as_array());
+                        if let Some(methods) = methods {
+                            if !methods.iter().any(|x| x.as_str() == Some("generateContent")) {
+                                return None;
+                            }
+                        }
+                        let name = m.get("name").and_then(|n| n.as_str())?;
+                        Some(name.strip_prefix("models/").unwrap_or(name).to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        body.get("data")
+            .and_then(|d| d.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.get("id").and_then(|x| x.as_str()))
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     ids.sort();
     ids.dedup();
     Ok(ids)
@@ -447,7 +586,11 @@ pub fn list_models(
 /// - 无 api_url / base 模式：`{base}/v1/models`（anthropic 与 openai 同构）
 /// - 完整 URL 模式：剥掉尾部的 chat/responses/messages 方法路径后，
 ///   原本带 `/v1/` 的回到 `/v1/models`，只有版本段（如 `/v4`）的接 `/models`
+/// - gemini：`{base}/v1beta/models`（方法 URL 截回 `/models` 段）
 pub fn models_endpoint(provider_name: &str, api_url: Option<&str>, api_url_full: bool) -> String {
+    if provider_name == "gemini" {
+        return gemini_models_endpoint(api_url);
+    }
     let is_anthropic = provider_name == "anthropic";
     let default_base = if is_anthropic {
         "https://api.anthropic.com"
@@ -486,6 +629,26 @@ pub fn models_endpoint(provider_name: &str, api_url: Option<&str>, api_url_full:
     // base 模式与 chat 端点同前缀：chat 是 {base}/v1/chat/completions，
     // 模型列表就是 {base}/v1/models（DeepSeek 等只认 /v1/models）
     format!("{base}/v1/models")
+}
+
+/// Gemini 模型列表端点：`{base}/v1beta/models`
+///
+/// api_url 为完整方法 URL（…/v1beta/models/{model}:generateContent）时截回
+/// `/models` 段；为 base 时剥掉已有 `/v1beta` 尾巴再拼，避免双段。
+fn gemini_models_endpoint(api_url: Option<&str>) -> String {
+    let base = match api_url.map(str::trim).filter(|u| !u.is_empty()) {
+        Some(u) => {
+            let b = u.trim_end_matches('/').to_string();
+            if let Some(pos) = b.rfind("/models/") {
+                return format!("{}/models", &b[..pos]);
+            }
+            b.strip_suffix("/v1beta")
+                .map(str::to_string)
+                .unwrap_or(b)
+        }
+        None => "https://generativelanguage.googleapis.com".to_string(),
+    };
+    format!("{base}/v1beta/models")
 }
 
 pub struct HttpClient;
@@ -527,7 +690,7 @@ impl HttpClient {
         if !adapter
             .extra_headers()
             .iter()
-            .any(|(k, _)| k == "x-api-key")
+            .any(|(k, _)| k == "x-api-key" || k == "x-goog-api-key")
         {
             req = req.set("Authorization", &format!("Bearer {api_key}"));
         }
@@ -535,7 +698,10 @@ impl HttpClient {
         // 追加用户自定义头（跳过认证头，避免误覆盖）
         for (key, value) in adapter.custom_headers() {
             let lower = key.to_lowercase();
-            if lower == "authorization" || lower == "x-api-key" {
+            if lower == "authorization"
+                || lower == "x-api-key"
+                || lower == "x-goog-api-key"
+            {
                 continue;
             }
             req = req.set(key, value);
@@ -627,7 +793,7 @@ impl HttpStreamClient {
             .build()
             .map_err(|e| AiError::Network(format!("创建 HTTP 客户端失败: {e}")))?;
 
-        let endpoint = adapter.endpoint();
+        let endpoint = adapter.stream_endpoint();
         let mut req_builder = client
             .post(&endpoint)
             .header("Content-Type", "application/json");
@@ -639,7 +805,7 @@ impl HttpStreamClient {
         if !adapter
             .extra_headers()
             .iter()
-            .any(|(k, _)| k == "x-api-key")
+            .any(|(k, _)| k == "x-api-key" || k == "x-goog-api-key")
         {
             req_builder = req_builder.header("Authorization", format!("Bearer {api_key}"));
         }
@@ -647,20 +813,26 @@ impl HttpStreamClient {
         // 追加用户自定义头（跳过认证头，避免误覆盖）
         for (key, value) in adapter.custom_headers() {
             let lower = key.to_lowercase();
-            if lower == "authorization" || lower == "x-api-key" {
+            if lower == "authorization"
+                || lower == "x-api-key"
+                || lower == "x-goog-api-key"
+            {
                 continue;
             }
             req_builder = req_builder.header(key, value);
         }
 
-        // Streaming request body needs the stream flag
+        // 流式标记字段：绝大多数服务在 body 加 stream:true；
+        // Gemini 原生 API 靠 URL 方法区分且拒绝未知字段，跳过注入
         let mut body_map = match body.as_object() {
             Some(obj) => obj.clone(),
             None => {
                 return Err(AiError::Network("请求体不是 JSON object".to_string()));
             }
         };
-        body_map.insert("stream".to_string(), serde_json::Value::Bool(true));
+        if let Some((flag_key, flag_val)) = adapter.stream_flag() {
+            body_map.insert(flag_key, flag_val);
+        }
 
         let resp = req_builder.json(&body_map).send().await.map_err(|e| {
             if e.is_timeout() {
@@ -838,6 +1010,7 @@ mod tests {
         thinking: Option<ThinkingConfig>,
         extra_body: Option<serde_json::Value>,
         dialect: Option<super::ThinkingDialect>,
+        model: &'static str,
     }
 
     impl super::ProviderAdapter for MockAdapter {
@@ -849,6 +1022,9 @@ mod tests {
         }
         fn api_key(&self) -> Result<String, AiError> {
             Ok(String::new())
+        }
+        fn model(&self) -> &str {
+            self.model
         }
         fn to_request_body(
             &self,
@@ -876,6 +1052,18 @@ mod tests {
         }
     }
 
+    impl MockAdapter {
+        fn new(id: &'static str, thinking: ThinkingConfig) -> Self {
+            Self {
+                id,
+                thinking: Some(thinking),
+                extra_body: None,
+                dialect: None,
+                model: "gemini-2.5-flash",
+            }
+        }
+    }
+
     #[test]
     fn with_profile_max_tokens_overrides_request() {
         // 档案配置 Some 时替换请求的 max_tokens（其余字段原样保留）
@@ -898,6 +1086,7 @@ mod tests {
         // 思考型模型（R1/GLM-Z1/QwQ）不接受 minimal，兼容服务可能拒绝 reasoning_effort。
         for id in ["openai", "openai-responses", "anthropic"] {
             let adapter = MockAdapter {
+                model: "m",
                 id,
                 thinking: Some(ThinkingConfig::Auto),
                 extra_body: None,
@@ -933,6 +1122,7 @@ mod tests {
             (ThinkingConfig::High, "enabled"),
         ] {
             let adapter = MockAdapter {
+                model: "m",
                 id: "openai",
                 thinking: Some(config.clone()),
                 extra_body: None,
@@ -958,6 +1148,7 @@ mod tests {
         // 通义千问：思考是独立开关 enable_thinking
         for (config, expected) in [(ThinkingConfig::Off, false), (ThinkingConfig::Medium, true)] {
             let adapter = MockAdapter {
+                model: "m",
                 id: "openai",
                 thinking: Some(config.clone()),
                 extra_body: None,
@@ -979,6 +1170,7 @@ mod tests {
     fn apply_overrides_anthropic_zhipu_sends_type_only() {
         // 智谱 Anthropic 兼容层：只发 thinking.type，不带 budget_tokens、不抬高 max_tokens
         let adapter = MockAdapter {
+            model: "m",
             id: "anthropic",
             thinking: Some(ThinkingConfig::Medium),
             extra_body: None,
@@ -1005,6 +1197,7 @@ mod tests {
         // GLM 默认开启思考，「不思考」必须显式 disabled 才真正关掉（省思维链 token），
         // 且关思考时不强制 temperature=1.0
         let adapter = MockAdapter {
+            model: "m",
             id: "anthropic",
             thinking: Some(ThinkingConfig::Off),
             extra_body: None,
@@ -1049,6 +1242,7 @@ mod tests {
             (ThinkingConfig::High, "high"),
         ] {
             let adapter = MockAdapter {
+                model: "m",
                 id: "openai",
                 dialect: None,
                 thinking: Some(config.clone()),
@@ -1077,6 +1271,7 @@ mod tests {
             (ThinkingConfig::High, "high"),
         ] {
             let adapter = MockAdapter {
+                model: "m",
                 id: "openai-responses",
                 dialect: None,
                 thinking: Some(config.clone()),
@@ -1101,6 +1296,7 @@ mod tests {
     #[test]
     fn apply_overrides_anthropic_thinking_forces_temperature_one() {
         let adapter = MockAdapter {
+            model: "m",
             id: "anthropic",
             dialect: None,
             thinking: Some(ThinkingConfig::Medium),
@@ -1120,6 +1316,7 @@ mod tests {
         // 开启 thinking 时，budget 不再被 clamp 到 max_tokens - 1，
         // 而是 max_tokens 被抬高到 原值 + budget，让思考与输出各有空间。
         let adapter = MockAdapter {
+            model: "m",
             id: "anthropic",
             dialect: None,
             thinking: Some(ThinkingConfig::High), // 24000
@@ -1138,6 +1335,7 @@ mod tests {
     #[test]
     fn apply_overrides_anthropic_budget_explicit() {
         let adapter = MockAdapter {
+            model: "m",
             id: "anthropic",
             dialect: None,
             thinking: Some(ThinkingConfig::Budget(5000)),
@@ -1155,6 +1353,7 @@ mod tests {
     fn apply_overrides_anthropic_budget_floor_1024() {
         // budget 低于 1024 时应被抬到 1024（Anthropic 最低要求）
         let adapter = MockAdapter {
+            model: "m",
             id: "anthropic",
             dialect: None,
             thinking: Some(ThinkingConfig::Budget(500)),
@@ -1171,6 +1370,7 @@ mod tests {
     fn apply_overrides_extra_body_overrides_thinking() {
         // extra_body 优先级最高，应覆盖 thinking 映射的字段
         let adapter = MockAdapter {
+            model: "m",
             id: "openai",
             dialect: None,
             thinking: Some(ThinkingConfig::High),
@@ -1185,6 +1385,7 @@ mod tests {
     #[test]
     fn apply_overrides_no_thinking_no_extra_body_is_noop() {
         let adapter = MockAdapter {
+            model: "m",
             id: "openai",
             dialect: None,
             thinking: None,
@@ -1200,6 +1401,7 @@ mod tests {
     #[test]
     fn apply_overrides_anthropic_off_does_not_inject_thinking() {
         let adapter = MockAdapter {
+            model: "m",
             id: "anthropic",
             dialect: None,
             thinking: Some(ThinkingConfig::Off),
@@ -1210,6 +1412,141 @@ mod tests {
         // Off 时不应注入 thinking，也不应改 temperature
         assert!(body.get("thinking").is_none());
         assert!((body["temperature"].as_f64().unwrap() - 0.3).abs() < 0.001);
+    }
+
+    #[test]
+    fn apply_overrides_gemini3_maps_thinking_level() {
+        // Gemini 3.x：thinkingLevel 档位 + 固定思考预留（minimal 不预留）
+        for (config, level, bump) in [
+            (ThinkingConfig::Off, "minimal", 0),
+            (ThinkingConfig::Low, "low", 16384),
+            (ThinkingConfig::Medium, "medium", 16384),
+            (ThinkingConfig::High, "high", 16384),
+            (ThinkingConfig::Budget(5000), "high", 16384),
+        ] {
+            let mut adapter = MockAdapter::new("gemini", config);
+            adapter.model = "gemini-3.8-flash";
+            let mut body = serde_json::json!({
+                "contents": [],
+                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}
+            });
+            apply_overrides(&mut body, &adapter, 4096);
+            assert_eq!(
+                body["generationConfig"]["thinkingConfig"]["thinkingLevel"].as_str(),
+                Some(level),
+                "gemini-3 thinking={:?} 应映射 thinkingLevel={level}",
+                adapter.thinking
+            );
+            // maxOutputTokens 抬高（含思考硬截断），temperature 保留
+            assert_eq!(
+                body["generationConfig"]["maxOutputTokens"].as_u64(),
+                Some(4096 + bump),
+                "gemini-3 thinking={:?} 应抬高 maxOutputTokens",
+                adapter.thinking
+            );
+            assert!(
+                (body["generationConfig"]["temperature"].as_f64().unwrap() - 0.7).abs() < 0.001
+            );
+        }
+    }
+
+    #[test]
+    fn apply_overrides_gemini25_maps_thinking_budget() {
+        // Gemini 2.5：thinkingBudget token 预算，Off=0 关闭且不抬高配额
+        for (config, budget) in [
+            (ThinkingConfig::Off, 0),
+            (ThinkingConfig::Low, 2048),
+            (ThinkingConfig::Medium, 8000),
+            (ThinkingConfig::High, 24000),
+            (ThinkingConfig::Budget(5000), 5000),
+        ] {
+            let adapter = MockAdapter::new("gemini", config);
+            let mut body = serde_json::json!({
+                "contents": [],
+                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}
+            });
+            apply_overrides(&mut body, &adapter, 4096);
+            assert_eq!(
+                body["generationConfig"]["thinkingConfig"]["thinkingBudget"].as_u64(),
+                Some(budget),
+                "gemini-2.5 thinking={:?} 应映射 thinkingBudget={budget}",
+                adapter.thinking
+            );
+            let bumped = 4096 + if budget > 0 { budget.min(24576) as usize } else { 0 };
+            assert_eq!(
+                body["generationConfig"]["maxOutputTokens"].as_u64(),
+                Some(bumped as u64)
+            );
+        }
+    }
+
+    #[test]
+    fn apply_overrides_gemini_creates_missing_generation_config() {
+        // body 无 generationConfig（如空对象起步）时自动创建嵌套结构
+        let adapter = MockAdapter::new("gemini", ThinkingConfig::Low);
+        let mut body = serde_json::json!({"contents": []});
+        apply_overrides(&mut body, &adapter, 4096);
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingBudget"].as_u64(),
+            Some(2048)
+        );
+        assert_eq!(body["generationConfig"]["maxOutputTokens"].as_u64(), Some(4096 + 2048));
+    }
+
+    #[test]
+    fn apply_overrides_gemini_auto_sends_nothing() {
+        // Auto：跟随模型默认，不发 thinkingConfig 也不动 maxOutputTokens
+        let adapter = MockAdapter::new("gemini", ThinkingConfig::Auto);
+        let mut body =
+            serde_json::json!({"generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}});
+        apply_overrides(&mut body, &adapter, 4096);
+        assert!(body["generationConfig"].get("thinkingConfig").is_none());
+        assert_eq!(body["generationConfig"]["maxOutputTokens"].as_u64(), Some(4096));
+    }
+
+    #[test]
+    fn apply_overrides_extra_body_deep_merges_nested_objects() {
+        // extra_body 与基础字段都是对象时递归合并：
+        // 覆盖 thinkingConfig 的同时保留 temperature / maxOutputTokens 兄弟字段
+        let adapter = MockAdapter {
+            id: "gemini",
+            model: "gemini-3.8-flash",
+            thinking: None,
+            extra_body: Some(serde_json::json!({
+                "generationConfig": {
+                    "thinkingConfig": {"thinkingLevel": "low"},
+                    "candidateCount": 1
+                }
+            })),
+            dialect: None,
+        };
+        let mut body = serde_json::json!({
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}
+        });
+        apply_overrides(&mut body, &adapter, 4096);
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"].as_str(),
+            Some("low")
+        );
+        assert_eq!(body["generationConfig"]["candidateCount"].as_u64(), Some(1));
+        // 兄弟字段保留，没有被整体替换掉
+        assert!((body["generationConfig"]["temperature"].as_f64().unwrap() - 0.7).abs() < 0.001);
+        assert_eq!(body["generationConfig"]["maxOutputTokens"].as_u64(), Some(4096));
+    }
+
+    #[test]
+    fn apply_overrides_extra_body_replaces_scalars() {
+        // 标量字段仍是整体替换（沿用旧行为）
+        let adapter = MockAdapter {
+            id: "openai",
+            model: "m",
+            thinking: None,
+            extra_body: Some(serde_json::json!({"reasoning_effort": "low"})),
+            dialect: None,
+        };
+        let mut body = serde_json::json!({"reasoning_effort": "high", "temperature": 0.5});
+        apply_overrides(&mut body, &adapter, 8192);
+        assert_eq!(body["reasoning_effort"].as_str(), Some("low"));
     }
 
     #[test]
