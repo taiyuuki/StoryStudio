@@ -2201,6 +2201,206 @@ impl Tool for MoveFragmentTool {
 }
 
 // ============================================================================
+// 认知矩阵 — 全景信息差视图（前端 ThreadPanel 用）
+// ============================================================================
+
+/// 矩阵列：一条线索（一个秘密）
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixThreadDto {
+    pub id: String,
+    pub title: String,
+    /// planned/planted/revealed/resolved/abandoned（锚点推导）
+    pub status: &'static str,
+    /// main/minor
+    pub priority: String,
+}
+
+/// 矩阵行：一个观察者（读者/角色/组织）
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixObserverDto {
+    /// 展示名（读者 / 角色真名 / 组织名）
+    pub label: String,
+    /// reader | character | organization | other
+    pub kind: String,
+}
+
+/// 单元格：某观察者对某线索的最新认知
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixCellDto {
+    /// unknown | suspected | known；空串 = 无记录（观察者未跟踪此线索）
+    pub state: String,
+    /// 认知定格的场景 ID（无记录为 None）
+    pub scene: Option<String>,
+    /// 「第N章·场景标题」定位标签
+    pub scene_label: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeMatrixDto {
+    pub threads: Vec<MatrixThreadDto>,
+    pub observers: Vec<MatrixObserverDto>,
+    /// cells[observer 行][thread 列]
+    pub cells: Vec<Vec<MatrixCellDto>>,
+}
+
+/// 汇聚全部线索的观察者认知矩阵：行=观察者、列=线索、格=最新认知。
+///
+/// 长篇悬疑感来自信息不对称的精密调配，但可见性按条目分散记录时，
+/// 「读者到底知道多少、反派知道多少、同行者知道多少」一眼看不见——
+/// 这里把 threads.toml 的 knowledge 时间线摊平成一张表。单元格取该
+/// 观察者时间线中**阅读序最靠后**的条目（时间线本身是逐条追加的，
+/// 但补录旧场景时会乱序，按场景阅读序取末项才与读者视角一致）。
+pub fn knowledge_matrix(
+    paths: &story_project_format::ProjectPaths,
+) -> Result<KnowledgeMatrixDto, String> {
+    use story_project_format::threads_file::ObserverDef;
+
+    // 尚无线索文件（新建项目）= 空矩阵
+    let Ok(content) = std::fs::read_to_string(paths.threads_toml()) else {
+        return Ok(KnowledgeMatrixDto { threads: Vec::new(), observers: Vec::new(), cells: Vec::new() });
+    };
+    let file = story_project_format::ThreadsFile::from_toml_str(&content)
+        .map_err(|e| format!("解析 threads.toml 失败: {e}"))?;
+    if file.threads.is_empty() {
+        return Ok(KnowledgeMatrixDto { threads: Vec::new(), observers: Vec::new(), cells: Vec::new() });
+    }
+
+    // 阅读序（structure.toml：book.chapters → chapter.scenes），供时间线排序
+    let structure = crate::mutations::load_structure(paths).ok();
+    let mut scene_order: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut scene_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Some(structure) = &structure {
+        for (ch_no, ch_id) in structure.book.chapters.iter().enumerate() {
+            let Some(ch) = structure.chapter.get(ch_id) else { continue };
+            for sc_id in &ch.scenes {
+                let label = structure
+                    .scene
+                    .get(sc_id)
+                    .and_then(|s| s.title.as_deref())
+                    .unwrap_or("无标题");
+                scene_order.insert(sc_id.clone(), scene_order.len());
+                scene_label.insert(
+                    sc_id.clone(),
+                    format!("第{}章·{}", ch_no + 1, label),
+                );
+            }
+        }
+    }
+
+    let threads: Vec<MatrixThreadDto> = file
+        .threads
+        .iter()
+        .map(|t| MatrixThreadDto {
+            id: t.id.clone(),
+            title: t.title.clone(),
+            status: derive_thread_status(t),
+            priority: t.priority.clone(),
+        })
+        .collect();
+
+    // 观察者清单：reader 固定首位，角色按 ID 序，组织随后
+    let mut character_ids: Vec<String> = Vec::new();
+    let mut organization_ids: Vec<String> = Vec::new();
+    let mut has_reader = false;
+    for t in &file.threads {
+        for k in &t.knowledge {
+            match &k.observer {
+                ObserverDef::Builtin(s) if s == "reader" => has_reader = true,
+                ObserverDef::Character { character } => {
+                    if !character_ids.iter().any(|c| c == character) {
+                        character_ids.push(character.clone());
+                    }
+                }
+                ObserverDef::Organization { organization } => {
+                    if !organization_ids.iter().any(|o| o == organization) {
+                        organization_ids.push(organization.clone());
+                    }
+                }
+                ObserverDef::Builtin(_) => {}
+            }
+        }
+    }
+    character_ids.sort();
+    organization_ids.sort();
+
+    let entity_label = |id: &str| -> String {
+        paths
+            .file_for_id(id)
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|c| story_project_format::EntityFile::from_toml_str(&c).ok())
+            .map(|e| e.display_name)
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    let mut observers: Vec<MatrixObserverDto> = Vec::new();
+    if has_reader {
+        observers.push(MatrixObserverDto { label: "读者".into(), kind: "reader".into() });
+    }
+    for cid in &character_ids {
+        observers.push(MatrixObserverDto {
+            label: entity_label(cid),
+            kind: "character".into(),
+        });
+    }
+    for oid in &organization_ids {
+        observers.push(MatrixObserverDto {
+            label: entity_label(oid),
+            kind: "organization".into(),
+        });
+    }
+
+    // 单元格：[观察者行][thread 列]
+    let empty_cell = MatrixCellDto { state: String::new(), scene: None, scene_label: None };
+    let mut cells: Vec<Vec<MatrixCellDto>> =
+        vec![vec![empty_cell.clone(); file.threads.len()]; observers.len()];
+
+    for (t_idx, t) in file.threads.iter().enumerate() {
+        for k in &t.knowledge {
+            // 时间线取阅读序最靠后的条目
+            let latest = k
+                .state_timeline
+                .iter()
+                .enumerate()
+                .max_by_key(|(i, entry)| {
+                    scene_order.get(&entry.scene).copied().unwrap_or_else(|| {
+                        // 场景不在结构里（被删/坏引用）：退回记录顺序，靠后为准
+                        usize::MAX / 2 + *i
+                    })
+                })
+                .map(|(_, entry)| entry);
+            let Some(latest) = latest else { continue };
+            let row = match &k.observer {
+                ObserverDef::Builtin(s) if s == "reader" => {
+                    if has_reader { Some(0) } else { None }
+                }
+                ObserverDef::Character { character } => character_ids
+                    .binary_search(character)
+                    .ok()
+                    .map(|i| i + usize::from(has_reader)),
+                ObserverDef::Organization { organization } => organization_ids
+                    .binary_search(organization)
+                    .ok()
+                    .map(|i| i + usize::from(has_reader) + character_ids.len()),
+                ObserverDef::Builtin(_) => None,
+            };
+            if let Some(row) = row {
+                cells[row][t_idx] = MatrixCellDto {
+                    state: latest.state.clone(),
+                    scene: Some(latest.scene.clone()),
+                    scene_label: scene_label.get(&latest.scene).cloned(),
+                };
+            }
+        }
+    }
+
+    Ok(KnowledgeMatrixDto { threads, observers, cells })
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -2213,6 +2413,98 @@ mod tests {
     };
     use story_project_format::init::init_project;
     use tempfile::TempDir;
+
+    /// 认知矩阵：观察者 × 线索，取阅读序最靠后的认知
+    #[test]
+    fn knowledge_matrix_flattens_observers_and_threads() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "test-novel").unwrap();
+        let paths = story_project_format::ProjectPaths::new(tmp.path());
+
+        std::fs::write(
+            paths.fragments_dir().parent().unwrap().join("structure.toml"),
+            r#"[book]
+id = "b_root"
+title = "测试"
+chapters = ["ch_01", "ch_02"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01", "sc_02"]
+
+[chapter.ch_02]
+title = "第二章"
+scenes = ["sc_03"]
+
+[scene.sc_01]
+title = "投宿"
+fragments = []
+
+[scene.sc_02]
+title = "跟踪"
+fragments = []
+
+[scene.sc_03]
+title = "摊牌"
+fragments = []
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            paths.threads_toml(),
+            r#"[[thread]]
+id = "t_0001"
+title = "凶手身份"
+priority = "main"
+planted_at = "sc_01"
+
+[[thread.knowledge]]
+observer = "reader"
+state_timeline = [
+  { scene = "sc_01", state = "unknown" },
+  { scene = "sc_03", state = "suspected" },
+]
+
+[[thread.knowledge]]
+observer = { character = "c_0002" }
+state_timeline = [
+  { scene = "sc_02", state = "known" },
+  # 补录的旧场景排在后面：按阅读序仍以 sc_02 为准
+  { scene = "sc_01", state = "unknown" },
+]
+"#,
+        )
+        .unwrap();
+
+        let matrix = knowledge_matrix(&paths).unwrap();
+        assert_eq!(matrix.threads.len(), 1);
+        assert_eq!(matrix.threads[0].status, "planted");
+        // 读者行在前，角色行随后
+        assert_eq!(matrix.observers.len(), 2);
+        assert_eq!(matrix.observers[0].label, "读者");
+        assert_eq!(matrix.observers[0].kind, "reader");
+        // 无档案的角色回退显示 ID
+        assert_eq!(matrix.observers[1].label, "c_0002");
+
+        // 读者：阅读序最靠后 sc_03 → suspected
+        assert_eq!(matrix.cells[0][0].state, "suspected");
+        assert_eq!(matrix.cells[0][0].scene.as_deref(), Some("sc_03"));
+        assert!(matrix.cells[0][0].scene_label.as_deref().unwrap().contains("摊牌"));
+        // 角色：补录乱序时仍按阅读序取 sc_02 → known
+        assert_eq!(matrix.cells[1][0].state, "known");
+        assert_eq!(matrix.cells[1][0].scene.as_deref(), Some("sc_02"));
+    }
+
+    #[test]
+    fn knowledge_matrix_empty_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "test-novel").unwrap();
+        let paths = story_project_format::ProjectPaths::new(tmp.path());
+        let matrix = knowledge_matrix(&paths).unwrap();
+        assert!(matrix.threads.is_empty());
+        assert!(matrix.observers.is_empty());
+    }
 
     fn setup_test_project() -> TempDir {
         let tmp = tempfile::tempdir().unwrap();

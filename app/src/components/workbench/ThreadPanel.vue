@@ -4,9 +4,11 @@ import { ElMessage } from 'element-plus'
 import type { ThreadDto, ThreadKnowledgeDto, VolumeGroupDto } from '@/api/backend'
 import { api } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
+import KnowledgeMatrixDialog from './KnowledgeMatrixDialog.vue'
 
 const store = useWorkspaceStore()
 
+const matrixOpen = ref(false)
 const creating = ref(false)
 const form = ref({ title: '', description: '', priority: 'minor', dueVolume: 0 })
 const editingId = ref<string | null>(null)
@@ -216,11 +218,19 @@ function removeKnowledge(t: ThreadDto, k: ThreadKnowledgeDto) {
   <div class="thread-panel">
     <div class="tp-head">
       <span class="text-ink-muted">叙事线索 · {{ threads.length }}</span>
-      <button class="ink-btn ink-btn--sm ink-btn--primary" @click="creating = true">
-        <i class="fa-solid fa-plus" />
-        新线索
-      </button>
+      <div class="tp-head-actions">
+        <button class="ink-btn ink-btn--sm" title="谁知道了什么：观察者 × 线索的信息差全景" @click="matrixOpen = true">
+          <i class="fa-solid fa-table-cells" />
+          认知矩阵
+        </button>
+        <button class="ink-btn ink-btn--sm ink-btn--primary" @click="creating = true">
+          <i class="fa-solid fa-plus" />
+          新线索
+        </button>
+      </div>
     </div>
+
+    <KnowledgeMatrixDialog v-model="matrixOpen" />
 
     <div v-if="creating" class="tp-create">
       <input v-model="form.title" placeholder="线索标题（例：玉佩之谜）" autofocus
@@ -395,6 +405,12 @@ function removeKnowledge(t: ThreadDto, k: ThreadKnowledgeDto) {
   align-items: center;
   justify-content: space-between;
   font-size: 12px;
+}
+
+.tp-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .tp-create {

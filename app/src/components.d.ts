@@ -41,6 +41,7 @@ declare module 'vue' {
     FragmentHistoryDialog: typeof import('./components/workbench/FragmentHistoryDialog.vue')['default']
     GitDiffDialog: typeof import('./components/workbench/GitDiffDialog.vue')['default']
     GitPanel: typeof import('./components/workbench/GitPanel.vue')['default']
+    KnowledgeMatrixDialog: typeof import('./components/workbench/KnowledgeMatrixDialog.vue')['default']
     MarkdownView: typeof import('./components/common/MarkdownView.vue')['default']
     NavRail: typeof import('./components/NavRail.vue')['default']
     NewProjectDialog: typeof import('./components/start/NewProjectDialog.vue')['default']

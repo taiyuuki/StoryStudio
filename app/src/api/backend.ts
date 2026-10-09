@@ -486,6 +486,34 @@ export interface FragmentDiffLineDto {
   count: number
 }
 
+// ── 线索认知矩阵 ──────────────────────────────────────────
+
+export interface MatrixThreadDto {
+  id: string
+  title: string
+  status: 'planned' | 'planted' | 'revealed' | 'resolved' | 'abandoned'
+  priority: string
+}
+
+export interface MatrixObserverDto {
+  label: string
+  kind: 'reader' | 'character' | 'organization' | 'other'
+}
+
+export interface MatrixCellDto {
+  /** unknown | suspected | known；空串 = 无记录 */
+  state: string
+  scene: string | null
+  sceneLabel: string | null
+}
+
+export interface KnowledgeMatrixDto {
+  threads: MatrixThreadDto[]
+  observers: MatrixObserverDto[]
+  /** cells[观察者行][线索列] */
+  cells: MatrixCellDto[][]
+}
+
 export interface DayCountDto {
   manual: number
   ai: number
@@ -888,6 +916,10 @@ export const api = {
       oldTs,
       newTs,
     })
+  },
+  /** 线索认知矩阵：行=观察者、列=线索、格=最新认知 */
+  threadKnowledgeMatrix(root: string) {
+    return call<KnowledgeMatrixDto>('thread_knowledge_matrix', { root })
   },
   statsSummary(root: string) {
     return call<WordStatsSummaryDto>('stats_summary', { root })

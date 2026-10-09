@@ -241,6 +241,12 @@ pub fn fragment_version_diff(
     lib::history::diff_versions(&paths(&root), &fragment_id, old_ts, new_ts).map_err(e)
 }
 
+/// 线索认知矩阵：行=观察者（读者/角色/组织）、列=线索、格=最新认知
+#[tauri::command]
+pub fn thread_knowledge_matrix(root: String) -> R<lib::tools::KnowledgeMatrixDto> {
+    lib::tools::knowledge_matrix(&paths(&root)).map_err(e)
+}
+
 // ── 码字统计 / AI 账本 ───────────────────────────────────
 
 #[tauri::command]

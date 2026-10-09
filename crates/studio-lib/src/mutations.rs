@@ -182,7 +182,7 @@ impl SaveToml for AnchoringFile {
 }
 
 /// 读取并解析 structure.toml（必须存在）
-fn load_structure(paths: &ProjectPaths) -> Result<StructureFile, StudioError> {
+pub(crate) fn load_structure(paths: &ProjectPaths) -> Result<StructureFile, StudioError> {
     let path = paths.structure_toml();
     let content = std::fs::read_to_string(&path)
         .map_err(|e| StudioError::Io(format!("读取 structure.toml 失败: {e}")))?;
