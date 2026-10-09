@@ -801,6 +801,66 @@ fn scene_time_of_fragment(
 
 /// Thread 确定性检查（合并为一条 Rule，内部检查全部确定性规则）
 ///
+/// 认知倒退检查：同一观察者对同一线索的认知状态沿阅读序应单调不降
+/// （unknown → suspected → known），倒退必是录入错误。
+#[derive(Debug)]
+pub struct KnowledgeRegression;
+
+impl Rule for KnowledgeRegression {
+    fn id(&self) -> &str {
+        "knowledge_regression"
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn phase(&self) -> RulePhase {
+        RulePhase::Semantic
+    }
+    fn depends_on(&self) -> &'static [Dependency] {
+        &[Dependency::Thread]
+    }
+
+    fn run(&self, ctx: &mut RuleContext) {
+        let Some(threads) = ctx.threads else {
+            return;
+        };
+        let rank = |s: &story_ir::KnowledgeState| -> u8 {
+            match s {
+                story_ir::KnowledgeState::Unknown => 0,
+                story_ir::KnowledgeState::Suspected => 1,
+                story_ir::KnowledgeState::Known => 2,
+            }
+        };
+        for (tid, thread) in threads.all() {
+            for entry in &thread.knowledge {
+                // 按阅读序排序后走一遍，状态降级即告警
+                let mut timeline: Vec<&story_ir::StateTimelineEntry> =
+                    entry.state_timeline.iter().collect();
+                timeline.sort_by_key(|e| {
+                    ctx.ir
+                        .document
+                        .reading_index(&e.scene)
+                        .unwrap_or(u32::MAX)
+                });
+                for pair in timeline.windows(2) {
+                    let (prev, next) = (pair[0], pair[1]);
+                    if rank(&next.state) < rank(&prev.state) {
+                        ctx.warning(
+                            self.id(),
+                            "knowledge_regression",
+                            format!(
+                                "线索 {}（{}）观察者 {:?} 的认知在场景 {} 从 {:?} 倒退为 {:?}——认知状态沿阅读序应单调不降，请核对录入",
+                                tid, thread.title, entry.observer, next.scene, prev.state, next.state
+                            ),
+                            SourceLocation::structure(tid.clone()),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 检查项（RFC-0017 §7.1）：
 /// - premature_reveal: revealed_at 早于 planted_at → Error
 /// - thread_resolve_cycle: resolves 图存在环 → Error
@@ -1105,6 +1165,145 @@ mod tests {
         let ir = StoryIR::new();
         let codes = run_rule(&AgeInconsistency, &ir, None, Some(&kb));
         assert!(codes.is_empty(), "被取代的断言应被忽略");
+    }
+
+    // ========================================================================
+    // KnowledgeRegression — 认知倒退
+    // ========================================================================
+
+    #[test]
+    fn knowledge_regression_flags_state_backslide() {
+        // 阅读序上 suspected 之后出现 unknown → 告警
+        let mut t = story_ir::Thread {
+            id: StableId::new_unchecked("t_001"),
+            title: "身世线".to_string(),
+            description: None,
+            goal: None,
+            priority: story_ir::ThreadPriority::Minor,
+            scope: story_ir::ThreadScope::Reader,
+            tags: vec![],
+            assertions: vec![],
+            planted_at: None,
+            revealed_at: None,
+            resolved_at: None,
+            abandoned: false,
+            resolves: vec![],
+            resolved_by: vec![],
+            knowledge: vec![],
+            relationships: vec![],
+        };
+        t.knowledge.push(story_ir::ThreadKnowledge {
+            observer: story_ir::Observer::Reader,
+            state_timeline: vec![
+                story_ir::StateTimelineEntry {
+                    scene: StableId::new_unchecked("sc_01_01"),
+                    state: story_ir::KnowledgeState::Suspected,
+                },
+                story_ir::StateTimelineEntry {
+                    scene: StableId::new_unchecked("sc_02_01"),
+                    state: story_ir::KnowledgeState::Unknown,
+                },
+            ],
+        });
+        let mut threads = story_ir::ThreadCollection::new();
+        threads.insert(t);
+
+        // IR 提供阅读序（sc_01_01 早于 sc_02_01）
+        let mut ir = StoryIR::new();
+        ir.document.insert(DocNode::Scene(SceneNode {
+            id: StableId::new_unchecked("sc_01_01"),
+            chapter: StableId::new_unchecked("ch_01"),
+            prev: None,
+            next: None,
+            title: Some("一".into()),
+            symbol: None,
+            pov: None,
+            mood: None,
+            function: None,
+            summary: None,
+            story_time: None,
+            story_time_anchor: None,
+            story_time_gap: None,
+        }));
+        ir.document.insert(DocNode::Scene(SceneNode {
+            id: StableId::new_unchecked("sc_02_01"),
+            chapter: StableId::new_unchecked("ch_01"),
+            prev: None,
+            next: None,
+            title: Some("二".into()),
+            symbol: None,
+            pov: None,
+            mood: None,
+            function: None,
+            summary: None,
+            story_time: None,
+            story_time_anchor: None,
+            story_time_gap: None,
+        }));
+
+        let mut sink = DiagnosticSink::new();
+        let mut ctx = RuleContext::new(&ir, None, None, Some(&threads), Severity::Error, &mut sink);
+        KnowledgeRegression.run(&mut ctx);
+        let codes: Vec<String> = sink
+            .into_diagnostics()
+            .0
+            .into_iter()
+            .map(|d| d.code.as_str().to_string())
+            .collect();
+        assert_eq!(codes, vec!["knowledge_regression"]);
+    }
+
+    #[test]
+    fn knowledge_regression_allows_monotonic_progress() {
+        // unknown → suspected → known 单调推进 → 不告警
+        let mut t = story_ir::Thread {
+            id: StableId::new_unchecked("t_001"),
+            title: "身世线".to_string(),
+            description: None,
+            goal: None,
+            priority: story_ir::ThreadPriority::Minor,
+            scope: story_ir::ThreadScope::Reader,
+            tags: vec![],
+            assertions: vec![],
+            planted_at: None,
+            revealed_at: None,
+            resolved_at: None,
+            abandoned: false,
+            resolves: vec![],
+            resolved_by: vec![],
+            knowledge: vec![],
+            relationships: vec![],
+        };
+        t.knowledge.push(story_ir::ThreadKnowledge {
+            observer: story_ir::Observer::Reader,
+            state_timeline: vec![
+                story_ir::StateTimelineEntry {
+                    scene: StableId::new_unchecked("sc_01_01"),
+                    state: story_ir::KnowledgeState::Unknown,
+                },
+                story_ir::StateTimelineEntry {
+                    scene: StableId::new_unchecked("sc_02_01"),
+                    state: story_ir::KnowledgeState::Suspected,
+                },
+                story_ir::StateTimelineEntry {
+                    scene: StableId::new_unchecked("sc_03_01"),
+                    state: story_ir::KnowledgeState::Known,
+                },
+            ],
+        });
+        let mut threads = story_ir::ThreadCollection::new();
+        threads.insert(t);
+        let ir = StoryIR::new();
+        let mut sink = DiagnosticSink::new();
+        let mut ctx = RuleContext::new(&ir, None, None, Some(&threads), Severity::Error, &mut sink);
+        KnowledgeRegression.run(&mut ctx);
+        let codes: Vec<String> = sink
+            .into_diagnostics()
+            .0
+            .into_iter()
+            .map(|d| d.code.as_str().to_string())
+            .collect();
+        assert!(codes.is_empty(), "单调推进不应告警: {codes:?}");
     }
 
     // ========================================================================

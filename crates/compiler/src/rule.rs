@@ -191,6 +191,7 @@ impl RuleRegistry {
         registry.register(Box::new(crate::builtin_rules::EvidenceMismatch));
         // Thread 规则（RFC-0017 §7.1）
         registry.register(Box::new(crate::builtin_rules::ThreadChecker));
+        registry.register(Box::new(crate::builtin_rules::KnowledgeRegression));
 
         registry
     }
