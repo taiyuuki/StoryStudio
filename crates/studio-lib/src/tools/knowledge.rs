@@ -1154,7 +1154,7 @@ impl Tool for SetThreadKnowledgeTool {
             description: "记录线索的可见性变化——某观察者在某场景的知晓程度。\
             这是管理信息流的核心工具：跟踪谁（读者/角色/组织）在什么时候知道了什么。\
             同一观察者的记录会累积为时间线。\
-            一次记录多条可见性（如一章后多名角色获知）用 records 批量传入。"
+            一场戏后多名角色同时获知用 observers 数组（同一线索/场景/状态批量应用）；\n            不同线索或不同状态的组合用 records 批量传入。"
                 .into(),
             parameters: object_schema(vec![
                 ("thread_id", "string", "线索 ID（如 t_001）；单条记录时必填", false),
@@ -1174,6 +1174,12 @@ impl Tool for SetThreadKnowledgeTool {
                     "scene_id",
                     "string",
                     "发生变化的场景 ID（如 sc_01_02）；单条记录时必填",
+                    false,
+                ),
+                (
+                    "observers",
+                    "array",
+                    "多名观察者便捷形态：观察者 ID 数组（如 [\"c_0001\",\"c_0002\"]），同一线索/场景/状态批量应用——一场戏后多人同时获知时用它，免去逐条拼 records",
                     false,
                 ),
                 (
@@ -1223,15 +1229,43 @@ impl Tool for SetThreadKnowledgeTool {
         }
 
         let thread_id = get_str(arguments, "thread_id")?;
-        let observer = get_str(arguments, "observer")?;
         let state = get_str(arguments, "state")?;
         let scene_id = get_str(arguments, "scene_id")?;
 
-        crate::mutations::set_thread_knowledge(&paths, &thread_id, &observer, &state, &scene_id)
+        // observers 便捷形态：同一线索、同一场景、同一状态，多名观察者
+        // 一场戏后集体获知——免去拼 N 条几乎相同的 records
+        let observers: Vec<String> = match get_json_array_opt(arguments, "observers")? {
+            Some(items) => {
+                let list: Vec<String> = items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .filter(|s| !s.trim().is_empty())
+                    .collect();
+                if list.is_empty() {
+                    return Err("observers 不能为空数组".into());
+                }
+                list
+            }
+            None => vec![get_str(arguments, "observer")?],
+        };
+
+        let entries: Vec<(String, String, String, String)> = observers
+            .iter()
+            .map(|o| {
+                (
+                    thread_id.clone(),
+                    o.clone(),
+                    state.clone(),
+                    scene_id.clone(),
+                )
+            })
+            .collect();
+        crate::mutations::set_thread_knowledge_batch(&paths, &entries)
             .map_err(|e| e.to_string())?;
 
         Ok(format!(
-            "可见性已记录: 线索 {thread_id} — {observer} 在 {scene_id} 变为 {state}"
+            "可见性已记录: 线索 {thread_id} — {} 在 {scene_id} 变为 {state}",
+            observers.join("、")
         ))
     }
 }
