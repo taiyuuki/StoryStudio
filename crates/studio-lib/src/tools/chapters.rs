@@ -617,6 +617,95 @@ impl Tool for DeleteChapterOutlineTool {
 }
 
 // ============================================================================
+// populate_scenes_from_beats
+// ============================================================================
+
+pub struct PopulateScenesFromBeatsTool {
+    ctx: ToolContext,
+}
+impl PopulateScenesFromBeatsTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for PopulateScenesFromBeatsTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "populate_scenes_from_beats".into(),
+            description: "按章节脉络的节拍（beats）一键生成场景骨架：每个节拍创建一个待写场景\n            （标题取节拍摘要、叙事功能存完整节拍文本），并同步到脉络的 scenes 列表。\n            前提：该章已 create_chapter 落实（chapter_id 已回填）。\n            生成的是骨架，写正文仍用 write_fragment_text 逐场景推进。"
+                .into(),
+            parameters: object_schema(vec![(
+                "index",
+                "integer",
+                "章序号（1-based，对应 get_chapter_outline 显示的编号）",
+                true,
+            )]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let index = get_index(arguments, "index")?;
+        let paths = self.ctx.paths();
+
+        let (file, _volumes, _path) = load_chapters(&self.ctx)?;
+        check_index("章节", index, file.chapters.len())?;
+        let entry = &file.chapters[index - 1];
+        let chapter_id = entry.chapter_id.clone().ok_or_else(|| {
+            format!(
+                "第 {index} 章「{}」还是虚拟章（无 chapter_id），先 create_chapter 落实后再生成场景骨架",
+                entry.title
+            )
+        })?;
+        if entry.beats.is_empty() {
+            return Err(format!(
+                "第 {index} 章「{}」没有节拍（beats），无从而生成；先 update_chapter_outline 补节拍",
+                entry.title
+            ));
+        }
+        let beats = entry.beats.clone();
+        let title = entry.title.clone();
+        // 已生成的骨架数量（按脉络 scenes 记录，幂等基准）
+        let existing = file.chapters[index - 1].scenes.len();
+
+        let mut created = Vec::new();
+        for (i, beat) in beats.iter().skip(existing).enumerate() {
+            let head: String = beat.chars().take(12).collect();
+            let scene_title = format!("第{}幕·{}", existing + i + 1, head);
+            let scene_id = crate::mutations::create_scene(&paths, &chapter_id, &scene_title, None)
+                .map_err(|e| e.to_string())?;
+            // 叙事功能存完整节拍文本，写作时上下文自含
+            let update = crate::mutations::SceneUpdate {
+                title: None,
+                pov: None,
+                mood: None,
+                function: Some(Some(beat.as_str())),
+                summary: None,
+                story_time: None,
+            };
+            let _ = crate::mutations::update_scene(&paths, &scene_id, &update);
+            crate::mutations::append_chapter_outline_scene(&paths, index, &scene_id)
+                .map_err(|e| e.to_string())?;
+            created.push(format!("{scene_id}「{scene_title}」"));
+        }
+
+        if created.is_empty() {
+            Ok(format!(
+                "第 {index} 章「{title}」的 {} 个节拍均已生成过场景（{existing} 个），无新增",
+                beats.len()
+            ))
+        } else {
+            Ok(format!(
+                "第 {index} 章「{title}」按 {} 个节拍生成 {} 个场景骨架：{}",
+                beats.len(),
+                created.len(),
+                created.join("、")
+            ))
+        }
+    }
+}
+
+// ============================================================================
 // helpers
 // ============================================================================
 
@@ -1099,6 +1188,38 @@ mod tests {
         let out = get.execute(&serde_json::json!({})).unwrap();
         assert!(out.contains("新版第一章"), "{out}");
         assert!(!out.contains("上山"), "{out}");
+    }
+
+    /// populate_scenes_from_beats：按节拍生成场景骨架，幂等。
+    #[test]
+    fn populate_scenes_from_beats_creates_skeleton() {
+        let (_tmp, ctx) = setup();
+        let design = DesignChaptersTool::new(ctx.clone());
+        design
+            .execute(&serde_json::json!({
+                "chapters": r#"[{"title":"上山","beats":["山门对峙","夜探藏经阁","断崖顿悟"]}]"#
+            }))
+            .unwrap();
+
+        // 虚拟章直接生成 → 报错引导 create_chapter
+        let tool = PopulateScenesFromBeatsTool::new(ctx.clone());
+        let err = tool.execute(&serde_json::json!({"index": 1})).unwrap_err();
+        assert!(err.contains("create_chapter"), "{err}");
+
+        // 落实物理章（同名自动回填）后生成：3 节拍 → 3 场景，脉络 scenes 同步
+        let paths = story_project_format::ProjectPaths::new(&ctx.project_dir);
+        crate::mutations::create_chapter(&paths, "上山").unwrap();
+        let out = tool.execute(&serde_json::json!({"index": 1})).unwrap();
+        assert!(out.contains("3 个场景骨架"), "{out}");
+        assert!(out.contains("第1幕"), "{out}");
+
+        // 幂等：再次调用无新增
+        let out = tool.execute(&serde_json::json!({"index": 1})).unwrap();
+        assert!(out.contains("无新增"), "{out}");
+
+        // 脉络 scenes 列表已同步 3 个场景 ID
+        let file = crate::mutations::load_chapters_file(&paths).unwrap();
+        assert_eq!(file.chapters[0].scenes.len(), 3);
     }
 
     #[test]

@@ -192,6 +192,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(UpdateOutlineItemTool::new(ctx.clone())));
     registry.register(Box::new(DeleteOutlineItemTool::new(ctx.clone())));
     registry.register(Box::new(DesignChaptersTool::new(ctx.clone())));
+    registry.register(Box::new(PopulateScenesFromBeatsTool::new(ctx.clone())));
     registry.register(Box::new(GetChapterOutlineTool::new(ctx.clone())));
     registry.register(Box::new(UpdateChapterOutlineTool::new(ctx.clone())));
     registry.register(Box::new(DeleteChapterOutlineTool::new(ctx.clone())));
