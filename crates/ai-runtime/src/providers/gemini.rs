@@ -245,6 +245,16 @@ impl GeminiAdapter {
     }
 }
 
+/// 思考摘要 part 判定：`{"text": "...", "thought": true}`。
+///
+/// 思考与最终答案同在 `content.parts` 里，仅靠 `thought` 标记区分；
+/// 本应用未请求 includeThoughts，但部分代理/网关默认开启——思考一旦
+/// 混入 text，下游 JSON 解析必败（ai_check 曾因此整链降级 parse_error），
+/// 纯文本消费方也会被英文推理污染。非流式/流式两处都必须滤掉。
+fn is_thought_part(part: &serde_json::Value) -> bool {
+    part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
 /// Gemini finishReason → StopReason。
 /// 注意 Gemini 对「请求调用工具」同样返回 STOP（靠 functionCall part 区分），
 /// 由调用方在有工具调用时改判 ToolUse。
@@ -291,7 +301,9 @@ fn extract_parts(
     let mut tool_calls = Vec::new();
     for part in parts {
         if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-            text.push_str(t);
+            if !is_thought_part(part) {
+                text.push_str(t);
+            }
             continue;
         }
         if let Some(call) = part.get("functionCall") {
@@ -590,7 +602,7 @@ impl ProviderAdapter for GeminiAdapter {
         if let Some(parts) = candidate.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
             for part in parts {
                 if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-                    if !t.is_empty() {
+                    if !t.is_empty() && !is_thought_part(part) {
                         events.push(StreamEvent::Delta {
                             delta: t.to_string(),
                         });
@@ -1072,6 +1084,37 @@ mod tests {
         assert_eq!(result.stop_reason, StopReason::MaxTokens);
     }
 
+    #[test]
+    fn parse_response_drops_thought_parts() {
+        // 用户真实案例：本地代理默认返回思考摘要（thought:true），思考里还自带
+        // ```json 草稿。旧实现把思考拼进 text，下游 JSON 解析整链降级 parse_error。
+        // 修复后 text 只含最终答案 part。
+        let a = adapter();
+        let response = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"text": "Understanding the task, the goal is to detect AI writing.", "thought": true},
+                    {"text": "```json\n{\"analysis\": [「草稿」]}\n```", "thought": true},
+                    {"text": "{\"items\": [], \"summary\": \"未发现明显 AI 特征\"}"}
+                ]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 2846,
+                "candidatesTokenCount": 54,
+                "thoughtsTokenCount": 5106
+            }
+        });
+        let result = a.parse_response(&response).unwrap();
+        assert_eq!(
+            result.text, "{\"items\": [], \"summary\": \"未发现明显 AI 特征\"}",
+            "思考 part（含其中的 json 草稿）不应混入 text"
+        );
+        assert_eq!(result.stop_reason, StopReason::EndTurn);
+        // 思考 token 仍计入输出（与计费口径一致）
+        assert_eq!(result.usage.output_tokens, 5160);
+    }
+
     // ── 流式解析 ──────────────────────────────────────────
 
     #[test]
@@ -1083,6 +1126,19 @@ mod tests {
         match &events[0] {
             StreamEvent::Delta { delta } => assert_eq!(delta, "你好"),
             other => panic!("应为 Delta，实际: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_stream_skips_thought_deltas() {
+        // 思考摘要 part 不应产生 Delta，否则流式对话会把英文推理直接显示给用户
+        let a = adapter();
+        let line = r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Thinking through the task...","thought":true},{"text":"你好"}]}}]}"#;
+        let events = a.parse_stream_chunks(line);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Delta { delta } => assert_eq!(delta, "你好"),
+            other => panic!("应为单条 Delta，实际: {other:?}"),
         }
     }
 
