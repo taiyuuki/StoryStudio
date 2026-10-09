@@ -544,7 +544,7 @@ impl Tool for DeleteSceneTool {
 ///
 /// 输入: "1925" / "1925-3" / "1925-3-15" / ""(清除)
 /// 返回: None=清除, Some(def)=设值
-fn parse_story_time(s: &str) -> Result<Option<StoryTimeDef>, String> {
+pub(crate) fn parse_story_time(s: &str) -> Result<Option<StoryTimeDef>, String> {
     if s.is_empty() {
         return Ok(None); // 清除
     }

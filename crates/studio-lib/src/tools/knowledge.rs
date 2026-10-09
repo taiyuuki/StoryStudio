@@ -1280,6 +1280,18 @@ impl Tool for WriteFragmentTextTool {
                     "声明为刻意短片段（收尾/过渡/暗线视角等），跳过 800 字下限警示。默认 false",
                     false,
                 ),
+                (
+                    "scene_summary",
+                    "string",
+                    "顺手附带场景摘要（一两句话）：正文落盘的同时写入 scene.summary，省一次 update_scene 往返。摘要就在你刚写的正文里，提炼即可",
+                    false,
+                ),
+                (
+                    "scene_time",
+                    "string",
+                    "顺手附带故事时间：数字（1023-9-15 / 1023）或历法标签（灵历3217年），写入 scene.story_time",
+                    false,
+                ),
             ]),
         }
     }
@@ -1288,6 +1300,8 @@ impl Tool for WriteFragmentTextTool {
         let scene_id = get_str(arguments, "scene_id")?;
         let text = get_str(arguments, "text")?;
         let fragment_id_opt = get_str_opt(arguments, "fragment_id");
+        let scene_summary = get_str_opt(arguments, "scene_summary");
+        let scene_time_raw = get_str_opt(arguments, "scene_time");
 
 
         let paths = self.ctx.paths();
@@ -1360,6 +1374,31 @@ impl Tool for WriteFragmentTextTool {
         // 覆盖前的旧文已留版本快照（节流），可回滚——回执明示，鼓励大胆覆盖
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
             msg.push_str(&note);
+        }
+        // 顺手附带的场景元数据：同一次调用落盘，省一次 update_scene 往返
+        let story_time = match &scene_time_raw {
+            Some(raw) => match super::structure::parse_story_time(raw) {
+                Ok(def) => def,
+                Err(e) => return Err(format!("scene_time 解析失败: {e}（正文已写入，仅元数据未落）")),
+            },
+            None => None,
+        };
+        if scene_summary.is_some() || story_time.is_some() {
+            let update = crate::mutations::SceneUpdate {
+                title: None,
+                pov: None,
+                mood: None,
+                function: None,
+                summary: scene_summary.as_deref().map(Some),
+                story_time: story_time.clone().map(Some),
+            };
+            match crate::mutations::update_scene(&paths, &scene_id, &update) {
+                Ok(fields) => {
+                    let fields: Vec<String> = fields.iter().map(|f| f.to_string()).collect();
+                    msg.push_str(&format!("\n✅ 已同步场景元数据: {}", fields.join(", ")));
+                }
+                Err(e) => msg.push_str(&format!("\n⚠️ 场景元数据落盘失败: {e}（正文已写入）")),
+            }
         }
         // 覆盖已有片段时：若它是断言证据，提示事实依据可能漂移（best-effort）
         if !is_new {
