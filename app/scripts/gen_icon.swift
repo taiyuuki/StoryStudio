@@ -14,9 +14,24 @@ let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
                     bytesPerRow: 0, space: colorSpace,
                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
 
-// 宣纸底色（暖米白）
-ctx.setFillColor(CGColor(srgbRed: 0.949, green: 0.941, blue: 0.918, alpha: 1))
-ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
+// macOS 圆角轮廓（Big Sur 图标栅格：824×824 居中，圆角 185.4），轮廓外透明
+let iconRect = CGRect(x: 100, y: 100, width: 824, height: 824)
+let squircle = CGPath(roundedRect: iconRect, cornerWidth: 185.4, cornerHeight: 185.4, transform: nil)
+
+// 宣纸底色（暖米白）+ 烘焙进图标的柔和投影（系统不会自动加）
+let paper = CGColor(srgbRed: 0.949, green: 0.941, blue: 0.918, alpha: 1)
+ctx.saveGState()
+ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 90,
+             color: CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.45))
+ctx.setFillColor(paper)
+ctx.addPath(squircle)
+ctx.fillPath()
+ctx.restoreGState()
+
+// 之后所有内容裁剪进圆角轮廓内
+ctx.saveGState()
+ctx.addPath(squircle)
+ctx.clip()
 
 // 纸张微妙渐晕（四角略暗）
 let gradient = CGGradient(colorsSpace: colorSpace, colors: [
@@ -55,24 +70,26 @@ func drawText(_ text: String, fontName: String, fontSize: CGFloat,
 let ink = CGColor(srgbRed: 0.141, green: 0.122, blue: 0.106, alpha: 1)
 drawText("书", fontName: "Songti SC Bold", fontSize: 560, center: CGPoint(x: 512, y: 560), color: ink)
 
-// 朱印（右下角暗红印章 + 空心小字）
-let seal = CGRect(x: 700, y: 130, width: 170, height: 170)
+// 朱印（右下角暗红印章 + 空心小字；避开圆角内收）
+let seal = CGRect(x: 680, y: 152, width: 170, height: 170)
 let sealPath = CGPath(roundedRect: seal, cornerWidth: 26, cornerHeight: 26, transform: nil)
 ctx.setFillColor(CGColor(srgbRed: 0.478, green: 0.188, blue: 0.157, alpha: 1))
 ctx.addPath(sealPath)
 ctx.fillPath()
 // 印章内空心「事」
 drawText("事", fontName: "Songti SC Bold", fontSize: 108,
-         center: CGPoint(x: 785, y: 215),
-         color: CGColor(srgbRed: 0.949, green: 0.941, blue: 0.918, alpha: 1))
+         center: CGPoint(x: 765, y: 237),
+         color: paper)
 
-// 左侧细墨线（装订线意象）
+// 左侧细墨线（装订线意象；随圆角轮廓内收）
 ctx.setStrokeColor(CGColor(srgbRed: 0.141, green: 0.122, blue: 0.106, alpha: 0.55))
 ctx.setLineWidth(7)
 ctx.setLineCap(.round)
-ctx.move(to: CGPoint(x: 118, y: 210))
-ctx.addLine(to: CGPoint(x: 118, y: 810))
+ctx.move(to: CGPoint(x: 155, y: 210))
+ctx.addLine(to: CGPoint(x: 155, y: 810))
 ctx.strokePath()
+
+ctx.restoreGState()
 
 let image = ctx.makeImage()!
 let url = URL(fileURLWithPath: out) as CFURL
