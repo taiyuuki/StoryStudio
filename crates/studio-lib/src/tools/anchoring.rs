@@ -651,8 +651,8 @@ impl Tool for ResolveUnresolvedRefTool {
                 ("quote", "string", "指代原文（台账中的 quote，需完全一致；单条处置时必填）", false),
                 (
                     "refs",
-                    "string",
-                    "批量处置：JSON 数组，每项 {\"fragment_id\": \"...\", \"quote\": \"...\"}（可跨片段）。与 fragment_id/quote 二选一",
+                    "object-array",
+                    "批量处置：数组，每项为原生 JSON 对象 {\"fragment_id\": \"...\", \"quote\": \"...\"}（可跨片段）。与 fragment_id/quote 二选一",
                     false,
                 ),
                 ("action", "string", "处置动作：create | merge | ignore", true),
@@ -688,6 +688,8 @@ impl Tool for ResolveUnresolvedRefTool {
             if items.is_empty() {
                 return Err("refs 不能为空数组".into());
             }
+            // 项归一化：模型常把每项序列化成字符串传入
+            let items = super::normalize_object_items(items, "refs")?;
             let mut refs: Vec<(String, String)> = Vec::with_capacity(items.len());
             for item in &items {
                 refs.push((get_str(item, "fragment_id")?, get_str(item, "quote")?));
@@ -822,6 +824,34 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].quote, "穿灰袍的女人");
         assert!(refs[0].is_pending());
+    }
+
+    /// refs 每项被模型序列化成字符串时应宽松解析回对象，
+    /// 而非报「缺少参数: fragment_id」
+    #[test]
+    fn resolve_refs_accepts_string_items() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        // 预置一条待处置指代台账
+        std::fs::write(
+            paths.anchoring_toml(),
+            "[[ref]]\nfragment_id = \"f_0001\"\nquote = \"穿灰袍的女人\"\nhint = \"疑似新角色\"\n",
+        )
+        .unwrap();
+
+        let out = ResolveUnresolvedRefTool::new(ToolContext::new(dir.to_path_buf()))
+            .execute(&serde_json::json!({
+                "refs": ["{\"fragment_id\": \"f_0001\", \"quote\": \"穿灰袍的女人\"}"],
+                "action": "ignore"
+            }))
+            .unwrap();
+        assert!(out.contains("已忽略"), "{out}");
+
+        // 台账状态已落盘为 ignored（宽松解析后 quote 与台账对上了）
+        let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
+        assert_eq!(refs[0].status, "ignored");
     }
 
     #[test]

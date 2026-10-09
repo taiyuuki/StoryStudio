@@ -4,7 +4,9 @@ use story_ai_runtime::{Tool, ToolDef};
 use story_ir::StableId;
 use story_project_format::structure_toml::StoryTimeDef;
 
-use super::{get_json_array_opt, get_str, get_str_opt, object_schema, ToolContext};
+use super::{
+    get_json_array_opt, get_str, get_str_opt, normalize_object_items, object_schema, ToolContext,
+};
 
 // ============================================================================
 // compile_check
@@ -583,18 +585,18 @@ impl Tool for SaveSceneSummariesTool {
                 .into(),
             parameters: object_schema(vec![(
                 "summaries",
-                "string",
-                "字符串形式的 JSON 数组（传原生数组亦可），\
-                每项 {\"scene_id\": \"sc_01_01\", \"summary\": \"一句话摘要\"}",
+                "object-array",
+                "对象数组，每项为原生 JSON 对象 {\"scene_id\": \"sc_01_01\", \"summary\": \"一句话摘要\"}",
                 true,
             )]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        // summaries 兼容字符串与原生数组两种形态（模型常无视 schema 的 "string" 声明）
+        // summaries 兼容字符串与原生数组两种形态（模型常无视 schema 声明）
         let items = match get_json_array_opt(arguments, "summaries")? {
-            Some(items) if !items.is_empty() => items,
+            // 项归一化：模型常把每项序列化成字符串传入
+            Some(items) if !items.is_empty() => normalize_object_items(items, "summaries")?,
             Some(_) => return Err("summaries 不能为空数组".into()),
             None => return Err("缺少参数: summaries".into()),
         };
@@ -744,6 +746,18 @@ impl Tool for SetFragmentAnchorTool {
             if items.is_empty() {
                 return Err("entity_ids 不能为空数组".into());
             }
+            // 以 { 开头的字符串项是被序列化的对象（模型无视 items 声明的常见
+            // 形态），解析回对象；否则视为实体 ID 字符串
+            let items = items
+                .into_iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) if s.trim_start().starts_with('{') => {
+                        crate::llm_json::parse_value(&s)
+                            .map_err(|e| format!("entity_ids 项是字符串，但{e}"))
+                    }
+                    other => Ok(other),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let mut anchors: Vec<(String, String)> = Vec::with_capacity(items.len());
             for item in &items {
                 let pair = if let Some(id) = item.as_str() {
@@ -817,6 +831,57 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_project(tmp.path(), "test-novel").unwrap();
         tmp
+    }
+
+    /// summaries 每项被模型序列化成字符串时应宽松解析，而非报「缺少参数: scene_id」
+    #[test]
+    fn save_scene_summaries_accepts_string_items() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "渡口", None).unwrap();
+
+        let out = SaveSceneSummariesTool::new(ToolContext::new(dir.to_path_buf()))
+            .execute(&serde_json::json!({
+                "summaries": [
+                    "{\"scene_id\": \"SC\", \"summary\": \"假 ID 应报未保存而非崩溃\"}".replace("SC", &sc),
+                    {"scene_id": "sc_99_99", "summary": "不存在的场景"}
+                ]
+            }))
+            .unwrap();
+        // 第一条落盘成功、第二条报未保存（宽松解析后正常走业务校验）
+        assert!(out.contains("已保存 1 条"), "{out}");
+        assert!(out.contains("未保存 1 条"), "{out}");
+    }
+
+    /// entity_ids 混合形态：实体 ID 字符串、原生对象、被序列化成字符串的对象
+    #[test]
+    fn set_fragment_anchor_accepts_mixed_item_forms() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "正文。").unwrap();
+
+        let out = SetFragmentAnchorTool::new(ToolContext::new(dir.to_path_buf()))
+            .execute(&serde_json::json!({
+                "fragment_id": fid,
+                "entity_ids": [
+                    "c_0001",
+                    {"entity_id": "c_0002", "role": "mentioned"},
+                    "{\"entity_id\": \"c_0003\", \"role\": \"referenced\"}"
+                ]
+            }))
+            .unwrap();
+        assert!(out.contains("已锚定 3 个实体"), "{out}");
+        assert!(out.contains("c_0001（appears）"), "{out}");
+        assert!(out.contains("c_0002（mentioned）"), "{out}");
+        assert!(out.contains("c_0003（referenced）"), "{out}");
+
+        let content = std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+        assert!(content.contains("c_0003"), "{content}");
     }
 
     #[test]

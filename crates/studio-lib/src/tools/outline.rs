@@ -8,7 +8,7 @@ use story_project_format::{EntityFile, OutlineFile};
 
 use super::{
     check_index, get_index, get_json_array_opt, get_str, get_str_opt, get_str_array_opt,
-    object_schema, ToolContext,
+    normalize_object_items, object_schema, ToolContext,
 };
 
 // ============================================================================
@@ -376,8 +376,8 @@ impl Tool for SetOutlineItemTool {
                 ("climax", "string", "冲突高潮所在的卷（section=conflict）", false),
                 (
                     "items",
-                    "array",
-                    "批量添加：数组，每项 {\"section\": \"...\", ...该类型对应字段}。与 section+单条字段二选一",
+                    "object-array",
+                    "批量添加：数组，每项为原生 JSON 对象 {\"section\": \"...\", ...该类型对应字段}。与 section+单条字段二选一",
                     false,
                 ),
             ]),
@@ -401,7 +401,8 @@ impl Tool for SetOutlineItemTool {
 
         let items: Vec<serde_json::Value> = match get_json_array_opt(arguments, "items")? {
             Some(arr) if arr.is_empty() => return Err("items 不能为空数组".into()),
-            Some(arr) => arr,
+            // 项归一化：模型常把每项序列化成字符串传入
+            Some(arr) => normalize_object_items(arr, "items")?,
             // 单条：把扁平参数当作一条 item 处理（保持原语义）
             None => vec![arguments.clone()],
         };
@@ -826,5 +827,28 @@ mod tests {
             }))
             .unwrap();
         assert!(out.contains("section=storyline"), "{out}");
+    }
+
+    /// 模型常无视 items 的 object 声明，把每项序列化成字符串传入——
+    /// 应宽松解析回对象而非报「缺少参数」
+    #[test]
+    fn set_outline_item_batch_accepts_string_items() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let tool = SetOutlineItemTool::new(ToolContext::new(dir.to_path_buf()));
+
+        let out = tool
+            .execute(&serde_json::json!({
+                "items": [
+                    "{\"section\": \"volume\", \"name\": \"第一卷\"}",
+                    {"section": "volume", "name": "第二卷"}
+                ]
+            }))
+            .unwrap();
+        assert!(out.contains("卷 +2"), "{out}");
+
+        let content = std::fs::read_to_string(dir.join("outline.toml")).unwrap();
+        assert!(content.contains("第一卷"), "{content}");
+        assert!(content.contains("第二卷"), "{content}");
     }
 }

@@ -157,14 +157,23 @@ impl ToolContext {
     }
 }
 
+/// 构建工具参数的 JSON Schema。
+///
+/// `typ` 是迷你 DSL：`string` / `integer` / `boolean` / `array`（元素形态
+/// 不限）/ `object-array`（对象数组，渲染为 `items: {type: object}`）。
+/// 对象数组的 items 必须显式声明——裸 `array` 时部分模型默认按字符串
+/// 数组传参，序列化字符串项会在读取字段时整链报「缺少参数」。
 pub(super) fn object_schema(properties: Vec<(&str, &str, &str, bool)>) -> serde_json::Value {
     let mut props = serde_json::Map::new();
     let mut required: Vec<serde_json::Value> = Vec::new();
     for (name, typ, desc, req) in &properties {
-        props.insert(
-            name.to_string(),
-            serde_json::json!({"type": typ, "description": desc}),
-        );
+        let mut prop = if *typ == "object-array" {
+            serde_json::json!({"type": "array", "items": {"type": "object"}})
+        } else {
+            serde_json::json!({ "type": typ })
+        };
+        prop["description"] = serde_json::Value::String(desc.to_string());
+        props.insert(name.to_string(), prop);
         if *req {
             required.push(serde_json::Value::String(name.to_string()));
         }
@@ -568,6 +577,53 @@ mod tests {
         assert!(get_str_array_opt(&serde_json::json!({"xs": ["a", 1]}), "xs").is_err());
         // 其他类型 → 报错
         assert!(get_str_array_opt(&serde_json::json!({"xs": {"a": 1}}), "xs").is_err());
+    }
+
+    #[test]
+    fn object_schema_object_array_declares_items() {
+        let schema = object_schema(vec![
+            ("title", "string", "标题", true),
+            ("items", "object-array", "批量：对象数组", false),
+        ]);
+        assert_eq!(schema["properties"]["title"]["type"], "string");
+        // object-array 简写渲染为 items: {type: object}，防模型默认传字符串数组
+        assert_eq!(schema["properties"]["items"]["type"], "array");
+        assert_eq!(schema["properties"]["items"]["items"]["type"], "object");
+        assert_eq!(schema["properties"]["items"]["description"], "批量：对象数组");
+        assert_eq!(schema["required"], serde_json::json!(["title"]));
+    }
+
+    #[test]
+    fn normalize_object_items_accepts_string_items_with_index_errors() {
+        // 对象原样、字符串宽松解析（design_chapters 真实案例的通用形态）
+        let items = normalize_object_items(
+            vec![
+                serde_json::json!({"title": "正常"}),
+                serde_json::Value::String("{\"title\": \"字符串章\"}".into()),
+                serde_json::Value::String("```json\n{\"title\": \"围栏章\"}\n```".into()),
+            ],
+            "chapters",
+        )
+        .unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[1]["title"], "字符串章");
+        assert_eq!(items[2]["title"], "围栏章");
+
+        // 字符串解析失败 → 指明第几项，而非误导性的「缺少参数: xxx」
+        let err = normalize_object_items(
+            vec![serde_json::Value::String("不是 JSON 的散文".into())],
+            "chapters",
+        )
+        .unwrap_err();
+        assert!(err.contains("chapters 第 1 项"), "{err}");
+
+        // 字符串解析得到非对象 / 其他类型 → 报错
+        assert!(normalize_object_items(
+            vec![serde_json::Value::String("[1,2]".into())],
+            "chapters"
+        )
+        .is_err());
+        assert!(normalize_object_items(vec![serde_json::json!(42)], "chapters").is_err());
     }
 
     #[test]

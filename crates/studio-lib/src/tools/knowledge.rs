@@ -6,8 +6,8 @@ use story_ir::StableId;
 use story_project_format::FragmentFile;
 
 use super::{
-    get_json_array_opt, get_str, get_str_opt, get_str_array_opt, get_u32_opt, object_schema,
-    ToolContext,
+    get_json_array_opt, get_str, get_str_opt, get_str_array_opt, get_u32_opt,
+    normalize_object_items, object_schema, ToolContext,
 };
 
 // ============================================================================
@@ -64,8 +64,8 @@ impl Tool for AddAssertionTool {
                 ),
                 (
                     "assertions",
-                    "string",
-                    "批量添加：JSON 数组，每项 {\"subject\": \"...\", \"predicate\": \"...\", \"object\": \"...\", \"evidence_fragment\": \"...\"(可选)}。与 subject/predicate/object 二选一",
+                    "object-array",
+                    "批量添加：数组，每项为原生 JSON 对象 {\"subject\": \"...\", \"predicate\": \"...\", \"object\": \"...\", \"evidence_fragment\": \"...\"(可选)}。与 subject/predicate/object 二选一",
                     false,
                 ),
             ]),
@@ -80,6 +80,8 @@ impl Tool for AddAssertionTool {
             if items.is_empty() {
                 return Err("assertions 不能为空数组".into());
             }
+            // 项归一化：模型常把每项序列化成字符串传入
+            let items = normalize_object_items(items, "assertions")?;
             let mut entries: Vec<(String, String, String, Option<String>)> =
                 Vec::with_capacity(items.len());
             for item in &items {
@@ -275,8 +277,8 @@ impl Tool for AddRelationTool {
                 ),
                 (
                     "relations",
-                    "string",
-                    "批量添加：JSON 数组，每项 {\"from\": \"...\", \"to\": \"...\", \"relation\": \"...\"}。与 from/to/relation 二选一",
+                    "object-array",
+                    "批量添加：数组，每项为原生 JSON 对象 {\"from\": \"...\", \"to\": \"...\", \"relation\": \"...\"}。与 from/to/relation 二选一",
                     false,
                 ),
             ]),
@@ -291,6 +293,8 @@ impl Tool for AddRelationTool {
             if items.is_empty() {
                 return Err("relations 不能为空数组".into());
             }
+            // 项归一化：模型常把每项序列化成字符串传入
+            let items = normalize_object_items(items, "relations")?;
             let mut triples: Vec<(String, String, String)> =
                 Vec::with_capacity(items.len());
             for item in &items {
@@ -673,8 +677,8 @@ impl Tool for AdvanceThreadTool {
                 ),
                 (
                     "advances",
-                    "string",
-                    "批量推进：JSON 数组，每项 {\"thread_id\": \"...\", \"status\": \"...\", \"scene_id\": \"...\"(abandoned 可省)}。与 thread_id/status 二选一",
+                    "object-array",
+                    "批量推进：数组，每项为原生 JSON 对象 {\"thread_id\": \"...\", \"status\": \"...\", \"scene_id\": \"...\"(abandoned 可省)}。与 thread_id/status 二选一",
                     false,
                 ),
             ]),
@@ -689,6 +693,8 @@ impl Tool for AdvanceThreadTool {
             if items.is_empty() {
                 return Err("advances 不能为空数组".into());
             }
+            // 项归一化：模型常把每项序列化成字符串传入
+            let items = normalize_object_items(items, "advances")?;
             let mut entries: Vec<(String, String, Option<String>)> =
                 Vec::with_capacity(items.len());
             for item in &items {
@@ -932,8 +938,8 @@ impl Tool for SetThreadKnowledgeTool {
                 ),
                 (
                     "records",
-                    "string",
-                    "批量记录：JSON 数组，每项 {\"thread_id\": \"...\", \"observer\": \"...\", \"state\": \"...\", \"scene_id\": \"...\"}。与单条参数二选一",
+                    "object-array",
+                    "批量记录：数组，每项为原生 JSON 对象 {\"thread_id\": \"...\", \"observer\": \"...\", \"state\": \"...\", \"scene_id\": \"...\"}。与单条参数二选一",
                     false,
                 ),
             ]),
@@ -948,6 +954,8 @@ impl Tool for SetThreadKnowledgeTool {
             if items.is_empty() {
                 return Err("records 不能为空数组".into());
             }
+            // 项归一化：模型常把每项序列化成字符串传入
+            let items = normalize_object_items(items, "records")?;
             let mut entries: Vec<(String, String, String, String)> =
                 Vec::with_capacity(items.len());
             for item in &items {
@@ -3038,6 +3046,30 @@ fragments = []
             .execute(&serde_json::json!({ "assertions": 42 }))
             .unwrap_err();
         assert!(err.contains("assertions 需为 JSON 数组"), "{err}");
+    }
+
+    /// 每项被模型序列化成字符串时应宽松解析回对象，而非报「缺少参数: subject」
+    #[test]
+    fn add_assertion_batch_accepts_string_items() {
+        let tmp = setup_test_project();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = AddAssertionTool::new(ctx);
+
+        let result = tool
+            .execute(&serde_json::json!({
+                "assertions": [
+                    "{\"subject\": \"c_0001\", \"predicate\": \"alive\", \"object\": \"true\"}",
+                    { "subject": "c_0002", "predicate": "age", "object": "17" }
+                ]
+            }))
+            .unwrap();
+        assert!(result.contains("批量"), "{result}");
+
+        // 字符串项解析失败要指明第几项
+        let err = tool
+            .execute(&serde_json::json!({ "assertions": ["不是 JSON 的散文"] }))
+            .unwrap_err();
+        assert!(err.contains("assertions 第 1 项"), "{err}");
     }
 
     #[test]

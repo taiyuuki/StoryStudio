@@ -13,7 +13,7 @@ use story_project_format::worldview_file::{
 };
 use story_project_format::EntityFile;
 
-use super::{check_index, get_index, get_json_array_opt, get_str, get_str_opt, object_schema, ToolContext};
+use super::{check_index, get_index, get_json_array_opt, get_str, get_str_opt, normalize_object_items, object_schema, ToolContext};
 
 // ============================================================================
 // get_worldview
@@ -271,8 +271,8 @@ impl Tool for SetWorldviewItemTool {
                 ("rules", "string", "规则与代价（section=system）", false),
                 (
                     "items",
-                    "array",
-                    "批量添加：数组，每项 {\"section\": \"concept|system\", \"name\": \"...\", ...各类型字段}。与 section+单条字段二选一",
+                    "object-array",
+                    "批量添加：数组，每项为原生 JSON 对象 {\"section\": \"concept|system\", \"name\": \"...\", ...各类型字段}。与 section+单条字段二选一",
                     false,
                 ),
             ]),
@@ -284,7 +284,8 @@ impl Tool for SetWorldviewItemTool {
 
         let items: Vec<serde_json::Value> = match get_json_array_opt(arguments, "items")? {
             Some(arr) if arr.is_empty() => return Err("items 不能为空数组".into()),
-            Some(arr) => arr,
+            // 项归一化：模型常把每项序列化成字符串传入
+            Some(arr) => normalize_object_items(arr, "items")?,
             // 单条：把扁平参数当作一条 item 处理（保持原语义）
             None => vec![arguments.clone()],
         };
@@ -636,6 +637,30 @@ mod tests {
             std::fs::read_to_string(dir.join("worldview/systems.toml")).unwrap();
         assert!(systems.contains("灵潮"), "{systems}");
         assert!(systems.contains("械力"), "{systems}");
+    }
+
+    /// 模型常无视 items 的 object 声明，把每项序列化成字符串传入——
+    /// 应宽松解析回对象而非报「缺少参数」
+    #[test]
+    fn set_worldview_item_batch_accepts_string_items() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let tool = SetWorldviewItemTool::new(ToolContext::new(dir.to_path_buf()));
+
+        let out = tool
+            .execute(&serde_json::json!({
+                "items": [
+                    "{\"section\": \"concept\", \"name\": \"红档\"}",
+                    {"section": "concept", "name": "灰域"}
+                ]
+            }))
+            .unwrap();
+        assert!(out.contains("基础概念 +2"), "{out}");
+
+        let concepts =
+            std::fs::read_to_string(dir.join("worldview/concepts.toml")).unwrap();
+        assert!(concepts.contains("红档"), "{concepts}");
+        assert!(concepts.contains("灰域"), "{concepts}");
     }
 
     /// 批量中混入未知 section：整体报错，不落任何条目。
