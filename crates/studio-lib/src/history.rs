@@ -208,7 +208,8 @@ pub fn fresh_snapshot_note(paths: &ProjectPaths, fragment_id: &str) -> Option<St
         return None;
     }
     Some(format!(
-        "\n📁 本次修改前已自动留存版本快照（该片段现共 {} 版，工作台片段菜单 → 版本历史 可差异比对与回滚）",
+        "\n📁 本次修改前已自动留存版本快照（该片段现共 {} 版；可用 list_fragment_versions 查看、\
+         restore_fragment_version 回滚，工作台片段菜单 → 版本历史 可差异比对）",
         versions.len()
     ))
 }

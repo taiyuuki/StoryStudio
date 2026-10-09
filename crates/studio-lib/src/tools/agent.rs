@@ -176,6 +176,8 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(SplitFragmentTool::new(ctx.clone())));
     registry.register(Box::new(MergeFragmentsTool::new(ctx.clone())));
     registry.register(Box::new(MoveFragmentTool::new(ctx.clone())));
+    registry.register(Box::new(ListFragmentVersionsTool::new(ctx.clone())));
+    registry.register(Box::new(RestoreFragmentVersionTool::new(ctx.clone())));
     registry.register(Box::new(SetFragmentAnchorTool::new(ctx.clone())));
     registry.register(Box::new(RemoveFragmentAnchorTool::new(ctx.clone())));
     registry.register(Box::new(AnchorFragmentsTool::new(ctx.clone())));

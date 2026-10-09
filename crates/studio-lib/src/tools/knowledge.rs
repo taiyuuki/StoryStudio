@@ -2088,6 +2088,125 @@ impl Tool for AppendFragmentTextTool {
 }
 
 // ============================================================================
+// list_fragment_versions / restore_fragment_version — 版本历史自助
+// ============================================================================
+
+pub struct ListFragmentVersionsTool {
+    ctx: ToolContext,
+}
+impl ListFragmentVersionsTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for ListFragmentVersionsTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "list_fragment_versions".into(),
+            description: "列出片段的版本历史（时间戳、字数、开头摘录），新→旧。\
+            覆盖/改写/删除前系统会自动留版本快照（节流：间隔 5 分钟内且字数变化\
+            不足 200 不留版），每片段最多保留 20 版。\
+            配合 restore_fragment_version 用时间戳回滚。"
+                .into(),
+            parameters: object_schema(vec![(
+                "fragment_id",
+                "string",
+                "片段 ID（如 f_0001）",
+                true,
+            )]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let fragment_id = get_str(arguments, "fragment_id")?;
+        let paths = self.ctx.paths();
+
+        let versions = crate::history::list_versions(&paths, &fragment_id)
+            .map_err(|e| e.to_string())?;
+        if versions.is_empty() {
+            return Ok(format!(
+                "片段 {fragment_id} 没有版本快照（从未被覆盖/改写过，或变化未达留版阈值）"
+            ));
+        }
+
+        let mut out = format!("片段 {fragment_id} 的版本历史（{} 版，新→旧）：\n", versions.len());
+        for v in &versions {
+            let excerpt = crate::history::read_version(&paths, &fragment_id, v.timestamp)
+                .ok()
+                .and_then(|c| {
+                    let body = crate::fragment::fragment_body(&c);
+                    let flat: String = body.split_whitespace().collect::<Vec<_>>().join("");
+                    (!flat.is_empty()).then(|| {
+                        let head: String = flat.chars().take(30).collect();
+                        format!("「{head}…」")
+                    })
+                })
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  版本 {}（{} 字）{excerpt}\n",
+                v.timestamp, v.words
+            ));
+        }
+        out.push_str("回滚用 restore_fragment_version(fragment_id, timestamp=版本号)；删除的片段同样可从历史恢复。");
+        Ok(out)
+    }
+}
+
+pub struct RestoreFragmentVersionTool {
+    ctx: ToolContext,
+}
+impl RestoreFragmentVersionTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for RestoreFragmentVersionTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "restore_fragment_version".into(),
+            description: "把片段正文回滚到指定版本（时间戳来自 list_fragment_versions）。\
+            恢复前会强制留底当前内容——恢复错了可以再恢复回来，操作可逆。\
+            已删除的片段同样可恢复（文件会被重建）。"
+                .into(),
+            parameters: object_schema(vec![
+                ("fragment_id", "string", "片段 ID（如 f_0001）", true),
+                (
+                    "timestamp",
+                    "integer",
+                    "目标版本的时间戳（list_fragment_versions 列出的版本号）",
+                    true,
+                ),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let fragment_id = get_str(arguments, "fragment_id")?;
+        let timestamp = arguments
+            .get("timestamp")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| "缺少或非法参数: timestamp（版本时间戳，见 list_fragment_versions）".to_string())?;
+
+        let paths = self.ctx.paths();
+        let body = crate::history::restore_version(&paths, &fragment_id, timestamp)
+            .map_err(|e| e.to_string())?;
+        let words = crate::workflow::count_words(&body);
+
+        let mut msg = format!(
+            "片段 {fragment_id} 已回滚到版本 {timestamp}（{words} 字）；\
+            恢复前已留底当前内容，可再恢复回来"
+        );
+        // 回滚也是正文改动：证据片段提示同样适用（best-effort）
+        if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
+            msg.push_str(&note);
+        }
+        Ok(msg)
+    }
+}
+
+// ============================================================================
 // delete_fragment
 // ============================================================================
 
@@ -2906,6 +3025,55 @@ title = "开场"
 fragments = []
 "#;
         std::fs::write(dir.join("structure.toml"), structure).unwrap();
+    }
+
+    #[test]
+    fn version_tools_list_and_restore() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let dir = tmp.path();
+        let paths = story_project_format::ProjectPaths::new(dir);
+
+        // v1 写入 → 强制留版 → 覆盖为 v2
+        crate::mutations::create_fragment_anchored_source(
+            &paths,
+            "sc_01_01",
+            "第一版正文，夜雨初起。",
+            &[],
+            crate::stats::WriteSource::Manual,
+        )
+        .unwrap();
+        crate::history::force_snapshot(&paths, "f_0001");
+        crate::mutations::write_fragment_text_source(
+            &paths,
+            "f_0001",
+            "第二版正文，雨势转急，行人四散。",
+            crate::stats::WriteSource::Ai,
+        )
+        .unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let list = ListFragmentVersionsTool::new(ctx.clone());
+        let out = list
+            .execute(&serde_json::json!({"fragment_id": "f_0001"}))
+            .unwrap();
+        assert!(out.contains("1 版"), "{out}");
+        assert!(out.contains("第一版正文"), "应含版本摘录: {out}");
+        assert!(out.contains("restore_fragment_version"), "{out}");
+
+        // 取时间戳回滚，正文应回到第一版
+        let ts = crate::history::list_versions(&paths, "f_0001").unwrap()[0].timestamp;
+        let restore = RestoreFragmentVersionTool::new(ctx);
+        let msg = restore
+            .execute(&serde_json::json!({"fragment_id": "f_0001", "timestamp": ts}))
+            .unwrap();
+        assert!(msg.contains("已回滚"), "{msg}");
+
+        let content = std::fs::read_to_string(dir.join("fragments/f_0001.md")).unwrap();
+        assert!(content.contains("第一版正文"), "{content}");
+
+        // 回滚本身也留了底（可再恢复回去）
+        assert_eq!(crate::history::list_versions(&paths, "f_0001").unwrap().len(), 2);
     }
 
     #[test]
