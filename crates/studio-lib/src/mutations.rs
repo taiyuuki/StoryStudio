@@ -3458,6 +3458,19 @@ pub fn add_relation_full(
         return Err(StudioError::Config("relations 不能为空".to_string()));
     }
 
+    // 空字段防御：from/to/relation 任一为空即整体拒绝（不落半批坏边）
+    for item in items {
+        if item.from.trim().is_empty()
+            || item.to.trim().is_empty()
+            || item.relation.trim().is_empty()
+        {
+            return Err(StudioError::Config(format!(
+                "关系条目的 from/to/relation 不能为空（收到 from='{}', to='{}', relation='{}'）",
+                item.from, item.to, item.relation
+            )));
+        }
+    }
+
     // 场景锚存在性前置校验（失败则整体不落盘）
     for item in items {
         if let Some(scene) = &item.valid_from_scene {

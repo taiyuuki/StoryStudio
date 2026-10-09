@@ -403,11 +403,29 @@ impl Tool for AddRelationTool {
             let mut inputs: Vec<crate::mutations::RelationInput> =
                 Vec::with_capacity(items.len());
             for item in &items {
-                inputs.push(relation_input_from_json(item)?);
+                // 批量项同样必须解析 from/to/relation（曾漏掉导致整批空边落盘）
+                inputs.push(crate::mutations::RelationInput {
+                    from: get_str(item, "from")?,
+                    to: get_str(item, "to")?,
+                    relation: get_str(item, "relation")?,
+                    ..relation_input_from_json(item)?
+                });
             }
             let ids = crate::mutations::add_relation_full(&paths, &inputs)
                 .map_err(|e| e.to_string())?;
-            return Ok(format!("已批量添加 {} 条关系（含对称反向边）：{}", ids.len(), ids.join(", ")));
+            // 回执列出完整落盘明细（含方向），而非只报数量
+            let detail = inputs
+                .iter()
+                .zip(&ids)
+                .map(|(input, id)| {
+                    format!("{id}: {} --{}--> {}", input.from, input.relation, input.to)
+                })
+                .collect::<Vec<_>>()
+                .join("；");
+            return Ok(format!(
+                "已批量添加 {} 条关系（含对称反向边）：{detail}",
+                ids.len()
+            ));
         }
 
         let from = get_str(arguments, "from")?;
@@ -3169,6 +3187,47 @@ fragments = []
             .unwrap();
         assert!(res.contains("缺少"), "应提示元数据缺失: {res}");
         assert!(res.contains("update_scene"), "应引导补齐动作: {res}");
+    }
+
+    #[test]
+    fn add_relation_batch_parses_from_to_and_rejects_empty() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        // 批量数组形态：两条都应完整解析 from/to/relation 落盘
+        let tool = AddRelationTool::new(ctx.clone());
+        let msg = tool
+            .execute(&serde_json::json!({
+                "relations": [
+                    {"from": "c_0001", "to": "c_0002", "relation": "mentor_of"},
+                    {"from": "c_0002", "to": "c_0003", "relation": "rival_of", "symmetric": true}
+                ]
+            }))
+            .unwrap();
+        // 回执应含逐条明细（id + 方向），而非只有数量
+        assert!(msg.contains("--mentor_of-->"), "{msg}");
+        assert!(msg.contains("--rival_of-->"), "{msg}");
+
+        let content = std::fs::read_to_string(tmp.path().join("relations.toml")).unwrap();
+        assert!(content.contains("from = \"c_0001\""), "{content}");
+        assert!(content.contains("from = \"c_0002\""), "{content}");
+        // 对称条目成对（3 条边）
+        assert_eq!(content.matches("[[relation]]").count(), 3, "{content}");
+
+        // 空 from 的批量项 → 整体拒绝，不落盘
+        let before = content.clone();
+        let err = tool
+            .execute(&serde_json::json!({
+                "relations": [
+                    {"from": "c_0004", "to": "c_0005", "relation": "knows"},
+                    {"to": "c_0005", "relation": "knows"}
+                ]
+            }))
+            .unwrap_err();
+        assert!(err.contains("缺少参数: from") || err.contains("不能为空"), "{err}");
+        let after = std::fs::read_to_string(tmp.path().join("relations.toml")).unwrap();
+        assert_eq!(after, before, "失败批量不应改动落盘内容");
     }
 
     #[test]
