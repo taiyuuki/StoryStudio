@@ -610,6 +610,11 @@ impl Rule for ValidityWindowIllegal {
 // EvidenceMismatch — 证据失配 (RFC-0015 §8)
 // ============================================================================
 
+/// 去除全部空白字符（摘录登记时空白已折叠为单空格，正文换行差异不应误报）
+fn strip_all_ws(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 /// 断言的 Evidence 指向的 Fragment 不存在 → Warning
 #[derive(Debug)]
 pub struct EvidenceMismatch;
@@ -660,6 +665,26 @@ impl Rule for EvidenceMismatch {
                         ),
                         SourceLocation::assertion(id.clone()),
                     );
+                } else if !evidence.quote.is_empty() {
+                    // 片段还在但内容已偏离登记时的摘录：证据"名存实亡"
+                    // （片段没删、依据的事实可能已被改写掉）。
+                    // 摘录登记时空白已折叠，双侧去空白后比对，换行差异不误报。
+                    if let Some(frag) = ctx.ir.document.get_fragment(&evidence.loc) {
+                        let body = strip_all_ws(&frag.text);
+                        let quote = strip_all_ws(&evidence.quote);
+                        if !body.contains(&quote) {
+                            ctx.warning(
+                                self.id(),
+                                "evidence_mismatch",
+                                format!(
+                                    "断言 {} 的证据 {} 指向的片段 {} 内容已偏离登记时的摘录，\
+                                     正文可能已被改写，请核实断言仍然成立",
+                                    id, evidence_id, evidence.loc
+                                ),
+                                SourceLocation::assertion(id.clone()),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1077,6 +1102,60 @@ mod tests {
         let ir = StoryIR::new();
         let codes = run_rule(&AgeInconsistency, &ir, None, Some(&kb));
         assert!(codes.is_empty(), "被取代的断言应被忽略");
+    }
+
+    // ========================================================================
+    // EvidenceMismatch — 证据失配 / 摘录漂移
+    // ========================================================================
+
+    /// 构造一条引用证据 ev_0001（指向 f_0001）的断言 + 证据登记。
+    fn kb_with_evidence(quote: &str) -> KnowledgeBase {
+        let mut a = default_assertion();
+        a.id = StableId::new_unchecked("a_001");
+        a.evidence = vec![StableId::new_unchecked("ev_0001")];
+        let mut kb = kb_of(vec![a]);
+        kb.insert_evidence(story_knowledge::Evidence {
+            id: StableId::new_unchecked("ev_0001"),
+            loc: StableId::new_unchecked("f_0001"),
+            quote: quote.to_string(),
+            source: Default::default(),
+        });
+        kb
+    }
+
+    #[test]
+    fn evidence_mismatch_flags_drifted_quote() {
+        // 摘录登记后片段被改写（正文不再包含摘录）→ 漂移告警
+        let kb = kb_with_evidence("林风推门而入，尘土簌簌落下");
+        let ir = ir_with_scene_fragment("sc_01", "f_0001", 1090); // 正文="角色出场"
+        let codes = run_rule(&EvidenceMismatch, &ir, None, Some(&kb));
+        assert_eq!(codes, vec!["evidence_mismatch"]);
+    }
+
+    #[test]
+    fn evidence_mismatch_allows_matching_quote() {
+        // 正文仍包含摘录（换行/空白差异容忍）→ 不告警
+        let kb = kb_with_evidence("林风推门而入，尘土簌簌落下");
+        let mut ir = StoryIR::new();
+        ir.document.insert(DocNode::Fragment(FragmentNode {
+            id: StableId::new_unchecked("f_0001"),
+            scene: None,
+            prev: None,
+            next: None,
+            text: "前情交代。\n林风推门而入，尘土\n簌簌落下。\n后文收束。".to_string(),
+            anchors: Vec::new(),
+        }));
+        let codes = run_rule(&EvidenceMismatch, &ir, None, Some(&kb));
+        assert!(codes.is_empty(), "摘录仍在正文中不应告警: {codes:?}");
+    }
+
+    #[test]
+    fn evidence_mismatch_empty_quote_skips_drift_check() {
+        // 旧数据 quote 为空：无从而比对，只做存在性检查，不告警
+        let kb = kb_with_evidence("");
+        let ir = ir_with_scene_fragment("sc_01", "f_0001", 1090);
+        let codes = run_rule(&EvidenceMismatch, &ir, None, Some(&kb));
+        assert!(codes.is_empty(), "空摘录不应触发漂移告警: {codes:?}");
     }
 
     // ========================================================================
