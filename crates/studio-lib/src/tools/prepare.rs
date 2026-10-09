@@ -36,6 +36,7 @@ impl Tool for PrepareWritingTool {
             name: "prepare_writing".into(),
             description: "动笔前的一站式上下文聚合：一次调用返回本章脉络（目标/节拍/钩子/状态）、\
             前情回顾（目标之前最近几个已写场景）、本章线索认知快照（各观察者最新认知）、\
+            伏笔沉寂预警（主线已埋未收且超过阈值章数无动静的线索）、\
             涉及角色速查（外貌/习惯/个性 + 真名遮蔽）、角色当前状态断言、题材提示与写作要点。\
             续写已有场景传 scene_id；写新章节传 chapter（脉络序号，1-based）；\
             两者都省略时默认取写作最前沿场景。\
@@ -241,6 +242,31 @@ impl Tool for PrepareWritingTool {
             }
         }
 
+        // —— 3.5 伏笔沉寂预警（跨章）——
+        // 被遗忘的线索恰恰不在本章脉络名单里，所以要扫全部已埋/已揭线索的
+        // 最近动静（锚点 + 认知时间线），与当前写作位置比对
+        let scene_chapter_pos = build_scene_chapter_pos(document);
+        let target_ch_pos: Option<usize> = scene_id
+            .as_deref()
+            .and_then(|s| scene_chapter_pos.get(s).copied())
+            .or_else(|| {
+                outline_entry
+                    .and_then(|e| e.chapter_id.as_deref())
+                    .and_then(|ch| {
+                        book_chapter_ids(document)
+                            .iter()
+                            .position(|c| c == ch)
+                    })
+            })
+            .or_else(|| outline_index.map(|i| i.saturating_sub(1)));
+        let stale = thread_stale_warnings(&self.ctx, &scene_chapter_pos, target_ch_pos);
+        if !stale.is_empty() {
+            out.push_str("\n⚠️ 伏笔沉寂预警（主线已埋未收且久无动静，考虑在本章推进——advance_thread / set_thread_knowledge）:\n");
+            for line in stale {
+                out.push_str(&line);
+            }
+        }
+
         // —— 4. 涉及角色速查（脉络名单 ∪ POV ∪ 目标场景锚定角色）——
         let pov_id: Option<String> = scene_id.as_deref().and_then(|s| {
             document
@@ -372,6 +398,117 @@ fn compact_value(v: &toml::Value) -> String {
         }
         other => truncate_line(&other.to_string(), 30),
     }
+}
+
+// ============================================================================
+// 伏笔沉寂预警
+// ============================================================================
+
+/// 主线线索沉寂阈值（章）：已埋/已揭后超过这么多章无任何动静 → 预警
+const STALE_MAIN_CHAPTERS: usize = 10;
+/// 支线阈值（章）
+const STALE_MINOR_CHAPTERS: usize = 20;
+
+/// 书内章节顺序（阅读序）
+fn book_chapter_ids(document: &story_ir::DocumentGraph) -> Vec<String> {
+    let Some(book_id) = document
+        .all_nodes()
+        .find(|(_, n)| matches!(n, story_ir::DocNode::Book(_)))
+        .map(|(id, _)| id.clone())
+    else {
+        return Vec::new();
+    };
+    document
+        .children_of(&book_id)
+        .iter()
+        .map(|c| c.as_str().to_string())
+        .collect()
+}
+
+/// 场景 → 章节序位（0-based，阅读序）
+fn build_scene_chapter_pos(document: &story_ir::DocumentGraph) -> std::collections::HashMap<String, usize> {
+    let mut map = std::collections::HashMap::new();
+    for ch_id in book_chapter_ids(document) {
+        let pos = map.len();
+        let sid = StableId::new_unchecked(&ch_id);
+        for sc in document.scenes_of_chapter(&sid) {
+            map.insert(sc.as_str().to_string(), pos);
+        }
+    }
+    map
+}
+
+/// 全书线索的沉寂扫描：已埋（planted）/已揭（revealed）未收的线索，
+/// 最近一次动静（叙事锚点 or 认知时间线任一场景）距写作前沿超过阈值时预警。
+///
+/// 「最近动静」由既有数据推导，不新增逐章触碰记录——锚点与认知时间线
+/// 已经是线索活动的完整足迹。planned 线索不走这里（due_volume 卷级
+/// 体系已在编译诊断里分级）。
+fn thread_stale_warnings(
+    ctx: &ToolContext,
+    scene_chapter_pos: &std::collections::HashMap<String, usize>,
+    frontier_chapter_pos: Option<usize>,
+) -> Vec<String> {
+    let Some(frontier) = frontier_chapter_pos else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(ctx.paths().threads_toml()) else {
+        return Vec::new();
+    };
+    let Ok(file) = story_project_format::ThreadsFile::from_toml_str(&content) else {
+        return Vec::new();
+    };
+
+    let mut warnings: Vec<(usize, bool, String)> = Vec::new();
+    for t in &file.threads {
+        let status = super::knowledge::derive_thread_status(t);
+        if status != "planted" && status != "revealed" {
+            continue;
+        }
+        let is_main = t.priority == "main";
+        // 收集全部触点场景 → 最大章节序位
+        let touch_scenes: Vec<&String> = t
+            .planted_at
+            .as_ref()
+            .into_iter()
+            .chain(t.revealed_at.as_ref())
+            .chain(t.resolved_at.as_ref())
+            .chain(
+                t.knowledge
+                    .iter()
+                    .flat_map(|k| k.state_timeline.iter().map(|e| &e.scene)),
+            )
+            .collect();
+        let last_touch = touch_scenes
+            .iter()
+            .filter_map(|s| scene_chapter_pos.get(s.as_str()).copied())
+            .max();
+        let Some(last_touch) = last_touch else {
+            continue; // 锚点指向的场景不在结构里（坏引用另有编译诊断）
+        };
+        let dormant = frontier.saturating_sub(last_touch);
+        let threshold = if is_main {
+            STALE_MAIN_CHAPTERS
+        } else {
+            STALE_MINOR_CHAPTERS
+        };
+        if dormant >= threshold {
+            warnings.push((
+                dormant,
+                is_main,
+                format!(
+                    "  - {}（{}·{status}·{}）最近动静在第 {} 章，已沉寂 {dormant} 章\n",
+                    t.title,
+                    t.id,
+                    if is_main { "主线" } else { "支线" },
+                    last_touch + 1,
+                ),
+            ));
+        }
+    }
+    // 沉寂越久越靠前；同沉寂时主线优先
+    warnings.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    warnings.into_iter().map(|(_, _, line)| line).collect()
 }
 
 /// 单行截断（压平换行 + 按字符数截断）
@@ -586,5 +723,70 @@ object = "临安城码头"
 
         // 已写完的 ch_01 仍是 completed
         assert_eq!(file.chapters[0].status, "completed");
+    }
+
+    /// 12 章结构：第 1 章埋设的主线线索到第 12 章（沉寂 11 章 ≥ 阈值 10）预警；
+    /// 支线同场景（沉寂 11 < 20）不警；最近才动过的主线不警
+    #[test]
+    fn prepare_warns_stale_threads() {
+        let tmp = setup();
+        let dir = tmp.path();
+
+        // 12 章结构，每章一场景
+        let mut structure = String::from("[book]\nid = \"b_root\"\ntitle = \"测试\"\nchapters = [");
+        let chapter_ids: Vec<String> = (1..=12).map(|i| format!("ch_{i:02}")).collect();
+        structure.push_str(
+            &chapter_ids
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        structure.push_str("]\n");
+        for (i, ch) in chapter_ids.iter().enumerate() {
+            structure.push_str(&format!(
+                "\n[chapter.{ch}]\ntitle = \"第{}章\"\nscenes = [\"sc_{:02}\"]\n",
+                i + 1,
+                i + 1
+            ));
+        }
+        for i in 1..=12 {
+            structure.push_str(&format!("\n[scene.sc_{i:02}]\ntitle = \"场景{i}\"\nfragments = []\n"));
+        }
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        let threads = r#"[[thread]]
+id = "t_stale"
+title = "旧玉佩"
+priority = "main"
+planted_at = "sc_01"
+
+[[thread]]
+id = "t_minor"
+title = "次要传闻"
+priority = "minor"
+planted_at = "sc_01"
+
+[[thread]]
+id = "t_fresh"
+title = "新变故"
+priority = "main"
+planted_at = "sc_11"
+"#;
+        std::fs::write(dir.join("threads.toml"), threads).unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = PrepareWritingTool::new(ctx);
+        let out = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_12" }))
+            .unwrap();
+
+        // 主线沉寂 11 章 → 预警
+        assert!(out.contains("伏笔沉寂预警"), "{out}");
+        assert!(out.contains("旧玉佩"), "{out}");
+        assert!(out.contains("已沉寂 11 章"), "{out}");
+        // 支线未到阈值、新线索刚动过 → 不出现
+        assert!(!out.contains("次要传闻"), "{out}");
+        assert!(!out.contains("新变故"), "{out}");
     }
 }
