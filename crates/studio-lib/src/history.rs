@@ -146,38 +146,39 @@ pub fn restore_version(
 ///
 /// 在 [`crate::mutations::write_fragment_text_source`] 等写入路径中、
 /// 覆盖磁盘文件**之前**调用——快照的是即将被覆盖的旧内容。
-pub fn maybe_snapshot(paths: &ProjectPaths, fragment_id: &str) {
+pub fn maybe_snapshot(paths: &ProjectPaths, fragment_id: &str) -> bool {
     let frag_path = match paths.file_for_id(fragment_id) {
         Some(p) if p.exists() => p,
-        _ => return,
+        _ => return false,
     };
     let Ok(content) = std::fs::read_to_string(&frag_path) else {
-        return;
+        return false;
     };
     let body = crate::fragment::fragment_body(&content);
     if body.trim().is_empty() {
         // 空片段没有留底价值（首版基线由真正有内容时建立）
-        return;
+        return false;
     }
 
     let dir = match fragment_history_dir(paths, fragment_id) {
         Ok(d) => d,
-        Err(_) => return,
+        Err(_) => return false,
     };
     if let Some((last_ts, last_path)) = latest_snapshot(&dir) {
         if let Ok(last_content) = std::fs::read_to_string(&last_path) {
             let last_body = crate::fragment::fragment_body(&last_content);
             if last_body == body {
-                return; // 正文没变（锚点/frontmatter 变化不产生新版本）
+                return false; // 正文没变（锚点/frontmatter 变化不产生新版本）
             }
             let elapsed = journal::now_ms().saturating_sub(last_ts);
             let delta = last_body.chars().count().abs_diff(body.chars().count());
             if elapsed < MIN_INTERVAL_MS && delta < MIN_BODY_DELTA_CHARS {
-                return; // 变化太小且间隔太短，暂不留底
+                return false; // 变化太小且间隔太短，暂不留底
             }
         }
     }
     write_snapshot(paths, fragment_id, &content);
+    true
 }
 
 /// 无条件快照当前内容（删除片段 / 恢复版本前用）
@@ -201,8 +202,23 @@ pub fn force_snapshot(paths: &ProjectPaths, fragment_id: &str) {
 /// 版本快照功能一直在，但不在回执中露面时，用户和 Agent 都会以为
 /// 整体改写/删除是"物理消失不可逆"而不敢用——这里把"已留底、可回滚"
 /// 说到明面上。
-pub fn fresh_snapshot_note(paths: &ProjectPaths, fragment_id: &str) -> Option<String> {
+pub fn fresh_snapshot_note(
+    paths: &ProjectPaths,
+    fragment_id: &str,
+    stored: bool,
+) -> Option<String> {
     let versions = list_versions(paths, fragment_id).ok()?;
+    if versions.is_empty() {
+        return None;
+    }
+    if !stored {
+        // 本次写入未落新快照（节流跳过）——如实说明，避免"已留存"的假承诺
+        return Some(format!(
+            "\nℹ️ 本次未留新版本快照（节流：距上一版不足 5 分钟且字数变化不足 200）；\
+             该片段既有 {} 版快照仍可回滚（list_fragment_versions 查看）",
+            versions.len()
+        ));
+    }
     let latest = versions.first()?;
     if journal::now_ms().saturating_sub(latest.timestamp) > 10_000 {
         return None;
@@ -629,11 +645,15 @@ mod tests {
     fn fresh_snapshot_note_only_after_recent_snapshot() {
         let (_dir, paths) = temp_paths();
         write_fragment(&paths, "f_0007", "正文");
-        assert!(fresh_snapshot_note(&paths, "f_0007").is_none());
+        assert!(fresh_snapshot_note(&paths, "f_0007", false).is_none());
 
         force_snapshot(&paths, "f_0007");
-        let note = fresh_snapshot_note(&paths, "f_0007").unwrap();
-        assert!(note.contains("版本快照"), "{note}");
+        let note = fresh_snapshot_note(&paths, "f_0007", true).unwrap();
+        assert!(note.contains("已自动留存"), "{note}");
         assert!(note.contains("1 版"), "{note}");
+        // 未达留版条件：如实说明节流口径，不再假称"已留存"
+        let note = fresh_snapshot_note(&paths, "f_0007", false).unwrap();
+        assert!(note.contains("未留新版本"), "{note}");
+        assert!(note.contains("节流"), "{note}");
     }
 }

@@ -1771,7 +1771,8 @@ pub fn write_fragment_text(
     fragment_id: &str,
     text: &str,
 ) -> Result<(), StudioError> {
-    write_fragment_text_source(paths, fragment_id, text, crate::stats::WriteSource::Manual)
+    write_fragment_text_source(paths, fragment_id, text, crate::stats::WriteSource::Manual)?;
+    Ok(())
 }
 
 /// 覆盖片段正文（带字数来源）— 节流版本快照 + 回读校验落盘 + 码字记账
@@ -1780,19 +1781,19 @@ pub fn write_fragment_text_source(
     fragment_id: &str,
     text: &str,
     source: crate::stats::WriteSource,
-) -> Result<(), StudioError> {
+) -> Result<bool, StudioError> {
     let frag_path = paths
         .file_for_id(fragment_id)
         .ok_or_else(|| StudioError::Config(format!("无效的 fragment ID: {fragment_id}")))?;
 
-    let (old_content, old_body) = if frag_path.exists() {
+    let (old_content, old_body, stored) = if frag_path.exists() {
         let old = std::fs::read_to_string(&frag_path)?;
         let body = crate::fragment::fragment_body(&old).to_string();
         // 覆盖前对即将被替换的内容做节流快照（可从版本历史恢复）
-        crate::history::maybe_snapshot(paths, fragment_id);
-        (Some(old), Some(body))
+        let stored = crate::history::maybe_snapshot(paths, fragment_id);
+        (Some(old), Some(body), stored)
     } else {
-        (None, None)
+        (None, None, false)
     };
 
     let file_content = match &old_content {
@@ -1803,7 +1804,8 @@ pub fn write_fragment_text_source(
 
     crate::journal::write_verified(paths.root(), "fragment_write", &frag_path, &file_content)?;
     crate::stats::record_change(paths.root(), old_body.as_deref(), text, source);
-    Ok(())
+    // 是否本次留了版本快照（节流可能跳过）——回执区分"已留存/未达条件"
+    Ok(stored)
 }
 
 /// 渲染 frontmatter（id + anchors）+ 正文。
@@ -1934,7 +1936,7 @@ pub fn append_fragment_text(
     paths: &ProjectPaths,
     fragment_id: &str,
     text: &str,
-) -> Result<(), StudioError> {
+) -> Result<bool, StudioError> {
     let frag_path = paths
         .file_for_id(fragment_id)
         .ok_or_else(|| StudioError::Config(format!("无效的 fragment ID: {fragment_id}")))?;
@@ -1946,7 +1948,7 @@ pub fn append_fragment_text(
     }
 
     let old = std::fs::read_to_string(&frag_path)?;
-    crate::history::maybe_snapshot(paths, fragment_id);
+    let stored = crate::history::maybe_snapshot(paths, fragment_id);
     // 追加的文本同样要剥掉模型复读的 YAML 块
     let text = crate::fragment::strip_leading_frontmatter(text);
     let new_content = if let Some(rest) = old.strip_prefix("---") {
@@ -1969,7 +1971,7 @@ pub fn append_fragment_text(
         crate::fragment::fragment_body(&new_content),
         crate::stats::WriteSource::Ai,
     );
-    Ok(())
+    Ok(stored)
 }
 
 /// 为片段添加显式锚点（写入 frontmatter anchors 列表）。

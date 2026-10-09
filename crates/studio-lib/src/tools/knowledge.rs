@@ -1358,6 +1358,7 @@ impl Tool for WriteFragmentTextTool {
 
         let paths = self.ctx.paths();
 
+        let mut stored_snapshot = false;
         let (fragment_id, is_new) = if let Some(fid) = fragment_id_opt {
             // 覆盖已有片段：不存在则拒绝，避免造出脱离结构树的"孤儿片段"
             // （文件存在但不在任何场景里，get_structure 看不到、阅读顺序丢失）
@@ -1370,7 +1371,7 @@ impl Tool for WriteFragmentTextTool {
                     覆盖已有片段请传入 get_structure 中列出的 ID"
                 ));
             }
-            crate::mutations::write_fragment_text_source(
+            stored_snapshot = crate::mutations::write_fragment_text_source(
                 &paths,
                 &fid,
                 &text,
@@ -1423,8 +1424,8 @@ impl Tool for WriteFragmentTextTool {
                 lines.join("\n")
             }));
         }
-        // 覆盖前的旧文已留版本快照（节流），可回滚——回执明示，鼓励大胆覆盖
-        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+        // 快照回执区分"已留存/未达留版条件"（节流如实说明）
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored_snapshot) {
             msg.push_str(&note);
         }
         // 顺手附带的场景元数据：同一次调用落盘，省一次 update_scene 往返
@@ -1633,7 +1634,7 @@ impl Tool for EditFragmentTextTool {
         let replace_count = if replace_all { ranges.len() } else { 1 };
 
         // 写回（保留 frontmatter / 锚点）
-        crate::mutations::write_fragment_text_source(
+        let stored = crate::mutations::write_fragment_text_source(
             &paths,
             &fragment_id,
             &new_body,
@@ -1644,7 +1645,7 @@ impl Tool for EditFragmentTextTool {
         let mut msg = format!(
             "片段 {fragment_id} 已修改（原 {original_len} 字 → 新 {new_len} 字，替换 {replace_count} 处）"
         );
-        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored) {
             msg.push_str(&note);
         }
         // 近似匹配的替换不是逐字对应：明示请核对，防止"改错段落"被当成功
@@ -2136,7 +2137,7 @@ impl Tool for AppendFragmentTextTool {
         let text = get_str(arguments, "text")?;
 
         let paths = self.ctx.paths();
-        crate::mutations::append_fragment_text(&paths, &fragment_id, &text)
+        let stored = crate::mutations::append_fragment_text(&paths, &fragment_id, &text)
             .map_err(|e| e.to_string())?;
 
         let word_count = crate::workflow::count_words(&text) as usize;
@@ -2159,7 +2160,7 @@ impl Tool for AppendFragmentTextTool {
             }
         }
         // 覆盖前的旧文已留版本快照（节流），可回滚
-        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored) {
             msg.push_str(&note);
         }
         // 首次写入正文自动推进脉络 planned → writing（best-effort）
@@ -2335,7 +2336,7 @@ impl Tool for DeleteFragmentTool {
             "片段 {fragment_id} 已删除（已从所属场景的 fragments 列表移除）"
         );
         // 删除前强制留底——内容仍在版本历史中可找回
-        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, true) {
             msg.push_str(&note);
         }
         // 删除的片段若是断言证据：证据悬空警示（best-effort）
@@ -2460,7 +2461,7 @@ impl Tool for RewriteFragmentTool {
         let new_len = crate::workflow::count_words(&new_text) as usize;
 
         // 覆盖写入（保留原 frontmatter/anchors）
-        crate::mutations::write_fragment_text_source(
+        let stored = crate::mutations::write_fragment_text_source(
             &paths,
             &fragment_id,
             &new_text,
@@ -2472,7 +2473,7 @@ impl Tool for RewriteFragmentTool {
             "片段 {fragment_id} 已改写（原 {original_len} 字 → 新 {new_len} 字）"
         );
         // 改写前的原文已留版本快照——把"可反悔"说到明面上，鼓励大胆尝试
-        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored) {
             msg.push_str(&note);
         }
         // 改写证据片段：事实依据可能漂移（best-effort）
@@ -2580,7 +2581,7 @@ impl Tool for SplitFragmentTool {
         let scene_id_str = scene_id.as_str();
 
         // 原片段写前半
-        crate::mutations::write_fragment_text_source(
+        let stored = crate::mutations::write_fragment_text_source(
             &paths,
             &fragment_id,
             &before,
@@ -2601,6 +2602,9 @@ impl Tool for SplitFragmentTool {
             crate::workflow::count_words(&before),
             crate::workflow::count_words(&after)
         );
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored) {
+            msg.push_str(&note);
+        }
         // 原片段只剩前半：若它是断言证据，事实依据可能已随后半移走（best-effort）
         if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
             msg.push_str(&note);
