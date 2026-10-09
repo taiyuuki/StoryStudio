@@ -211,6 +211,36 @@ const sceneOptions = computed(() => {
   return opts
 })
 
+// ── 时点过滤：只看某场景时点仍成立的关系（镜像 get_relations 的 at_scene）──
+// 场景按阅读序（章→场景展平）编号比较；历法边界无法与叙事序互比，
+// 视为无界处理（宁可多显示不误排除）。
+const readingIndex = computed(() => {
+  const map = new Map<string, number>()
+  sceneOptions.value.forEach((s, i) => map.set(s.id, i))
+  return map
+})
+const relAtScene = ref('')
+
+const visibleRelations = computed(() => {
+  const all = relations.value
+  if (!relAtScene.value) return all
+  const now = readingIndex.value.get(relAtScene.value)
+  if (now === undefined) return all
+  return all.filter((r) => {
+    const from = r.valid?.from
+    const until = r.valid?.until
+    if (from?.scene) {
+      const idx = readingIndex.value.get(from.scene)
+      if (idx !== undefined && idx > now) return false // 尚未生效
+    }
+    if (until?.scene) {
+      const idx = readingIndex.value.get(until.scene)
+      if (idx !== undefined && idx <= now) return false // 已失效（until 不含）
+    }
+    return true
+  })
+})
+
 function toggleRelationWindow(r: RelRow) {
   if (relEditingId.value === r.id) {
     relEditingId.value = null
@@ -330,7 +360,16 @@ function label(r: string): string {
         <div class="rel-head">
           <i class="fa-solid fa-diagram-project" />
           <span>关系网</span>
-          <span class="num text-ink-muted">{{ relations.length }}</span>
+          <span class="num text-ink-muted">{{ visibleRelations.length }}<template v-if="relAtScene"> / {{ relations.length }}</template></span>
+          <select
+            v-if="relations.some((r) => r.valid?.from || r.valid?.until)"
+            v-model="relAtScene"
+            class="rel-at-select"
+            title="时点过滤：只看该场景时点仍成立的关系（时变窗口按阅读序比较）"
+          >
+            <option value="">全程</option>
+            <option v-for="s in sceneOptions" :key="s.id" :value="s.id">在 {{ s.label }} 时</option>
+          </select>
           <span style="flex: 1" />
           <button class="ink-btn ink-btn--sm" @click="((relCreating = !relCreating), ((relForm.from = ''), (relForm.to = ''), (relForm.relation = 'knows')))">
             <i class="fa-solid fa-plus" />
@@ -353,7 +392,7 @@ function label(r: string): string {
           <button class="ink-btn ink-btn--sm ink-btn--primary" @click="addRelation">确定</button>
         </div>
 
-        <template v-for="r in relations" :key="r.id">
+        <template v-for="r in visibleRelations" :key="r.id">
           <div class="rel-item" :class="{ 'is-editing': relEditingId === r.id }">
             <span class="ri-main">
               <span class="ri-line">
@@ -399,6 +438,7 @@ function label(r: string): string {
           </div>
         </template>
         <p v-if="relations.length === 0" class="empty empty--thin">尚无关系</p>
+        <p v-else-if="visibleRelations.length === 0" class="empty empty--thin">该时点无成立的关系</p>
       </div>
     </div>
 
@@ -771,6 +811,27 @@ function label(r: string): string {
 
   span:nth-child(3) {
     font-size: 11px;
+  }
+}
+
+// 时点过滤选择器（仅存在时变关系时出现）
+.rel-at-select {
+  max-width: 150px;
+  height: 24px;
+  padding: 0 4px;
+  border-radius: 6px;
+  border: 1px solid var(--ui-border);
+  background: var(--input-bg);
+  color: var(--ink-sec);
+  font-family: inherit;
+  font-size: 11px;
+  outline: none;
+  cursor: pointer;
+
+  &:hover,
+  &:focus {
+    border-color: var(--ink-accent);
+    color: var(--ink-main);
   }
 }
 
