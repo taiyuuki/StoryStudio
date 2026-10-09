@@ -4,9 +4,143 @@
 //! 拿到 AI 味检测报告后据此反思是否需要调整。
 
 use story_ai_runtime::{Tool, ToolDef};
+use story_project_format::{ProjectPaths, StructureFile};
 
 use super::{get_str, object_schema, ToolContext};
 use crate::ai_check::{self, AiCheckSeverity};
+
+// ============================================================================
+// 跨章开场统计（确定性，不调 LLM）
+// ============================================================================
+
+/// 开场型特征（"冷叙述/硬切入开场"）：单次出现是合理文学风格，
+/// 只有连续多章同型才构成模式化问题。LLM 单章检测没有全局视野、
+/// 必然逐章重复报——这里用确定性跨章统计在报告层降级/升级。
+fn is_opening_feature(feature_id: &str, feature_name: &str) -> bool {
+    feature_id == "12" || feature_name.contains("开场") || feature_name.contains("切入")
+}
+
+/// 章开场分类：取该章阅读序第一个片段的首行非空文字，
+/// 按保守前缀规则归类。规则粗，但全书口径一致即可支撑"连续性"比较。
+fn classify_opening(body: &str) -> &'static str {
+    let Some(line) = body.lines().map(str::trim).find(|l| !l.is_empty()) else {
+        return "空";
+    };
+    let first = line.chars().next().unwrap_or(' ');
+    if matches!(first, '"' | '“' | '「' | '『' | '\'') {
+        return "对话";
+    }
+    const TIME_STARTS: &[&str] = &[
+        "清晨", "黄昏", "入夜", "深夜", "午夜", "傍晚", "黎明", "翌日", "次日", "当晚", "是夜",
+        "夜半", "正午", "午后", "月夜", "雨夜", "雪夜", "这一夜", "那一夜", "转眼",
+    ];
+    if TIME_STARTS.iter().any(|w| line.starts_with(w)) {
+        return "时间景描";
+    }
+    const SCENE_STARTS: &[char] = &[
+        '雨', '雪', '风', '雾', '霜', '云', '山', '海', '河', '湖', '街', '巷', '檐', '窗',
+        '灯', '炉', '月', '日', '天',
+    ];
+    if SCENE_STARTS.contains(&first) {
+        return "景物";
+    }
+    "叙述"
+}
+
+/// 跨章开场统计：返回 (目标章的同型连续开场数, 目标章开场类型)。
+///
+/// 任一章无法解析开场（缺场景/片段/文件）则返回 None——统计失败时
+/// 不降级不升级，保持报告原样（fail-open）。
+fn opening_streak(dir: &std::path::Path, chapter_id: &str) -> Option<(usize, &'static str)> {
+    let paths = ProjectPaths::new(dir);
+    let structure =
+        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?).ok()?;
+
+    let mut kinds: Vec<&'static str> = Vec::with_capacity(structure.book.chapters.len());
+    for ch_id in &structure.book.chapters {
+        let chapter = structure.chapter.get(ch_id)?;
+        let scene = chapter
+            .scenes
+            .first()
+            .and_then(|s| structure.scene.get(s))?;
+        let frag = scene.fragments.first()?;
+        let content =
+            std::fs::read_to_string(paths.fragments_dir().join(format!("{frag}.md"))).ok()?;
+        kinds.push(classify_opening(crate::fragment::fragment_body(&content)));
+    }
+
+    let idx = structure.book.chapters.iter().position(|c| c == chapter_id)?;
+    let kind = kinds[idx];
+    let mut streak = 1usize;
+    let mut i = idx;
+    while i > 0 && kinds[i - 1] == kind {
+        streak += 1;
+        i -= 1;
+    }
+    Some((streak, kind))
+}
+
+/// 片段 → 所属章节 ID（structure.toml 反查）。
+fn chapter_of_fragment(dir: &std::path::Path, fragment_id: &str) -> Option<String> {
+    let paths = ProjectPaths::new(dir);
+    let structure =
+        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?).ok()?;
+    structure
+        .chapter
+        .iter()
+        .find(|(_, ch)| {
+            ch.scenes.iter().any(|s| {
+                structure
+                    .scene
+                    .get(s)
+                    .is_some_and(|sc| sc.fragments.iter().any(|f| f == fragment_id))
+            })
+        })
+        .map(|(id, _)| id.clone())
+}
+
+/// 场景 → 所属章节 ID。
+fn chapter_of_scene(dir: &std::path::Path, scene_id: &str) -> Option<String> {
+    let paths = ProjectPaths::new(dir);
+    let structure =
+        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?).ok()?;
+    structure
+        .chapter
+        .iter()
+        .find(|(_, ch)| ch.scenes.iter().any(|s| s == scene_id))
+        .map(|(id, _)| id.clone())
+}
+
+/// 渲染开场型特征的严重度与附注。
+///
+/// streak ≥3：保持原级并附"确属模式化"；不足 3：降为弱信号并说明
+/// 单章冷切入属合理风格。无统计（解析失败/无此特征）返回 None 不干预。
+fn opening_adjustment(
+    item_feature_id: &str,
+    item_feature_name: &str,
+    stat: Option<(usize, &'static str)>,
+) -> Option<(&'static str, String)> {
+    if !is_opening_feature(item_feature_id, item_feature_name) {
+        return None;
+    }
+    let (streak, kind) = stat?;
+    if streak >= 3 {
+        Some((
+            "保持原级",
+            format!(
+                "\n   📊 跨章统计：已连续 {streak} 章以「{kind}」开场，确属模式化，优先处理"
+            ),
+        ))
+    } else {
+        Some((
+            "💡弱信号",
+            format!(
+                "\n   📊 降级提示：跨章统计未构成连续同型开场（本章为「{kind}」起笔），\
+                 单章冷切入是合理的叙事风格，非连续模式不按问题处理"
+            ),
+        ))
+    }
+}
 
 // ============================================================================
 // ai_check_fragment
@@ -53,7 +187,18 @@ impl Tool for AiCheckTool {
         let report = ai_check::check_fragment(&dir, &fragment_id, provider)
             .map_err(|e| format!("AI 检测失败: {e}"))?;
 
-        Ok(format_report_for_llm(&report))
+        // 开场型特征需要跨章视野：按需计算统计（无此特征不读文件）
+        let opening_stat = if report
+            .items
+            .iter()
+            .any(|i| is_opening_feature(&i.feature_id, &i.feature_name))
+        {
+            chapter_of_fragment(&dir, &fragment_id).and_then(|c| opening_streak(&dir, &c))
+        } else {
+            None
+        };
+
+        Ok(format_report_for_llm(&report, opening_stat))
     }
 }
 
@@ -126,12 +271,31 @@ impl Tool for AiCheckScopeTool {
         let report = ai_check::check_scope(&dir, self.scope, &scope_id, provider)
             .map_err(|e| format!("AI 检测失败: {e}"))?;
 
-        Ok(format_batch_report_for_llm(&report))
+        // 开场型特征需要跨章视野（chapter 范围直接用 scope_id，scene 反查所属章）
+        let opening_stat = if report
+            .items
+            .iter()
+            .any(|i| is_opening_feature(&i.feature_id, &i.feature_name))
+        {
+            let chapter = if report.scope == "chapter" {
+                Some(scope_id.clone())
+            } else {
+                chapter_of_scene(&dir, &scope_id)
+            };
+            chapter.and_then(|c| opening_streak(&dir, &c))
+        } else {
+            None
+        };
+
+        Ok(format_batch_report_for_llm(&report, opening_stat))
     }
 }
 
 /// 把批量检测报告格式化为给 LLM 看的纯文本
-fn format_batch_report_for_llm(report: &ai_check::AiCheckBatchReport) -> String {
+fn format_batch_report_for_llm(
+    report: &ai_check::AiCheckBatchReport,
+    opening_stat: Option<(usize, &'static str)>,
+) -> String {
     let real: Vec<_> = report
         .items
         .iter()
@@ -176,10 +340,17 @@ fn format_batch_report_for_llm(report: &ai_check::AiCheckBatchReport) -> String 
 
     out.push('\n');
     for (idx, item) in real.iter().enumerate() {
-        let sev = match item.severity {
+        let default_sev = match item.severity {
             AiCheckSeverity::Strong => "🔴强信号",
             AiCheckSeverity::Medium => "⚠️中信号",
             AiCheckSeverity::Weak => "💡弱信号",
+        };
+        // 开场型特征按跨章统计降级/升级（保持原级时附"确属模式化"注记）
+        let (sev, note) = match opening_adjustment(&item.feature_id, &item.feature_name, opening_stat)
+        {
+            Some(("保持原级", n)) => (default_sev, n),
+            Some((forced, n)) => (forced, n),
+            None => (default_sev, String::new()),
         };
         // 带 ? 表示引文未能匹配回原文、归属为就近推测，以引文实际所在片段为准
         let fid = match item.fragment_id.as_deref() {
@@ -193,7 +364,7 @@ fn format_batch_report_for_llm(report: &ai_check::AiCheckBatchReport) -> String 
             &item.quote
         };
         out.push_str(&format!(
-            "\n{}. [{sev} 特征#{} {}｜{}]\n   「{}」\n   → {}",
+            "\n{}. [{sev} 特征#{} {}｜{}]\n   「{}」\n   → {}{note}",
             idx + 1,
             item.feature_id,
             item.feature_name,
@@ -210,7 +381,10 @@ fn format_batch_report_for_llm(report: &ai_check::AiCheckBatchReport) -> String 
 }
 
 /// 把检测报告格式化为给 LLM 看的纯文本
-fn format_report_for_llm(report: &ai_check::AiCheckReport) -> String {
+fn format_report_for_llm(
+    report: &ai_check::AiCheckReport,
+    opening_stat: Option<(usize, &'static str)>,
+) -> String {
     let real: Vec<_> = report
         .items
         .iter()
@@ -252,10 +426,16 @@ fn format_report_for_llm(report: &ai_check::AiCheckReport) -> String {
     );
 
     for (idx, item) in real.iter().enumerate() {
-        let sev = match item.severity {
+        let default_sev = match item.severity {
             AiCheckSeverity::Strong => "🔴强信号",
             AiCheckSeverity::Medium => "⚠️中信号",
             AiCheckSeverity::Weak => "💡弱信号",
+        };
+        let (sev, note) = match opening_adjustment(&item.feature_id, &item.feature_name, opening_stat)
+        {
+            Some(("保持原级", n)) => (default_sev, n),
+            Some((forced, n)) => (forced, n),
+            None => (default_sev, String::new()),
         };
         let quote_display = if item.quote.is_empty() {
             "（无原文引用）"
@@ -263,7 +443,7 @@ fn format_report_for_llm(report: &ai_check::AiCheckReport) -> String {
             &item.quote
         };
         out.push_str(&format!(
-            "{}. [{sev} 特征#{} {}]\n   「{}」\n   → {}\n\n",
+            "{}. [{sev} 特征#{} {}]\n   「{}」\n   → {}{note}\n\n",
             idx + 1,
             item.feature_id,
             item.feature_name,
@@ -276,4 +456,90 @@ fn format_report_for_llm(report: &ai_check::AiCheckReport) -> String {
         out.push_str(&format!("总结：{}", report.summary));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_opening_by_prefix_rules() {
+        assert_eq!(classify_opening("\n\n「你来了。」他头也不抬。"), "对话");
+        assert_eq!(classify_opening("“等等！”她喊住他。"), "对话");
+        assert_eq!(classify_opening("入夜后山门落锁。"), "时间景描");
+        assert_eq!(classify_opening("翌日清晨，雨停了。"), "时间景描");
+        assert_eq!(classify_opening("雨水沿瓦檐滴落。"), "景物");
+        assert_eq!(classify_opening("石阶一共十七级，苏格昨天数过。"), "叙述");
+        assert_eq!(classify_opening(""), "空");
+    }
+
+    /// 三章连续对话开场 → streak=3；前一章不同型 → streak=1。
+    #[test]
+    fn opening_streak_counts_consecutive_same_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("fragments")).unwrap();
+
+        let mut structure = String::from("[book]\nid = \"b_root\"\ntitle = \"t\"\nchapters = [\"ch_01\", \"ch_02\", \"ch_03\"]\n");
+        let openings = ["他推门进来。", "「站住。」", "「又见面了。」"]; // ch_01 叙述，ch_02/03 对话
+        for (i, ch) in ["ch_01", "ch_02", "ch_03"].iter().enumerate() {
+            let fid = format!("f_00{}", i + 1);
+            structure.push_str(&format!(
+                "\n[chapter.{ch}]\ntitle = \"第{}章\"\nscenes = [\"sc_{ch}_01\"]\n",
+                i + 1
+            ));
+            structure.push_str(&format!(
+                "\n[scene.sc_{ch}_01]\ntitle = \"s\"\nfragments = [\"{fid}\"]\n"
+            ));
+            std::fs::write(
+                dir.join(format!("fragments/{fid}.md")),
+                format!("---\nid: {fid}\n---\n{}\n正文后续。", openings[i]),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        // ch_03：ch_02/ch_03 连续对话 → streak=2（< 3，应降级）
+        assert_eq!(opening_streak(dir, "ch_03"), Some((2, "对话")));
+        // ch_01：前无章节，叙述 → streak=1
+        assert_eq!(opening_streak(dir, "ch_01"), Some((1, "叙述")));
+
+        // 补一章对话开场，ch_03 变成连续 3 章 → 不降级
+        std::fs::write(
+            dir.join("structure.toml"),
+            std::fs::read_to_string(dir.join("structure.toml"))
+                .unwrap()
+                .replace("ch_03\"]\n", "ch_03\", \"ch_04\"]\n")
+                + "\n[chapter.ch_04]\ntitle = \"第四章\"\nscenes = [\"sc_ch_04_01\"]\n\n[scene.sc_ch_04_01]\ntitle = \"s\"\nfragments = [\"f_0004\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0004.md"),
+            "---\nid: f_0004\n---\n「别走。」\n正文后续。",
+        )
+        .unwrap();
+        assert_eq!(opening_streak(dir, "ch_04"), Some((3, "对话")));
+
+        // 未知章节 → None（fail-open）
+        assert_eq!(opening_streak(dir, "ch_99"), None);
+    }
+
+    /// 降级/保持逻辑：streak<3 强制弱信号；≥3 保持并注明模式化。
+    #[test]
+    fn opening_adjustment_downgrades_and_escalates() {
+        let (sev, note) =
+            opening_adjustment("12", "冷叙述/硬切入开场", Some((1, "叙述"))).unwrap();
+        assert_eq!(sev, "💡弱信号");
+        assert!(note.contains("合理的叙事风格"), "{note}");
+
+        let (sev, note) =
+            opening_adjustment("12", "冷叙述/硬切入开场", Some((3, "对话"))).unwrap();
+        assert_eq!(sev, "保持原级");
+        assert!(note.contains("模式化"), "{note}");
+
+        // 非开场特征不干预
+        assert!(opening_adjustment("3", "匀速排比", Some((3, "对话"))).is_none());
+        // 无统计不干预
+        assert!(opening_adjustment("12", "冷叙述/硬切入开场", None).is_none());
+    }
 }
