@@ -14,7 +14,10 @@
 use std::path::Path;
 
 use serde::Serialize;
-use story_project_format::knowledge_file::{AssertionDef, EvidenceDef, EvidenceFile};
+use story_project_format::knowledge_file::{
+    AssertionDef, EvidenceDef, EvidenceFile, StoryTimeDef as AssertionStoryTimeDef,
+    ValidityDef as AssertionValidityDef,
+};
 use story_project_format::structure_toml::StoryTimeDef;
 use story_project_format::{
     is_valid_status, AnchoringFile, AssertionsFile, ChapterDef, ChapterOutlineDef, ChaptersFile,
@@ -2577,6 +2580,60 @@ pub fn add_assertions(
     paths: &ProjectPaths,
     items: &[(String, String, String, Option<String>)],
 ) -> Result<Vec<AddAssertionOutcome>, StudioError> {
+    add_assertions_valid(paths, items, None)
+}
+
+/// 单条添加断言（带生效区间，场景锚）：与关系边的时变声明对齐。
+///
+/// 窗口语义同 add_relation：valid_from_scene = 该场景起成立，
+/// valid_until_scene = 到该场景前已不成立；场景锚需真实存在。
+/// 只声明一端时另一端无界。
+pub fn add_assertion_windowed(
+    paths: &ProjectPaths,
+    subject: &str,
+    predicate: &str,
+    object: &str,
+    evidence: Option<&str>,
+    valid_from_scene: Option<&str>,
+    valid_until_scene: Option<&str>,
+) -> Result<AddAssertionOutcome, StudioError> {
+    if let Some(scene) = valid_from_scene {
+        ensure_narrative_anchor_exists(paths, scene)?;
+    }
+    if let Some(scene) = valid_until_scene {
+        ensure_narrative_anchor_exists(paths, scene)?;
+    }
+    let scene_def = |scene: &str| AssertionStoryTimeDef {
+        year: None,
+        month: None,
+        day: None,
+        scene: Some(scene.to_string()),
+    };
+    let valid = (valid_from_scene.is_some() || valid_until_scene.is_some()).then(|| {
+        AssertionValidityDef {
+            from: valid_from_scene.map(scene_def),
+            until: valid_until_scene.map(scene_def),
+        }
+    });
+    add_assertions_valid(
+        paths,
+        &[(
+            subject.to_string(),
+            predicate.to_string(),
+            object.to_string(),
+            evidence.map(str::to_string),
+        )],
+        valid,
+    )
+    .map(|mut v| v.remove(0))
+}
+
+/// 批量添加断言的核心实现；valid 为全部条目共享的生效窗口（None=无窗口）。
+fn add_assertions_valid(
+    paths: &ProjectPaths,
+    items: &[(String, String, String, Option<String>)],
+    valid: Option<AssertionValidityDef>,
+) -> Result<Vec<AddAssertionOutcome>, StudioError> {
     if items.is_empty() {
         return Err(StudioError::Config("assertions 不能为空".to_string()));
     }
@@ -2593,6 +2650,7 @@ pub fn add_assertions(
             predicate,
             object,
             evidence.as_deref(),
+            valid.clone(),
         )?);
     }
     file.save(&assertions_path)?;
@@ -2600,7 +2658,7 @@ pub fn add_assertions(
 }
 
 /// 在已加载的断言文件上应用一条断言（查重 / 时变自动失效 / 并存收集 /
-/// 证据登记 / 追加），不落盘——单条与批量共用。
+/// 证据登记 / 追加），不落盘——单条与批量共用。valid 为生效区间（可 None）。
 fn apply_assertion(
     paths: &ProjectPaths,
     file: &mut AssertionsFile,
@@ -2608,6 +2666,7 @@ fn apply_assertion(
     predicate: &str,
     object: &str,
     evidence: Option<&str>,
+    valid: Option<AssertionValidityDef>,
 ) -> Result<AddAssertionOutcome, StudioError> {
     let object_value = coerce_object_value(predicate, object);
 
@@ -2672,7 +2731,7 @@ fn apply_assertion(
         status: "active".to_string(),
         extracted_by: "manual".to_string(),
         evidence: evidence_list,
-        valid: None,
+        valid,
     });
 
     Ok(AddAssertionOutcome {
@@ -5129,6 +5188,57 @@ mod tests {
 
         let result = add_assertion(&paths, "c_0001", "alive", "true", Some("f_9999"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_assertion_windowed_persists_scene_bounds() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc1 = create_scene(&paths, &ch, "场景一", None).unwrap();
+        let sc2 = create_scene(&paths, &ch, "场景二", None).unwrap();
+
+        let outcome = add_assertion_windowed(
+            &paths,
+            "c_0001",
+            "identity",
+            "学徒",
+            None,
+            Some(&sc1),
+            Some(&sc2),
+        )
+        .unwrap();
+        assert!(!outcome.deduplicated);
+
+        let file =
+            AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
+                .unwrap();
+        let a = file
+            .assertions
+            .iter()
+            .find(|a| a.id == outcome.id)
+            .unwrap();
+        let valid = a.valid.as_ref().expect("窗口应落盘");
+        assert_eq!(
+            valid.from.as_ref().unwrap().scene.as_deref(),
+            Some(sc1.as_str())
+        );
+        assert_eq!(
+            valid.until.as_ref().unwrap().scene.as_deref(),
+            Some(sc2.as_str())
+        );
+
+        // 未知场景锚 → 整体拒绝
+        assert!(add_assertion_windowed(
+            &paths,
+            "c_0001",
+            "identity",
+            "学徒",
+            None,
+            Some("sc_99_99"),
+            None,
+        )
+        .is_err());
     }
 
     #[test]

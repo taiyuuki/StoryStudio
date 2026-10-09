@@ -770,12 +770,52 @@ impl Tool for QueryAssertionsTool {
             } else {
                 format!(", 证据: {}", a.evidence.join(", "))
             };
+            let valid = a
+                .valid
+                .as_ref()
+                .map(format_assertion_validity)
+                .unwrap_or_default();
             out.push_str(&format!(
-                "  {}: {}({}).{} = {} ({}){}\n",
-                a.id, subj_name, a.subject, a.predicate, a.object, status_display, evidence
+                "  {}: {}({}).{} = {} ({}){}{}\n",
+                a.id, subj_name, a.subject, a.predicate, a.object, status_display, valid, evidence
             ));
         }
         Ok(out)
+    }
+}
+
+/// 渲染断言的生效区间（场景锚或绝对历法，无界边界不显示）。
+fn format_assertion_validity(
+    v: &story_project_format::knowledge_file::ValidityDef,
+) -> String {
+    let bound = |t: &story_project_format::knowledge_file::StoryTimeDef| -> String {
+        match &t.scene {
+            Some(scene) => format!("场景 {scene}"),
+            None => {
+                let mut s = t
+                    .year
+                    .map(|y| y.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                if let Some(m) = t.month {
+                    s.push_str(&format!("-{m:02}"));
+                    if let Some(d) = t.day {
+                        s.push_str(&format!("-{d:02}"));
+                    }
+                }
+                s
+            }
+        }
+    };
+    let from = v.from.as_ref().map(|t| format!(", 自 {}", bound(t)));
+    let until = v.until.as_ref().map(|t| format!(", 至 {} 前", bound(t)));
+    let parts: Vec<&str> = [from.as_deref(), until.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        parts.concat()
     }
 }
 

@@ -36,6 +36,8 @@ impl Tool for AddAssertionTool {
             object 值会根据 predicate 自动转换类型：alive 用 true/false，age 用整数，其他用字符串。\
             时变谓词（located_at/status/alive/age）会自动将同主体同谓词的旧断言置为 superseded，\
             所以\"角色当前位置/状态/生死/年龄\"直接添加新值即可，无需先删旧值；\
+            需要显式时间边界的事实（如\"拜师之前身份是学徒\"）用 valid_from_scene/valid_until_scene \
+            声明场景锚生效区间（与关系边的时变声明同构）。\
             可多值谓词（occupation/holds 等）允许并存（一人可有多重职业），\
             但并存时回执会提示旧值——同一职位的演进（如拟聘→正式）请用 retire_assertion 废弃旧值。\
             完全相同的断言不会重复创建。一次沉淀多条事实（如章节回顾）用 assertions 批量传入。"
@@ -59,7 +61,19 @@ impl Tool for AddAssertionTool {
                 (
                     "evidence_fragment",
                     "string",
-                    "证据片段 ID（须为已存在的片段；系统自动登记证据条目）",
+                    "证据片段 ID（须为已存在的片段；系统自动登记证据条目并摘录正文开头快照）",
+                    false,
+                ),
+                (
+                    "valid_from_scene",
+                    "string",
+                    "断言生效的场景/片段 ID（叙事锚）：该场景起成立；省略 = 自故事开始。单条添加时可用（批量暂不支持）",
+                    false,
+                ),
+                (
+                    "valid_until_scene",
+                    "string",
+                    "断言失效的场景/片段 ID（不含该场景）：到该场景前已不成立；省略 = 直到故事结束",
                     false,
                 ),
                 (
@@ -129,13 +143,17 @@ impl Tool for AddAssertionTool {
         let predicate = get_str(arguments, "predicate")?;
         let object_val = get_str(arguments, "object")?;
         let evidence = get_str_opt(arguments, "evidence_fragment");
+        let valid_from = get_str_opt(arguments, "valid_from_scene");
+        let valid_until = get_str_opt(arguments, "valid_until_scene");
 
-        let outcome = crate::mutations::add_assertion(
+        let outcome = crate::mutations::add_assertion_windowed(
             &paths,
             &subject,
             &predicate,
             &object_val,
             evidence.as_deref(),
+            valid_from.as_deref(),
+            valid_until.as_deref(),
         )
         .map_err(|e| e.to_string())?;
 
@@ -149,6 +167,9 @@ impl Tool for AddAssertionTool {
             "断言已添加: id={}, subject={}, predicate={}",
             outcome.id, subject, predicate
         );
+        if valid_from.is_some() || valid_until.is_some() {
+            msg.push_str("（已声明生效区间，query_assertions 可见边界）");
+        }
         if !outcome.superseded.is_empty() {
             msg.push_str(&format!(
                 "；旧断言 {} 已自动置为 superseded",

@@ -257,9 +257,12 @@ pub struct AssertionOutcomeDto {
     pub coexisting: Vec<String>,
 }
 
-/// StoryTimeDef → "1023年9月15日" 样式（knowledge_file 的数值锚定义）
+/// StoryTimeDef → "1023年9月15日" 或 "场景 sc_01_02" 样式（knowledge_file 的锚定义）
 fn story_time_label(t: &story_project_format::knowledge_file::StoryTimeDef) -> String {
-    let mut s = format!("{}年", t.year);
+    if let Some(scene) = &t.scene {
+        return format!("场景 {scene}");
+    }
+    let mut s = format!("{}年", t.year.unwrap_or(0));
     if let Some(m) = t.month {
         s.push_str(&format!("{m}月"));
         if let Some(d) = t.day {

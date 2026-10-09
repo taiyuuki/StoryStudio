@@ -69,14 +69,18 @@ pub struct ValidityDef {
     pub until: Option<StoryTimeDef>,
 }
 
-/// StoryTime 的 TOML 表示（简化为 year/month/day）
+/// StoryTime 的 TOML 表示：绝对历法（year/month/day）或叙事锚（scene）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoryTimeDef {
-    pub year: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub month: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub day: Option<u8>,
+    /// 叙事锚：场景（或片段）ID，与 year/month/day 互斥
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<String>,
 }
 
 impl AssertionsFile {
@@ -159,8 +163,11 @@ impl ValidityDef {
 
 impl StoryTimeDef {
     fn to_story_time(&self) -> StoryTime {
+        if let Some(scene) = &self.scene {
+            return StoryTime::narrative(StableId::new_unchecked(scene));
+        }
         StoryTime::absolute(StoryCalendar {
-            year: self.year,
+            year: self.year.unwrap_or(0),
             month: self.month,
             day: self.day,
         })
@@ -169,11 +176,18 @@ impl StoryTimeDef {
     fn from_story_time(t: &StoryTime) -> Option<Self> {
         match &t.coord {
             TimeCoord::Absolute(cal) => Some(Self {
-                year: cal.year,
+                year: Some(cal.year),
                 month: cal.month,
                 day: cal.day,
+                scene: None,
             }),
-            _ => None, // Narrative/BeforeStory/AfterStory/Unknown 暂不序列化
+            TimeCoord::Narrative(id) => Some(Self {
+                year: None,
+                month: None,
+                day: None,
+                scene: Some(id.as_str().to_string()),
+            }),
+            _ => None, // BeforeStory/AfterStory/Unknown 暂不序列化
         }
     }
 }
