@@ -477,6 +477,15 @@ export interface FragmentVersionDto {
   bytes: number
 }
 
+/** 版本差异行（kind: same | added | removed | skipped） */
+export interface FragmentDiffLineDto {
+  kind: 'same' | 'added' | 'removed' | 'skipped'
+  oldLn: number | null
+  newLn: number | null
+  text: string
+  count: number
+}
+
 export interface DayCountDto {
   manual: number
   ai: number
@@ -865,6 +874,20 @@ export const api = {
   },
   fragmentRestoreVersion(root: string, fragmentId: string, timestamp: number) {
     return call<FragmentDto>('fragment_restore_version', { root, fragmentId, timestamp })
+  },
+  /** 版本差异；oldTs/newTs 传 null 表示当前磁盘内容 */
+  fragmentVersionDiff(
+    root: string,
+    fragmentId: string,
+    oldTs: number | null,
+    newTs: number | null,
+  ) {
+    return call<FragmentDiffLineDto[]>('fragment_version_diff', {
+      root,
+      fragmentId,
+      oldTs,
+      newTs,
+    })
   },
   statsSummary(root: string) {
     return call<WordStatsSummaryDto>('stats_summary', { root })

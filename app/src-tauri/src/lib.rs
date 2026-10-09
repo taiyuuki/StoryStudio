@@ -116,6 +116,7 @@ pub fn run() {
             commands::fragment_versions,
             commands::fragment_version_read,
             commands::fragment_restore_version,
+            commands::fragment_version_diff,
             // 码字统计 / AI 账本
             commands::stats_summary,
             commands::stats_set_goal,

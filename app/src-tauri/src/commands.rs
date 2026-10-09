@@ -230,6 +230,17 @@ pub fn fragment_restore_version(root: String, fragment_id: String, timestamp: u6
     Ok(to_fragment_dto(&ff))
 }
 
+/// 比较两个版本的正文差异；old_ts/new_ts 传 null 表示当前磁盘内容
+#[tauri::command]
+pub fn fragment_version_diff(
+    root: String,
+    fragment_id: String,
+    old_ts: Option<u64>,
+    new_ts: Option<u64>,
+) -> R<Vec<lib::history::DiffLine>> {
+    lib::history::diff_versions(&paths(&root), &fragment_id, old_ts, new_ts).map_err(e)
+}
+
 // ── 码字统计 / AI 账本 ───────────────────────────────────
 
 #[tauri::command]

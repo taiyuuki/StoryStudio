@@ -1109,6 +1109,10 @@ impl Tool for WriteFragmentTextTool {
                 lines.join("\n")
             }));
         }
+        // 覆盖前的旧文已留版本快照（节流），可回滚——回执明示，鼓励大胆覆盖
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+            msg.push_str(&note);
+        }
         // 首次写入正文自动推进脉络 planned → writing（best-effort）
         if let Some(note) = crate::mutations::auto_advance_outline_writing(&paths, &scene_id) {
             msg.push_str(&note);
@@ -1282,9 +1286,13 @@ impl Tool for EditFragmentTextTool {
         )
             .map_err(|e| e.to_string())?;
 
-        Ok(format!(
+        let mut msg = format!(
             "片段 {fragment_id} 已修改（原 {original_len} 字 → 新 {new_len} 字，替换 {replace_count} 处）"
-        ))
+        );
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+            msg.push_str(&note);
+        }
+        Ok(msg)
     }
 }
 
@@ -1702,6 +1710,10 @@ impl Tool for AppendFragmentTextTool {
                 Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
             }
         }
+        // 覆盖前的旧文已留版本快照（节流），可回滚
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+            msg.push_str(&note);
+        }
         // 首次写入正文自动推进脉络 planned → writing（best-effort）
         if let Some(note) = crate::mutations::auto_advance_outline_writing(&paths, &fragment_id) {
             msg.push_str(&note);
@@ -1732,7 +1744,8 @@ impl Tool for DeleteFragmentTool {
         ToolDef {
             name: "delete_fragment".into(),
             description: "删除正文片段（.md 文件），并从所属场景的 fragments 列表移除。\
-            不会级联清理该片段上的锚点引用。删除前请先 read_fragment_text 确认内容。不可恢复。"
+            不会级联清理该片段上的锚点引用。删除前请先 read_fragment_text 确认内容。\
+            删除前会自动把该片段内容存进版本历史（片段菜单 → 版本历史 可找回）。"
                 .into(),
             parameters: object_schema(vec![(
                 "fragment_id",
@@ -1747,9 +1760,14 @@ impl Tool for DeleteFragmentTool {
         let fragment_id = get_str(arguments, "fragment_id")?;
         let paths = self.ctx.paths();
         crate::mutations::delete_fragment(&paths, &fragment_id).map_err(|e| e.to_string())?;
-        Ok(format!(
+        let mut msg = format!(
             "片段 {fragment_id} 已删除（已从所属场景的 fragments 列表移除）"
-        ))
+        );
+        // 删除前强制留底——内容仍在版本历史中可找回
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+            msg.push_str(&note);
+        }
+        Ok(msg)
     }
 }
 
@@ -1875,9 +1893,14 @@ impl Tool for RewriteFragmentTool {
         )
             .map_err(|e| e.to_string())?;
 
-        Ok(format!(
+        let mut msg = format!(
             "片段 {fragment_id} 已改写（原 {original_len} 字 → 新 {new_len} 字）"
-        ))
+        );
+        // 改写前的原文已留版本快照——把"可反悔"说到明面上，鼓励大胆尝试
+        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+            msg.push_str(&note);
+        }
+        Ok(msg)
     }
 }
 

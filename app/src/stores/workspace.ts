@@ -8,6 +8,7 @@ import type {
   EntityDto,
   EntityKind,
   FragmentDto,
+  FragmentDiffLineDto,
   FragmentVersionDto,
   RelationDto,
   SceneDetailDto,
@@ -615,6 +616,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  /** 版本差异；oldTs/newTs 传 null 表示当前磁盘内容 */
+  async function diffVersion(
+    fragmentId: string,
+    oldTs: number | null,
+    newTs: number | null,
+  ): Promise<FragmentDiffLineDto[]> {
+    try {
+      return await api.fragmentVersionDiff(root.value!, fragmentId, oldTs, newTs)
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+      return []
+    }
+  }
+
   // ── 码字统计 ────────────────────────────────────────────
   const stats = ref<WordStatsSummaryDto | null>(null)
 
@@ -753,6 +768,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     loadVersions,
     readVersion,
     restoreVersion,
+    diffVersion,
     stats,
     refreshStats,
     setDailyGoal,
