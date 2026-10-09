@@ -2662,13 +2662,17 @@ impl Tool for MoveFragmentTool {
             match direction.as_str() {
                 "up" => {
                     if current_pos == 0 {
-                        return Err(format!("片段 {fragment_id} 已在最前，无法前移"));
+                        return Err(format!(
+                            "片段 {fragment_id} 已在最前，无法前移（本就是第 1 位；要移到其他位置请用 position）"
+                        ));
                     }
                     current_pos - 1
                 }
                 "down" => {
                     if current_pos == total - 1 {
-                        return Err(format!("片段 {fragment_id} 已在最后，无法后移"));
+                        return Err(format!(
+                            "片段 {fragment_id} 已在最后，无法后移（本就是第 {total} 位；要移到其他位置请用 position 指定 1..={total}）"
+                        ));
                     }
                     current_pos + 1
                 }

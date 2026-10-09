@@ -76,7 +76,11 @@ impl Tool for DesignChaptersTool {
                     },
                     "replace": {
                         "type": "boolean",
-                        "description": "是否替换现有章节脉络（默认 false=追加）。传 true 会清空已有章节，慎用"
+                        "description": "是否替换现有章节脉络（默认 false=追加）。传 true 会清空已有章节，慎用：已有脉络中存在已动笔或已关联物理章节的条目时，必须再传 confirm=true 才会执行（建议先向用户说明）"
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "replace=true 且将清空已动笔/已关联的脉络时，传 true 显式确认放弃这些设计记录（不可逆）"
                     }
                 },
                 "required": ["chapters"]
@@ -132,6 +136,34 @@ impl Tool for DesignChaptersTool {
         }
 
         if replace {
+            // 软拦截：待清空的脉络里有"已动笔"或"已关联物理章节"的条目时，
+            // 需要显式 confirm=true（不可逆丢失节拍/钩子/进度，Agent 应先 ask_user）
+            let at_risk: Vec<&ChapterOutlineDef> = file
+                .chapters
+                .iter()
+                .filter(|c| {
+                    c.chapter_id.is_some()
+                        || c.status != story_project_format::chapters_file::STATUS_PLANNED
+                })
+                .collect();
+            if !at_risk.is_empty()
+                && !arguments
+                    .get("confirm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
+                let titles: Vec<&str> =
+                    at_risk.iter().map(|c| c.title.as_str()).take(5).collect();
+                return Err(format!(
+                    "replace 将清空 {} 条脉络，其中 {} 条已动笔或已关联物理章节（{}{}），\
+                     不可逆丢失节拍/钩子/进度。确认放弃请传 confirm=true（建议先向用户说明），\
+                     或改用默认追加模式 / 先 delete_chapter_outline 逐条清理",
+                    file.chapters.len(),
+                    at_risk.len(),
+                    titles.join("、"),
+                    if at_risk.len() > 5 { " 等" } else { "" }
+                ));
+            }
             file.chapters.clear();
         }
         let start_index = file.chapters.len() + 1;
@@ -1023,12 +1055,50 @@ mod tests {
         let out = get.execute(&serde_json::json!({})).unwrap();
         assert!(out.contains("进度: 0/2"));
 
-        // 第三次 replace：清空后 1 章
+        // 第三次 replace：清空后 1 章（全部为 planned 且未关联 → 无需 confirm）
         design
             .execute(&serde_json::json!({"chapters": one, "replace": true}))
             .unwrap();
         let out = get.execute(&serde_json::json!({})).unwrap();
         assert!(out.contains("进度: 0/1"));
+    }
+
+    /// replace 软拦截：待清空脉络含已动笔/已关联条目时需显式 confirm。
+    #[test]
+    fn design_replace_guard_requires_confirm_for_writing_chapters() {
+        let (_tmp, ctx) = setup();
+        let design = DesignChaptersTool::new(ctx.clone());
+        let one = r#"[{"title":"第一章 上山"}]"#;
+        design
+            .execute(&serde_json::json!({"chapters": one}))
+            .unwrap();
+        let update = UpdateChapterOutlineTool::new(ctx.clone());
+        update
+            .execute(&serde_json::json!({"index": 1, "status": "writing"}))
+            .unwrap();
+
+        // 不带 confirm → 拒绝并列明风险
+        let err = design
+            .execute(&serde_json::json!({"chapters": r#"[{"title":"新版第一章"}]"#, "replace": true}))
+            .unwrap_err();
+        assert!(err.contains("confirm=true"), "{err}");
+        assert!(err.contains("已动笔"), "{err}");
+
+        // 脉络未被清空
+        let get = GetChapterOutlineTool::new(ctx.clone());
+        assert!(get.execute(&serde_json::json!({})).unwrap().contains("上山"));
+
+        // 带 confirm=true → 执行清空替换
+        design
+            .execute(&serde_json::json!({
+                "chapters": r#"[{"title":"新版第一章"}]"#,
+                "replace": true,
+                "confirm": true
+            }))
+            .unwrap();
+        let out = get.execute(&serde_json::json!({})).unwrap();
+        assert!(out.contains("新版第一章"), "{out}");
+        assert!(!out.contains("上山"), "{out}");
     }
 
     #[test]
