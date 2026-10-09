@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { EntityDto, EntityKind } from '@/api/backend'
+import type { EntityDto, EntityKind, RelationStoryTimeDto, RelationValidityDto } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
 
 const store = useWorkspaceStore()
@@ -165,6 +165,36 @@ const relations = computed(() =>
   })) ?? [],
 )
 
+// ── 时变关系：生效区间标签 ─────────────────────────────────
+// 场景锚优先显示「章 · 场景」标题（比裸 ID 可读），历法边界显示年月
+const sceneLabels = computed(() => {
+  const map = new Map<string, string>()
+  for (const ch of store.ws?.chapters ?? []) {
+    for (const sc of ch.scenes) {
+      map.set(sc.id, `${ch.title}·${sc.title || '未命名场景'}`)
+    }
+  }
+  return map
+})
+
+function boundLabel(t: RelationStoryTimeDto): string {
+  if (t.scene) return sceneLabels.value.get(t.scene) ?? t.scene
+  let s = `${t.year ?? '?'}年`
+  if (t.month) {
+    s += `${t.month}月`
+    if (t.day) s += `${t.day}日`
+  }
+  return s
+}
+
+function validityLabel(valid?: RelationValidityDto | null): string {
+  if (!valid?.from && !valid?.until) return ''
+  const parts: string[] = []
+  if (valid?.from) parts.push(`自 ${boundLabel(valid.from)}`)
+  if (valid?.until) parts.push(`至 ${boundLabel(valid.until)}前`)
+  return parts.join(' · ')
+}
+
 async function addRelation() {
   if (!relForm.from || !relForm.to) {
     ElMessage.warning('选择关系的双方')
@@ -289,12 +319,18 @@ function label(r: string): string {
         </div>
 
         <div v-for="r in relations" :key="r.id" class="rel-item">
-          <span class="ri-line">
-            <b>{{ r.fromName }}</b>
-            <i class="fa-solid fa-arrow-right-long" />
-            <span class="rel-label">{{ label(r.relation) }}</span>
-            <i class="fa-solid fa-arrow-right-long" />
-            <b>{{ r.toName }}</b>
+          <span class="ri-main">
+            <span class="ri-line">
+              <b>{{ r.fromName }}</b>
+              <i class="fa-solid fa-arrow-right-long" />
+              <span class="rel-label">{{ label(r.relation) }}</span>
+              <i class="fa-solid fa-arrow-right-long" />
+              <b>{{ r.toName }}</b>
+            </span>
+            <span v-if="validityLabel(r.valid)" class="rel-validity" :title="`时变关系：${validityLabel(r.valid)}`">
+              <i class="fa-regular fa-clock" />
+              {{ validityLabel(r.valid) }}
+            </span>
           </span>
           <button class="ri-del" @click="store.removeRelation(r.id)">
             <i class="fa-solid fa-xmark" />
@@ -710,6 +746,31 @@ function label(r: string): string {
     .ri-del {
       opacity: 1;
     }
+  }
+}
+
+.ri-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+// 时变关系的生效区间（次行弱化显示，悬浮可看完整语义）
+.rel-validity {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  i {
+    font-size: 9.5px;
+    flex-shrink: 0;
   }
 }
 

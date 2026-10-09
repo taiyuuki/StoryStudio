@@ -60,11 +60,28 @@ export interface EntityDto {
   attributes: Record<string, string>
 }
 
+/** 关系生效边界：绝对历法（year/month/day）或场景锚（scene），二者互斥 */
+export interface RelationStoryTimeDto {
+  year?: number | null
+  month?: number | null
+  day?: number | null
+  /** 叙事锚：场景/片段 ID（按阅读序比较） */
+  scene?: string | null
+}
+
+/** 关系生效区间（null 边界 = 无界） */
+export interface RelationValidityDto {
+  from?: RelationStoryTimeDto | null
+  until?: RelationStoryTimeDto | null
+}
+
 export interface RelationDto {
   id: string
   from: string
   to: string
   relation: string
+  /** 时变窗口（add_relation/update_relation 声明；null = 全时段） */
+  valid?: RelationValidityDto | null
 }
 
 export interface ThreadDto {
