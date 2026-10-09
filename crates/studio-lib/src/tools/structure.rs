@@ -681,7 +681,9 @@ impl Tool for RepairProjectTool {
             1) 清除片段正文里残留的 YAML 块（曾因写入缺陷叠成双层 frontmatter，\
             会在读取正文时显示 --- anchors --- 字样）；\
             2) 把断言证据字段里的片段 ID 重建为证据登记条目（消除\"证据不存在\"告警）；\
-            3) 清除章节脉络里指向已不存在物理章节的 chapter_id（条目退回虚拟章）。\
+            3) 清除章节脉络里指向已不存在物理章节的 chapter_id（条目退回虚拟章）；\
+            4) 为已 resolved 但缺 revealed_at 的明线线索回填揭示锚\
+            （revealed_at = resolved_at，消除\"已回收未揭示\"告警；暗线 pov 豁免）。\
             项目迁移或编译出现大量数据类告警时使用；幂等，可重复执行。"
                 .into(),
             parameters: object_schema(vec![]),
@@ -696,6 +698,7 @@ impl Tool for RepairProjectTool {
             && report.assertions_fixed == 0
             && report.evidence_skipped == 0
             && report.outline_links_cleared.is_empty()
+            && report.threads_revealed_backfilled.is_empty()
         {
             return Ok("检查完成：数据一致，无需修复。".to_string());
         }
@@ -725,6 +728,13 @@ impl Tool for RepairProjectTool {
                 "  清除悬空 chapter_id 的脉络 {} 条（退回虚拟章）: {}\n",
                 report.outline_links_cleared.len(),
                 report.outline_links_cleared.join("、")
+            ));
+        }
+        if !report.threads_revealed_backfilled.is_empty() {
+            out.push_str(&format!(
+                "  回填 revealed_at 的已终态线索 {} 条（= resolved_at）: {}\n",
+                report.threads_revealed_backfilled.len(),
+                report.threads_revealed_backfilled.join("、")
             ));
         }
         Ok(out)

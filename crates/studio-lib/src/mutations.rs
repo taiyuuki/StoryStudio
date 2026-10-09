@@ -2935,6 +2935,8 @@ pub struct RepairReport {
     pub evidence_skipped: usize,
     /// 清除悬空 chapter_id（指向已不存在的物理章节）的脉络条目（标题）
     pub outline_links_cleared: Vec<String>,
+    /// 回填 revealed_at（已 resolved 但缺揭示锚）的线索（标题）
+    pub threads_revealed_backfilled: Vec<String>,
 }
 
 /// 一次性数据修复（历史脏数据兜底）：
@@ -2945,6 +2947,9 @@ pub struct RepairReport {
 ///    登记条目（ev_XXXX），消除编译器"证据不存在"误报
 /// 3. 章节脉络 chapter_id 指向已不存在的物理章节（删除章节时脉络未
 ///    同步）→ 清除引用、条目退回虚拟章，消除双轨间的悬空指向
+/// 4. 线索已 resolved（resolved_at）但缺 revealed_at（advance_thread
+///    单向推进，终态后无法补锚）→ 回填 revealed_at = resolved_at，
+///    消除 resolve_without_reveal 告警（scope=pov 暗线豁免不处理）
 pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
     let paths = ProjectPaths::new(dir);
     let mut report = RepairReport::default();
@@ -3057,6 +3062,28 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
         }
         if !report.outline_links_cleared.is_empty() {
             save_chapters_file(&paths, &file)?;
+        }
+    }
+
+    // —— 4. 已 resolved 缺 revealed_at 的线索：回填揭示锚 ——
+    // 回填口径：revealed_at = resolved_at（回收即最晚揭示点）。
+    // scope=pov 的暗线允许 planted 直接 resolved（编译规则本身豁免），跳过。
+    let threads_path = paths.root().join("threads.toml");
+    if threads_path.exists() {
+        let mut file: ThreadsFile = ThreadsFile::load_or_default(&threads_path)?;
+        let mut changed = false;
+        for t in &mut file.threads {
+            if t.resolved_at.is_some()
+                && t.revealed_at.is_none()
+                && t.scope.as_deref() != Some("pov")
+            {
+                t.revealed_at = t.resolved_at.clone();
+                report.threads_revealed_backfilled.push(t.title.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            file.save(&threads_path)?;
         }
     }
 
@@ -5884,6 +5911,48 @@ mod tests {
             "有效关联不应被误清"
         );
         assert!(file.chapters[1].chapter_id.is_none());
+    }
+
+    #[test]
+    fn repair_project_backfills_revealed_for_resolved_threads() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // 三条线索：缺揭示的已终态（应回填）、已有揭示（不动）、pov 暗线（豁免）
+        let fixture = r#"
+[[thread]]
+id = "t_001"
+title = "明线已终态"
+planted_at = "sc_01_01"
+resolved_at = "sc_03_01"
+
+[[thread]]
+id = "t_002"
+title = "已有揭示"
+planted_at = "sc_01_01"
+revealed_at = "sc_02_01"
+resolved_at = "sc_03_01"
+
+[[thread]]
+id = "t_003"
+title = "暗线豁免"
+planted_at = "sc_01_01"
+resolved_at = "sc_03_01"
+scope = "pov"
+"#;
+        let file = ThreadsFile::from_toml_str(fixture).unwrap();
+        file.save(&paths.threads_toml()).unwrap();
+
+        let report = repair_project(tmp.path()).unwrap();
+        assert_eq!(
+            report.threads_revealed_backfilled,
+            vec!["明线已终态".to_string()]
+        );
+
+        let file = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
+        assert_eq!(file.threads[0].revealed_at.as_deref(), Some("sc_03_01"));
+        assert_eq!(file.threads[1].revealed_at.as_deref(), Some("sc_02_01"));
+        assert!(file.threads[2].revealed_at.is_none(), "pov 暗线不应回填");
     }
 
     #[test]
