@@ -33,7 +33,7 @@ pub fn anchor_ordinal(anchor: &str, eras: &[String]) -> Option<i64> {
 
     // 纯数字形态 → 单纪元
     if t.starts_with(|c: char| c.is_ascii_digit()) {
-        return numeric_ordinal(t, 0);
+        return ymd_ordinal(t, 0);
     }
 
     // 纪元前缀形态：最长纪元名优先（防"灵历"与"灵历新"前缀互撞）
@@ -46,34 +46,31 @@ pub fn anchor_ordinal(anchor: &str, eras: &[String]) -> Option<i64> {
         .max_by_key(|(_, era, _)| era.chars().count());
 
     if let Some((era_idx, _era, rest)) = matched {
-        let year_str = leading_num(rest)?;
-        let year: i64 = year_str.parse().ok()?;
-        let after_year = rest[year_str.len()..]
-            .trim_start_matches('年')
-            .trim_start_matches('-');
-        let month_str = leading_num(after_year);
-        let month: i64 = month_str
-            .as_ref()
-            .and_then(|m| m.parse().ok())
-            .unwrap_or(0);
-        let after_month = month_str
-            .map(|m| after_year[m.len()..].trim_start_matches('-'))
-            .unwrap_or(after_year);
-        let day: i64 = leading_num(after_month)
-            .and_then(|d| d.parse().ok())
-            .unwrap_or(0);
-        return Some(era_idx as i64 * ERA_SPAN + year * 10_000 + month * 100 + day);
+        return ymd_ordinal(rest, era_idx as i64);
     }
 
     None
 }
 
-/// `year` / `year-month` / `year-month-day` → 序数
-fn numeric_ordinal(s: &str, era_idx: i64) -> Option<i64> {
-    let mut parts = s.split('-');
-    let year: i64 = parts.next()?.parse().ok()?;
-    let month: i64 = parts.next().and_then(|m| m.parse().ok()).unwrap_or(0);
-    let day: i64 = parts.next().and_then(|d| d.parse().ok()).unwrap_or(0);
+/// `year[-month[-day]]` → 序数。容忍「年」字与无数字后缀
+/// （"1025年春"按 1025 年计，季节词暂不参与比较）
+fn ymd_ordinal(s: &str, era_idx: i64) -> Option<i64> {
+    let year_str = leading_num(s)?;
+    let year: i64 = year_str.parse().ok()?;
+    let after_year = s[year_str.len()..]
+        .trim_start_matches('年')
+        .trim_start_matches('-');
+    let month_str = leading_num(after_year);
+    let month: i64 = month_str
+        .as_ref()
+        .and_then(|m| m.parse().ok())
+        .unwrap_or(0);
+    let after_month = month_str
+        .map(|m| after_year[m.len()..].trim_start_matches('-'))
+        .unwrap_or(after_year);
+    let day: i64 = leading_num(after_month)
+        .and_then(|d| d.parse().ok())
+        .unwrap_or(0);
     Some(era_idx * ERA_SPAN + year * 10_000 + month * 100 + day)
 }
 

@@ -102,6 +102,12 @@ fn compile_impl(dir: &Path, force_full: bool) -> Result<CompileResult, StudioErr
         grade_unused_thread_diagnostics(&paths, &mut diagnostics);
     }
 
+    // 3.6 时间线冲突检查（场景时序回退 / 数值锚与历法标签锚不一致 / 间隔标注脱节）；
+    // timeline_checks 被禁用时一并跳过
+    if !compiler_config.disabled.contains("timeline_checks") {
+        check_timeline_conflicts(&paths, &parse_output.ir, &mut diagnostics);
+    }
+
     // 4. 组装结果
     let stats = CompileStats {
         fragment_count: parse_output.ir.document.all_fragments().count(),
@@ -244,6 +250,198 @@ where
         return None;
     }
     toml::from_str(&content).ok()
+}
+
+// ============================================================================
+// 时间线冲突检查
+// ============================================================================
+
+/// 场景时间线的三类静态冲突（RFC-0009 时间坐标系的编排层检查）：
+///
+/// - `scene_time_regression`：阅读序靠后的场景，可比时间反而更早。
+///   闪回/倒叙是合法叙事手段——回退场景的标题/功能含「回忆/闪回/倒叙/
+///   往事/当年」等标记时豁免，其余报 Hint 提示核对。
+/// - `time_anchor_mismatch`：同一场景的数值时间（story_time）与历法标签锚
+///   （story_time_anchor）折算后相差超过 1 年（仅单纪元可比；多纪元项目
+///   两套刻度不同源，跳过）。Warning。
+/// - `time_gap_mismatch`：story_time_gap 标注的间隔与前后场景时间锚差值
+///   脱节（如标「3天」实际跨了两年）。Hint。
+///
+/// 长篇写到几十万字时「分身两地、季节脱节、三天变半月」这类矛盾靠人眼
+/// 已经盯不住；可比序数沿用 timeline.rs 的锚点折算（含纪元表）。
+fn check_timeline_conflicts(paths: &ProjectPaths, ir: &story_ir::StoryIR, diagnostics: &mut Diagnostics) {
+    use story_compiler::{Diagnostic, DiagnosticSource, Severity, SourceLocation};
+
+    let eras = crate::timeline::load_eras(paths);
+    let span = 100_000_000i64; // 与 timeline.rs 的 ERA_SPAN 一致
+
+    // 阅读序场景序列（含时间标注）
+    let mut scenes: Vec<&story_ir::SceneNode> = ir
+        .document
+        .all_nodes()
+        .filter_map(|(_, node)| match node {
+            story_ir::DocNode::Scene(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    scenes.sort_by_key(|s| ir.document.reading_index(&s.id).unwrap_or(0));
+
+    let report = |diagnostics: &mut Diagnostics, code: &str, severity: Severity, msg: String| {
+        diagnostics.0.push(Diagnostic::new(
+            DiagnosticSource::Compiler {
+                rule_id: "timeline_checks".to_string(),
+            },
+            severity,
+            code,
+            msg,
+            SourceLocation::none(),
+        ));
+    };
+
+    let scene_label = |s: &story_ir::SceneNode| {
+        format!(
+            "{}「{}」",
+            s.id.as_str(),
+            s.title.as_deref().unwrap_or("无标题")
+        )
+    };
+    // 数值时间 → 单纪元序数（与 timeline.rs numeric_ordinal 同刻度）
+    let abs_ordinal = |cal: &story_ir::StoryCalendar| -> i64 {
+        let m = cal.month.unwrap_or(0) as i64;
+        let d = cal.day.unwrap_or(0) as i64;
+        cal.year as i64 * 10_000 + m * 100 + d
+    };
+    let calendar_label = |cal: &story_ir::StoryCalendar| -> String {
+        match (cal.month, cal.day) {
+            (Some(m), Some(d)) => format!("{}年{}月{}日", cal.year, m, d),
+            (Some(m), None) => format!("{}年{}月", cal.year, m),
+            _ => format!("{}年", cal.year),
+        }
+    };
+    // 展示标签：优先历法标签锚（作者语言），否则数值时间
+    let time_label = |s: &story_ir::SceneNode| -> String {
+        s.story_time_anchor
+            .clone()
+            .or_else(|| s.story_time.as_ref().map(calendar_label))
+            .unwrap_or_else(|| "?".to_string())
+    };
+
+    let is_flashback = |s: &story_ir::SceneNode| -> bool {
+        let hay = format!("{}{}", s.title.as_deref().unwrap_or(""), s.function.as_deref().unwrap_or(""));
+        ["回忆", "闪回", "倒叙", "往事", "当年", "多年前", "多年后"]
+            .iter()
+            .any(|k| hay.contains(k))
+    };
+
+    // 每个场景的可比序数：历法标签锚优先（可跨纪元），退回数值时间
+    let ordinal_of = |s: &story_ir::SceneNode| -> Option<i64> {
+        s.story_time_anchor
+            .as_deref()
+            .and_then(|a| crate::timeline::anchor_ordinal(a, &eras))
+            .or_else(|| s.story_time.as_ref().map(abs_ordinal))
+    };
+
+    // —— 1. 阅读序时序回退 ——
+    let mut prev: Option<(&story_ir::SceneNode, i64)> = None;
+    for scene in &scenes {
+        let Some(ord) = ordinal_of(scene) else { continue };
+        if let Some((p, p_ord)) = prev {
+            if ord < p_ord && !is_flashback(scene) && !is_flashback(p) {
+                report(
+                    diagnostics,
+                    "scene_time_regression",
+                    Severity::Hint,
+                    format!(
+                        "阅读序上 {}（{}）晚于 {}（{}），故事时间反而更早——若非闪回/倒叙，请核对时间标注",
+                        scene_label(scene),
+                        time_label(scene),
+                        scene_label(p),
+                        time_label(p),
+                    ),
+                );
+            }
+        }
+        prev = Some((scene, ord));
+    }
+
+    // —— 2. 数值时间 vs 历法标签锚（仅单纪元刻度可比）——
+    for scene in &scenes {
+        let (Some(cal), Some(anchor)) = (&scene.story_time, &scene.story_time_anchor) else {
+            continue;
+        };
+        let Some(a_ord) = crate::timeline::anchor_ordinal(anchor, &eras) else {
+            continue; // 模糊标签（"某年"）合法，仅展示
+        };
+        // 多纪元刻度（锚落在非 0 纪元）与数值时间不同源，跳过
+        if a_ord / span != 0 {
+            continue;
+        }
+        let diff = (a_ord - abs_ordinal(cal)).abs();
+        if diff > 10_000 {
+            report(
+                diagnostics,
+                "time_anchor_mismatch",
+                Severity::Warning,
+                format!(
+                    "{} 的历法标签锚「{anchor}」与数值时间「{}」相差超过一年，两处标注应一致",
+                    scene_label(scene),
+                    calendar_label(cal),
+                ),
+            );
+        }
+    }
+
+    // —— 3. 间隔标注 vs 时间锚差值 ——
+    let day_ordinal = |ord: i64| -> i64 { (ord % 10_000) / 100 * 30 + ord % 100 + (ord / 10_000) * 360 };
+    for window in scenes.windows(2) {
+        let (a, b) = (window[0], window[1]);
+        // gap 挂在靠后场景上（“与阅读序前一场景的间隔”）
+        let (Some(gap), Some(a_ord), Some(b_ord)) = (&b.story_time_gap, ordinal_of(a), ordinal_of(b))
+        else {
+            continue;
+        };
+        let Some(gap_days) = parse_gap_days(gap) else {
+            continue; // 模糊间隔（"数月"）合法
+        };
+        let actual_days = (day_ordinal(b_ord) - day_ordinal(a_ord)).abs();
+        // 脱节判据：量级差 3 倍以上且较大一方超过一个月（容忍月大月小的粗粒度误差）
+        let (larger, smaller) =
+            if actual_days >= gap_days { (actual_days, gap_days) } else { (gap_days, actual_days) };
+        if larger > 30 && larger > smaller * 3 {
+            report(
+                diagnostics,
+                "time_gap_mismatch",
+                Severity::Hint,
+                format!(
+                    "{} 标注「距上一场景 {gap}」，但其与前一场景的时间锚差值约 {} 天——间隔标注与时间线脱节",
+                    scene_label(b),
+                    actual_days,
+                ),
+            );
+        }
+    }
+}
+
+/// 解析间隔标注为天数：`3天` / `3日` / `2周` / `5月` / `1年`（ASCII 数字；
+/// 中文数字与模糊量词（"数月"）返回 None，属于合法的仅展示数据）
+fn parse_gap_days(gap: &str) -> Option<i64> {
+    let t = gap.trim();
+    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let n: i64 = digits.parse().ok()?;
+    let rest = &t[digits.len()..];
+    // 紧跟量词（允许"个"字：3个月）
+    let unit = rest.trim_start_matches('个').trim();
+    let per_day = match unit {
+        u if u.starts_with('天') || u.starts_with('日') => 1,
+        u if u.starts_with('周') || u.starts_with("星期") => 7,
+        u if u.starts_with('月') => 30,
+        u if u.starts_with('年') => 360,
+        _ => return None,
+    };
+    Some(n * per_day)
 }
 
 #[cfg(test)]
@@ -550,6 +748,150 @@ pov = "c_missing"
                 .map(|d| &d.message)
                 .collect::<Vec<_>>()
         );
+    }
+
+    // ========================================================================
+    // 时间线冲突检查测试
+    // ========================================================================
+
+    /// 构造带时间标注的双场景结构
+    fn timeline_fixture(
+        dir: &Path,
+        s1: &str, // 场景1 的 [scene] 段体（不含表头）
+        s2: &str,
+    ) {
+        let structure = format!(
+            r#"[book]
+id = "b_root"
+title = "t"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01", "sc_02"]
+
+[scene.sc_01]
+{s1}
+
+[scene.sc_02]
+{s2}
+"#
+        );
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+    }
+
+    fn has_code(result: &CompileResult, code: &str) -> bool {
+        result.diagnostics.iter().any(|d| d.code.as_str() == code)
+    }
+
+    #[test]
+    fn timeline_regression_detected_and_flashback_exempted() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "t").unwrap();
+
+        // 场景2 阅读序靠后但时间更早 → Hint
+        timeline_fixture(
+            tmp.path(),
+            "title = \"出发\"\nstory_time = { year = 1024 }",
+            "title = \"抵达\"\nstory_time = { year = 1023 }",
+        );
+        let result = compile_project(tmp.path()).unwrap();
+        assert!(has_code(&result, "scene_time_regression"), "{:?}",
+            result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+
+        // 标记为闪回的场景豁免
+        timeline_fixture(
+            tmp.path(),
+            "title = \"出发\"\nstory_time = { year = 1024 }",
+            "title = \"闪回：三年前\"\nstory_time = { year = 1021 }",
+        );
+        let result = compile_project(tmp.path()).unwrap();
+        assert!(!has_code(&result, "scene_time_regression"));
+
+        // 正常推进不报
+        timeline_fixture(
+            tmp.path(),
+            "title = \"出发\"\nstory_time = { year = 1023 }",
+            "title = \"抵达\"\nstory_time = { year = 1024, month = 3 }",
+        );
+        let result = compile_project(tmp.path()).unwrap();
+        assert!(!has_code(&result, "scene_time_regression"));
+    }
+
+    #[test]
+    fn timeline_anchor_mismatch_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "t").unwrap();
+
+        // 数值 1023 年 vs 标签锚 1025 年 → Warning（anchor/gap 嵌套于 story_time 内）
+        timeline_fixture(
+            tmp.path(),
+            "title = \"开场\"\nstory_time = { year = 1023, anchor = \"1025年春\" }",
+            "title = \"终局\"",
+        );
+        let result = compile_project(tmp.path()).unwrap();
+        assert!(has_code(&result, "time_anchor_mismatch"), "{:?}",
+            result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+
+        // 一致（同年不同表述）不报
+        timeline_fixture(
+            tmp.path(),
+            "title = \"开场\"\nstory_time = { year = 1023, month = 3, anchor = \"1023年\" }",
+            "title = \"终局\"",
+        );
+        let result = compile_project(tmp.path()).unwrap();
+        assert!(!has_code(&result, "time_anchor_mismatch"));
+    }
+
+    #[test]
+    fn timeline_gap_mismatch_and_config_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "t").unwrap();
+
+        // 标注「3天」实际跨两年 → Hint
+        timeline_fixture(
+            tmp.path(),
+            "title = \"启程\"\nstory_time = { year = 1023, month = 1, day = 1 }",
+            "title = \"重聚\"\nstory_time = { year = 1025, month = 1, day = 1, gap = \"3天\" }",
+        );
+        let result = compile_project(tmp.path()).unwrap();
+        assert!(has_code(&result, "time_gap_mismatch"), "{:?}",
+            result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+
+        // 间隔与时间线一致（3 天）不报
+        timeline_fixture(
+            tmp.path(),
+            "title = \"启程\"\nstory_time = { year = 1023, month = 1, day = 1 }",
+            "title = \"重聚\"\nstory_time = { year = 1023, month = 1, day = 4, gap = \"3天\" }",
+        );
+        let result = compile_project(tmp.path()).unwrap();
+        assert!(!has_code(&result, "time_gap_mismatch"));
+
+        // timeline_checks 关闭 → 全部静默
+        std::fs::create_dir_all(tmp.path().join("config")).unwrap();
+        std::fs::write(
+            tmp.path().join("config/compiler.toml"),
+            "[rules]\ntimeline_checks = \"off\"\n",
+        )
+        .unwrap();
+        timeline_fixture(
+            tmp.path(),
+            "title = \"启程\"\nstory_time = { year = 1023, month = 1, day = 1 }",
+            "title = \"重聚\"\nstory_time = { year = 1025, month = 1, day = 1, gap = \"3天\" }",
+        );
+        let result = compile_project(tmp.path()).unwrap();
+        assert!(!has_code(&result, "time_gap_mismatch"), "timeline_checks 关闭后应静默");
+    }
+
+    #[test]
+    fn gap_parser_variants() {
+        assert_eq!(parse_gap_days("3天"), Some(3));
+        assert_eq!(parse_gap_days("3日"), Some(3));
+        assert_eq!(parse_gap_days("2周"), Some(14));
+        assert_eq!(parse_gap_days("5个月"), Some(150));
+        assert_eq!(parse_gap_days("1年"), Some(360));
+        assert_eq!(parse_gap_days("数月"), None);
+        assert_eq!(parse_gap_days("三天"), None, "中文数字暂不支持，按模糊间隔跳过");
     }
 }
 
