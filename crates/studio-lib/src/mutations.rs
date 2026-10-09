@@ -250,6 +250,57 @@ pub fn chapter_completion_hint(
     ))
 }
 
+/// 首次写入正文时自动推进脉络状态 planned → writing（幂等，单向）。
+///
+/// completed 保持人工/质检门槛不自动推进——完成态喂给编译诊断的封卷
+/// 判定，误标会连带改变 unused_thread 告警，需要比"有正文"更强的确认。
+///
+/// 返回 Some(提示行) 表示本次发生了推进；章节无绑定脉络、状态非 planned
+/// 或保存失败（best-effort）时返回 None。
+pub fn auto_advance_outline_writing(
+    paths: &ProjectPaths,
+    scene_or_fragment_id: &str,
+) -> Option<String> {
+    let scene_id = if scene_or_fragment_id.starts_with("f_") {
+        scene_of_fragment_id(paths, scene_or_fragment_id)?
+    } else {
+        scene_or_fragment_id.to_string()
+    };
+    let structure = load_structure(paths).ok()?;
+    let ch_id = structure
+        .chapter
+        .iter()
+        .find(|(_, ch)| ch.scenes.iter().any(|s| s == &scene_id))
+        .map(|(id, _)| id.clone())?;
+
+    let mut chapters = ChaptersFile::load_or_default(&paths.chapters_toml()).ok()?;
+    let (title, should_advance) = {
+        let entry = chapters
+            .chapters
+            .iter()
+            .find(|c| c.chapter_id.as_deref() == Some(&ch_id))?;
+        (
+            entry.title.clone(),
+            entry.status == story_project_format::chapters_file::STATUS_PLANNED,
+        )
+    };
+    if !should_advance {
+        return None;
+    }
+    // 重新可变定位后推进（title 已克隆，避开跨借用）
+    let entry = chapters
+        .chapters
+        .iter_mut()
+        .find(|c| c.chapter_id.as_deref() == Some(&ch_id))?;
+    entry.status = story_project_format::chapters_file::STATUS_WRITING.to_string();
+    if save_chapters_file(paths, &chapters).is_err() {
+        return None; // best-effort：推进失败不影响写入主流程
+    }
+    Some(format!(
+        "\n✅ 检测到本章首次写入正文，已自动推进脉络「{title}」状态 planned → writing"
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // 章节脉络变更（逐章生文流水线用；index 为 1-based，与
 // tools/chapters.rs 中 get_chapter_outline 展示的编号一致）

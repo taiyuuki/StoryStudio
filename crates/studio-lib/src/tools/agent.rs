@@ -122,6 +122,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     let ctx = ToolContext::with_provider(dir.to_path_buf(), provider);
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(AskUserTool));
+    registry.register(Box::new(PrepareWritingTool::new(ctx.clone())));
     registry.register(Box::new(GetWritingGuideTool::new(ctx.clone())));
     registry.register(Box::new(CreateCharacterTool::new(ctx.clone())));
     registry.register(Box::new(CreateLocationTool::new(ctx.clone())));

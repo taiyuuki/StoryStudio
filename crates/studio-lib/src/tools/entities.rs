@@ -1581,7 +1581,13 @@ fn collect_chapter_outline_brief(ctx: &ToolContext, chapter_id: &str) -> Option<
         .chapters
         .iter()
         .find(|c| c.chapter_id.as_deref() == Some(chapter_id))?;
+    render_outline_entry(outline)
+}
 
+/// 渲染单条章节脉络的目标/节拍/钩子。全部为空时返回 None。
+pub(crate) fn render_outline_entry(
+    outline: &story_project_format::chapters_file::ChapterOutlineDef,
+) -> Option<String> {
     let mut lines = Vec::new();
     if let Some(goal) = outline.goal.as_deref().filter(|g| !g.is_empty()) {
         lines.push(format!("    目标: {goal}"));
@@ -1612,7 +1618,14 @@ fn collect_chapter_threads_brief(ctx: &ToolContext, chapter_id: &str) -> Option<
         .chapters
         .iter()
         .find(|c| c.chapter_id.as_deref() == Some(chapter_id))?;
-    if chapter.threads.is_empty() {
+    render_thread_briefs(ctx, &chapter.threads)
+}
+
+/// 按线索 ID 列表渲染认知快照：每条线索给出标题/ID/派生状态，以及各观察者的
+/// **最新**认知（时间线末项）——写场景时据此决定本章该透露多少、隐瞒多少。
+/// 完整时间线仍走 get_thread_detail。列表为空或无线索时返回 None。
+pub(crate) fn render_thread_briefs(ctx: &ToolContext, tids: &[String]) -> Option<String> {
+    if tids.is_empty() {
         return None;
     }
 
@@ -1620,7 +1633,7 @@ fn collect_chapter_threads_brief(ctx: &ToolContext, chapter_id: &str) -> Option<
     let file = story_project_format::ThreadsFile::from_toml_str(&content).ok()?;
 
     let mut lines = Vec::new();
-    for tid in &chapter.threads {
+    for tid in tids {
         let Some(t) = file.threads.iter().find(|t| &t.id == tid) else {
             lines.push(format!("    {tid}（threads.toml 中不存在）"));
             continue;
@@ -1682,12 +1695,23 @@ fn collect_chapter_characters(
             }
         }
     }
+    render_character_lines(ctx, &ids, pov_id, semantic)
+}
+
+/// 渲染涉及角色速查清单：称呼（含真名遮蔽处理）+ 外貌/习惯/个性速查 + POV 标记。
+/// ids 为空时返回 None。
+pub(crate) fn render_character_lines(
+    ctx: &ToolContext,
+    ids: &[String],
+    pov_id: Option<&str>,
+    semantic: &SemanticGraph,
+) -> Option<String> {
     if ids.is_empty() {
         return None;
     }
 
     let mut lines = Vec::with_capacity(ids.len());
-    for cid in &ids {
+    for cid in ids {
         let resolved = semantic.get(&StableId::new_unchecked(cid));
         let concealed = resolved.is_some_and(|n| n.name_concealed());
         let entry = match resolved {
@@ -1724,9 +1748,9 @@ fn collect_chapter_characters(
     Some(lines.join("\n") + "\n")
 }
 
-/// 角色档案的外貌/习惯速查行（如「外貌: 灰白长袍｜习惯: 口头禅…」）。
-/// 多行自由文本压平为单行并截断；无外貌也无习惯时返回 None。
-fn appearance_habits_brief(
+/// 角色档案的外貌/习惯/个性速查行（如「外貌: 灰白长袍｜习惯: 口头禅…｜个性: …」）。
+/// 多行自由文本压平为单行并截断；三个字段全空时返回 None。
+pub(crate) fn appearance_habits_brief(
     paths: &story_project_format::ProjectPaths,
     cid: &str,
 ) -> Option<String> {
@@ -1749,6 +1773,14 @@ fn appearance_habits_brief(
     }
     if let Some(h) = profile.habits.as_deref().filter(|h| !h.trim().is_empty()) {
         parts.push(format!("习惯: {}", flat(h)));
+    }
+    // 个性是声线区分的主要依据之一（人物怎么说话取决于是什么样的人）
+    if let Some(p) = profile
+        .personality
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+    {
+        parts.push(format!("个性: {}", flat(p)));
     }
     if parts.is_empty() {
         None

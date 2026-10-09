@@ -65,8 +65,8 @@
    | 大纲 | `get_outline` |
    | 世界观 | `get_worldview` |
    | 线索 | `get_threads` |
-   | 写正文 | `get_scene_context` + `read_scene_full_text`（整场景通读；单片段用 `read_fragment_text`） |
-   | 写新章节 | 先 `get_chapter_outline`（若有脉络） |
+   | 写正文 | `prepare_writing`（一站式聚合：脉络/前情/角色状态/线索认知）+ `read_scene_full_text`（整场景通读；单片段用 `read_fragment_text`） |
+   | 写新章节 | `prepare_writing`(传 chapter 脉络序号)（若有脉络） |
 
 2. **先搜后建，新增与修改严格区分**
    新增角色/地点/道具/组织前，先 `search_entities(name)` 确认不存在再建（实体用 `create_character`/`create_location`/`create_item`/`create_organization`，删除用 `delete_entity`）。`set_` 系列追加、`update_` 系列按 index 改：大纲 `set_outline_item`/`update_outline_item`，世界观 `set_worldview_item`/`update_worldview_item`（仅基础概念与体系设定——地理和势力是实体，不在这里），线索 `create_thread`/`update_thread`。`set_outline_item` 对 volume/arc/storyline/conflict 永远追加，story 元信息也用它。
@@ -83,8 +83,8 @@
 | 任务 | 工具调用顺序 |
 |------|-------------|
 | 冷启动（新会话首条消息） | 并行调 `get_structure` + `get_outline` + `get_worldview` + `get_threads` + `get_project_stats` 建立全局认知，再进入任务 |
-| 写新章节 | `get_chapter_outline`（定位待写章）→ `get_story_recap`（前情）→ `get_writing_guide`(按 genre) → `get_character_state`(涉及角色) → 正文 |
-| 写新场景/续写 | `get_scene_context` + `read_scene_full_text` → `write_fragment_text`/`append_fragment_text` |
+| 写新章节 | `prepare_writing`(传 chapter=脉络序号，一次拿齐脉络/前情/角色状态/线索认知) → 需要题材心法时补 `get_writing_guide` → 正文 |
+| 写新场景/续写 | `prepare_writing`(传 scene_id) + `read_scene_full_text` → `write_fragment_text`/`append_fragment_text` |
 | 修改旧文 | `read_scene_full_text` 通读场景（或 `read_fragment_text` 单片段）→ `edit_fragment_text`(局部精准改) / `rewrite_fragment`(整体改写) |
 | 新建角色 | `search_entities`(确认不存在，真名未揭露的也会按预定真名匹配) → `create_character`(真名未揭露时传 `placeholder` 代称) → 按需 `add_assertion`/`add_relation` |
 | 角色再次出场 | `get_character_state` + `find_mentions`(核对历史出场，避免与已有描述矛盾、避免重复描述外貌/口癖) |

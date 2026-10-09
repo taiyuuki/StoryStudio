@@ -1008,7 +1008,7 @@ impl GetCharacterStateTool {
 ///
 /// 供缺参工具（如 get_character_state 未传 entity_id）做默认回退——
 /// 阅读序的末尾即写作进度的最前沿，其 POV 通常是此刻笔下的角色。
-fn frontier_scene_with_pov(document: &story_ir::DocumentGraph) -> Option<&story_ir::SceneNode> {
+pub(crate) fn frontier_scene_with_pov(document: &story_ir::DocumentGraph) -> Option<&story_ir::SceneNode> {
     document
         .all_nodes()
         .filter_map(|(_, node)| match node {

@@ -476,6 +476,9 @@ pub use worldview::*;
 mod query;
 pub use query::*;
 
+mod prepare;
+pub use prepare::*;
+
 pub(crate) mod guide;
 pub use guide::*;
 

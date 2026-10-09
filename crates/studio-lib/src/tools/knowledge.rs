@@ -1109,6 +1109,10 @@ impl Tool for WriteFragmentTextTool {
                 lines.join("\n")
             }));
         }
+        // 首次写入正文自动推进脉络 planned → writing（best-effort）
+        if let Some(note) = crate::mutations::auto_advance_outline_writing(&paths, &scene_id) {
+            msg.push_str(&note);
+        }
         // 本章所有场景都有正文时提示收尾（best-effort，不影响写入）
         if let Some(hint) = crate::mutations::chapter_completion_hint(&paths, &scene_id) {
             msg.push_str(&hint);
@@ -1697,6 +1701,10 @@ impl Tool for AppendFragmentTextTool {
                 Ok(o) => msg.push_str(&super::format_anchor_note(&o, &paths)),
                 Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
             }
+        }
+        // 首次写入正文自动推进脉络 planned → writing（best-effort）
+        if let Some(note) = crate::mutations::auto_advance_outline_writing(&paths, &fragment_id) {
+            msg.push_str(&note);
         }
         // 本章所有场景都有正文时提示收尾（best-effort，不影响追加）
         if let Some(hint) = crate::mutations::chapter_completion_hint(&paths, &fragment_id) {
