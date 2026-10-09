@@ -2886,6 +2886,40 @@ pub fn evidence_usage_note(
         return None;
     }
 
+    // 改动场景先核验基线：登记摘录仍包含于当前正文 → 事实依据未动，
+    // 不提示（润色/错字修正不该被断言预警打断——与编译器漂移检测同口径）。
+    // 旧数据摘录为空无从核验，保守仍提示。
+    if !removed {
+        let basis_intact = (|| -> Option<bool> {
+            let frag_path = paths.file_for_id(fragment_id)?;
+            let content = std::fs::read_to_string(frag_path).ok()?;
+            let flat: String = crate::fragment::fragment_body(&content)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            Some(
+                evidence_file.evidence.iter().all(|e| {
+                    if !ev_ids.contains(&e.id.as_str()) || e.quote.is_empty() {
+                        return true; // 非本片段条目/空摘录不在本层核验（空摘录见下）
+                    }
+                    let quote: String = e
+                        .quote
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect();
+                    let quote = quote.trim_end_matches('…');
+                    flat.contains(quote)
+                }) && evidence_file
+                    .evidence
+                    .iter()
+                    .all(|e| !ev_ids.contains(&e.id.as_str()) || !e.quote.is_empty()),
+            )
+        })();
+        if basis_intact == Some(true) {
+            return None;
+        }
+    }
+
     // 只列 active 断言：superseded/contradicted 的证据漂移无需打扰
     let assertions = AssertionsFile::load_or_default(&paths.assertions_toml()).ok()?;
     let uses: Vec<String> = assertions
@@ -2907,7 +2941,7 @@ pub fn evidence_usage_note(
         )
     } else {
         format!(
-            "\n⚠️ 此片段是 {} 条 active 断言的证据，本次改动可能动摇其事实依据：",
+            "\n⚠️ 此片段是 {} 条 active 断言的证据，且登记摘录已偏离当前正文（事实依据被动过）：",
             uses.len()
         )
     };
@@ -5416,10 +5450,24 @@ mod tests {
         // a2 置为 superseded：不应出现在提示里
         set_assertion_status(&paths, &a2.id, "superseded").unwrap();
 
-        let note = evidence_usage_note(&paths, &fid, false).expect("证据片段应有提示");
+        // 摘录仍包含于正文（未改动）→ 润色级提示应静默
+        assert!(
+            evidence_usage_note(&paths, &fid, false).is_none(),
+            "正文未变时不应提示"
+        );
+
+        // 正文改写、摘录不再包含 → 才提示
+        write_fragment_text_source(
+            &paths,
+            &fid,
+            "完全不同的新正文，旧事实不复存在。",
+            crate::stats::WriteSource::Ai,
+        )
+        .unwrap();
+        let note = evidence_usage_note(&paths, &fid, false).expect("摘录偏离后应有提示");
         assert!(note.contains(&a1.id), "提示应包含 active 断言 id: {note}");
         assert!(!note.contains(&a2.id), "提示不应包含 superseded 断言: {note}");
-        assert!(note.contains("事实依据"), "改写提示应说明风险: {note}");
+        assert!(note.contains("偏离"), "应说明摘录已偏离: {note}");
 
         let removed_note = evidence_usage_note(&paths, &fid, true).expect("删除场景应有提示");
         assert!(removed_note.contains("悬空"), "删除提示应说明证据悬空: {removed_note}");
