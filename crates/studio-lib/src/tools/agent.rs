@@ -201,6 +201,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(DeleteChapterOutlineTool::new(ctx.clone())));
     registry.register(Box::new(GetWorldviewTool::new(ctx.clone())));
     registry.register(Box::new(SetWorldviewItemTool::new(ctx.clone())));
+    registry.register(Box::new(SetTimelineErasTool::new(ctx.clone())));
     registry.register(Box::new(UpdateWorldviewItemTool::new(ctx.clone())));
     registry.register(Box::new(DeleteWorldviewItemTool::new(ctx.clone())));
     registry

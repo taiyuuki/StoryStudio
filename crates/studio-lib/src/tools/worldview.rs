@@ -614,6 +614,78 @@ fn load_entities(dir: &Path) -> Vec<EntityFile> {
         .collect()
 }
 
+// ============================================================================
+// set_timeline_eras
+// ============================================================================
+
+pub struct SetTimelineErasTool {
+    ctx: ToolContext,
+}
+impl SetTimelineErasTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for SetTimelineErasTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "set_timeline_eras".into(),
+            description: "设置项目的纪元历法（worldview/timeline.toml 的 eras，早→晚有序数组，            整体替换）。历法标签锚（如「灵历3217年」）只有命中纪元名才可被时间线            倒流校验比较——奇幻/仙侠项目先建历法再填 story_time 标签。            用纯数字年锚的项目无需设置。"
+                .into(),
+            parameters: object_schema(vec![(
+                "eras",
+                "array",
+                "纪元名数组（早→晚），如 [\"创世\", \"灵历\", \"开元\"]；原生数组或逗号分隔字符串均可",
+                true,
+            )]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let raw = arguments
+            .get("eras")
+            .ok_or_else(|| "缺少参数: eras".to_string())?;
+        // 兼容原生数组与逗号分隔字符串
+        let eras: Vec<String> = match raw.as_array() {
+            Some(items) => items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            None => raw
+                .as_str()
+                .ok_or_else(|| "eras 应为字符串数组或逗号分隔字符串".to_string())?
+                .split([',', '，'])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        };
+        if eras.is_empty() {
+            return Err("eras 不能为空（清空历法请显式确认后手工编辑 timeline.toml）".into());
+        }
+        let unique: std::collections::HashSet<&String> = eras.iter().collect();
+        if unique.len() != eras.len() {
+            return Err("纪元名不能重复".into());
+        }
+
+        let paths = self.ctx.paths();
+        std::fs::create_dir_all(paths.worldview_dir())
+            .map_err(|e| format!("创建 worldview 目录失败: {e}"))?;
+        let file = TimelineFile { eras };
+        let content = file
+            .to_toml_string()
+            .map_err(|e| format!("序列化 timeline.toml 失败: {e}"))?;
+        std::fs::write(paths.worldview_timeline_toml(), content)
+            .map_err(|e| format!("写入 timeline.toml 失败: {e}"))?;
+        Ok(format!(
+            "纪元历法已设置（早→晚）：{}；story_time 的历法标签现在按此比较",
+            file.eras.join(" → ")
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,6 +771,30 @@ mod tests {
             !dir.join("worldview/concepts.toml").exists(),
             "批量整体失败时不应落盘任何条目"
         );
+    }
+
+    #[test]
+    fn set_timeline_eras_writes_and_validates() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let tool = SetTimelineErasTool::new(ToolContext::new(dir.to_path_buf()));
+
+        // 原生数组
+        let out = tool
+            .execute(&serde_json::json!({"eras": ["创世", "灵历", "开元"]}))
+            .unwrap();
+        assert!(out.contains("创世 → 灵历 → 开元"), "{out}");
+        let content = std::fs::read_to_string(dir.join("worldview/timeline.toml")).unwrap();
+        assert!(content.contains("\"灵历\""), "{content}");
+
+        // 逗号分隔字符串兼容
+        tool.execute(&serde_json::json!({"eras": "上古,神纪"})).unwrap();
+        let content = std::fs::read_to_string(dir.join("worldview/timeline.toml")).unwrap();
+        assert!(content.contains("\"神纪\""), "{content}");
+
+        // 重复纪元拒绝；空数组拒绝
+        assert!(tool.execute(&serde_json::json!({"eras": ["灵历", "灵历"]})).is_err());
+        assert!(tool.execute(&serde_json::json!({"eras": []})).is_err());
     }
 
     /// timeline 分节：纪元历法随全量返回，也可单选过滤。
