@@ -620,6 +620,20 @@ impl Tool for DeleteChapterOutlineTool {
 // populate_scenes_from_beats
 // ============================================================================
 
+/// 节拍标题头：优先在 8..=12 字窗口内的标点处断句（去掉断点标点），
+/// 无标点才按 12 字符截断——避免「年轻审判官（伊莲娜，正文」这类词中腰斩。
+fn beat_title_head(beat: &str) -> String {
+    const BREAKS: &[char] = &['，', '。', '、', '；', '：', ',', '，', '（', '(', '—', ' '];
+    let chars: Vec<char> = beat.chars().collect();
+    let max = 12.min(chars.len());
+    for end in 8..=max {
+        if BREAKS.contains(&chars[end - 1]) {
+            return chars[..end - 1].iter().collect();
+        }
+    }
+    chars[..max].iter().collect()
+}
+
 pub struct PopulateScenesFromBeatsTool {
     ctx: ToolContext,
 }
@@ -670,8 +684,7 @@ impl Tool for PopulateScenesFromBeatsTool {
 
         let mut created = Vec::new();
         for (i, beat) in beats.iter().skip(existing).enumerate() {
-            let head: String = beat.chars().take(12).collect();
-            let scene_title = format!("第{}幕·{}", existing + i + 1, head);
+            let scene_title = format!("第{}幕·{}", existing + i + 1, beat_title_head(beat));
             let scene_id = crate::mutations::create_scene(&paths, &chapter_id, &scene_title, None)
                 .map_err(|e| e.to_string())?;
             // 叙事功能存完整节拍文本，写作时上下文自含
