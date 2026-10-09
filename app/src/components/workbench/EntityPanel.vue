@@ -195,6 +195,41 @@ function validityLabel(valid?: RelationValidityDto | null): string {
   return parts.join(' · ')
 }
 
+// ── 时变关系：窗口编辑（两个场景选择器，空 = 无界） ─────────
+type RelRow = (typeof relations.value)[number]
+
+const relEditingId = ref<string | null>(null)
+const relValidForm = reactive({ from: '', until: '' })
+
+const sceneOptions = computed(() => {
+  const opts: { id: string; label: string }[] = []
+  for (const ch of store.ws?.chapters ?? []) {
+    for (const sc of ch.scenes) {
+      opts.push({ id: sc.id, label: `${ch.title}·${sc.title || '未命名场景'}` })
+    }
+  }
+  return opts
+})
+
+function toggleRelationWindow(r: RelRow) {
+  if (relEditingId.value === r.id) {
+    relEditingId.value = null
+    return
+  }
+  relEditingId.value = r.id
+  relValidForm.from = r.valid?.from?.scene ?? ''
+  relValidForm.until = r.valid?.until?.scene ?? ''
+}
+
+async function saveRelationWindow(relationId: string) {
+  if (relValidForm.from && relValidForm.until && relValidForm.from === relValidForm.until) {
+    ElMessage.warning('生效与失效不能是同一场景（窗口为空区间）')
+    return
+  }
+  await store.updateRelation(relationId, relValidForm.from || null, relValidForm.until || null)
+  relEditingId.value = null
+}
+
 async function addRelation() {
   if (!relForm.from || !relForm.to) {
     ElMessage.warning('选择关系的双方')
@@ -318,24 +353,51 @@ function label(r: string): string {
           <button class="ink-btn ink-btn--sm ink-btn--primary" @click="addRelation">确定</button>
         </div>
 
-        <div v-for="r in relations" :key="r.id" class="rel-item">
-          <span class="ri-main">
-            <span class="ri-line">
-              <b>{{ r.fromName }}</b>
-              <i class="fa-solid fa-arrow-right-long" />
-              <span class="rel-label">{{ label(r.relation) }}</span>
-              <i class="fa-solid fa-arrow-right-long" />
-              <b>{{ r.toName }}</b>
+        <template v-for="r in relations" :key="r.id">
+          <div class="rel-item" :class="{ 'is-editing': relEditingId === r.id }">
+            <span class="ri-main">
+              <span class="ri-line">
+                <b>{{ r.fromName }}</b>
+                <i class="fa-solid fa-arrow-right-long" />
+                <span class="rel-label">{{ label(r.relation) }}</span>
+                <i class="fa-solid fa-arrow-right-long" />
+                <b>{{ r.toName }}</b>
+              </span>
+              <span
+                v-if="validityLabel(r.valid)"
+                class="rel-validity"
+                title="点击编辑生效区间"
+                @click="toggleRelationWindow(r)"
+              >
+                <i class="fa-regular fa-clock" />
+                {{ validityLabel(r.valid) }}
+              </span>
             </span>
-            <span v-if="validityLabel(r.valid)" class="rel-validity" :title="`时变关系：${validityLabel(r.valid)}`">
+            <button
+              class="ri-clock"
+              :title="r.valid ? '编辑生效区间' : '添加生效区间（时变关系）'"
+              @click="toggleRelationWindow(r)"
+            >
               <i class="fa-regular fa-clock" />
-              {{ validityLabel(r.valid) }}
-            </span>
-          </span>
-          <button class="ri-del" @click="store.removeRelation(r.id)">
-            <i class="fa-solid fa-xmark" />
-          </button>
-        </div>
+            </button>
+            <button class="ri-del" @click="store.removeRelation(r.id)">
+              <i class="fa-solid fa-xmark" />
+            </button>
+          </div>
+
+          <div v-if="relEditingId === r.id" class="rel-valid-edit">
+            <select v-model="relValidForm.from">
+              <option value="">自故事开始</option>
+              <option v-for="s in sceneOptions" :key="s.id" :value="s.id">自 {{ s.label }}</option>
+            </select>
+            <select v-model="relValidForm.until">
+              <option value="">直到故事结束</option>
+              <option v-for="s in sceneOptions" :key="s.id" :value="s.id">至 {{ s.label }} 前</option>
+            </select>
+            <button class="ink-btn ink-btn--sm ink-btn--primary" @click="saveRelationWindow(r.id)">保存</button>
+            <p v-if="sceneOptions.length === 0" class="rv-empty">尚无场景可锚定——先在结构树中创建场景</p>
+          </div>
+        </template>
         <p v-if="relations.length === 0" class="empty empty--thin">尚无关系</p>
       </div>
     </div>
@@ -743,9 +805,15 @@ function label(r: string): string {
   &:hover {
     background: var(--surface-2);
 
-    .ri-del {
+    .ri-del,
+    .ri-clock {
       opacity: 1;
     }
+  }
+
+  &.is-editing {
+    background: var(--surface-2);
+    border-radius: 8px 8px 0 0;
   }
 }
 
@@ -757,20 +825,76 @@ function label(r: string): string {
   gap: 2px;
 }
 
-// 时变关系的生效区间（次行弱化显示，悬浮可看完整语义）
+// 时变关系的生效区间（次行弱化显示，点击进入编辑）
 .rel-validity {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  width: fit-content;
   font-size: 10.5px;
   color: var(--ink-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--ink-accent);
+  }
 
   i {
     font-size: 9.5px;
     flex-shrink: 0;
+  }
+}
+
+// 时钟按钮：hover 浮现，点击编辑/添加生效区间
+.ri-clock {
+  opacity: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--ink-accent);
+  }
+}
+
+// 生效区间编辑行（两个场景选择器 + 保存）
+.rel-valid-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: -1px 0 4px;
+  padding: 8px 10px;
+  border-radius: 0 0 8px 8px;
+  background: var(--surface-2);
+
+  select {
+    flex: 1;
+    min-width: 120px;
+    height: 28px;
+    padding: 0 6px;
+    border-radius: 6px;
+    border: 1px solid var(--ui-border);
+    background: var(--input-bg);
+    color: var(--ink-main);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+  }
+
+  .rv-empty {
+    width: 100%;
+    margin: 0;
+    font-size: 11px;
+    color: var(--state-warning);
   }
 }
 

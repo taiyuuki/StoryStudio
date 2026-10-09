@@ -320,6 +320,41 @@ pub fn remove_relation(root: String, relation_id: String) -> R<()> {
     mutations::remove_relation(&paths(&root), &relation_id).map_err(e)
 }
 
+/// 更新关系的生效区间（时变窗口）。
+///
+/// 两个边界整体提交：None / 空串 = 清除为无界，Some(场景ID) = 设置场景锚。
+/// 返回更新后的 RelationDto（含 valid）。
+#[tauri::command]
+pub fn update_relation(
+    root: String,
+    relation_id: String,
+    valid_from_scene: Option<String>,
+    valid_until_scene: Option<String>,
+) -> R<RelationDto> {
+    let from = valid_from_scene
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let until = valid_until_scene
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    mutations::update_relation_valid(
+        &paths(&root),
+        &relation_id,
+        Some(from.as_deref()),
+        Some(until.as_deref()),
+    )
+    .map_err(e)?;
+
+    let p = paths(&root);
+    let file = load_toml::<story_project_format::RelationsFile>(&p.relations_toml())?;
+    let def = file
+        .relations
+        .iter()
+        .find(|r| r.id == relation_id)
+        .ok_or("关系更新后未找到")?;
+    Ok(to_relation_dto(def))
+}
+
 #[tauri::command]
 pub fn merge_entities(root: String, from_entity_id: String, into_entity_id: String) -> R<String> {
     let report = mutations::merge_entities(&paths(&root), &from_entity_id, &into_entity_id)

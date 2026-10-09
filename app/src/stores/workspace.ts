@@ -491,6 +491,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  /** 更新关系生效区间（时变窗口）；null = 清除该边界 */
+  async function updateRelation(
+    relationId: string,
+    validFromScene: string | null,
+    validUntilScene: string | null,
+  ): Promise<void> {
+    if (!root.value) return
+    try {
+      const r = await api.updateRelation(root.value, relationId, validFromScene, validUntilScene)
+      if (ws.value) {
+        const i = ws.value.relations.findIndex((x) => x.id === relationId)
+        if (i >= 0) ws.value.relations[i] = r
+      }
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+    }
+  }
+
   // ── 叙事线索 ──────────────────────────────────────────
   async function createThread(
     title: string,
@@ -758,6 +776,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     ignoreUnresolvedRefs,
     addRelation,
     removeRelation,
+    updateRelation,
     createThread,
     updateThread,
     deleteThread,

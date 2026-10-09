@@ -991,6 +991,20 @@ export const api = {
   removeRelation(root: string, relationId: string) {
     return call<void>('remove_relation', { root, relationId })
   },
+  /** 更新关系生效区间；null = 清除该边界（无界） */
+  updateRelation(
+    root: string,
+    relationId: string,
+    validFromScene: string | null,
+    validUntilScene: string | null,
+  ) {
+    return call<RelationDto>('update_relation', {
+      root,
+      relationId,
+      validFromScene,
+      validUntilScene,
+    })
+  },
 
   // ── 叙事线索 ──────────────────────────────────────────
   createThread(

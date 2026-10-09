@@ -132,6 +132,7 @@ pub fn run() {
             commands::ignore_unresolved_refs,
             commands::add_relation,
             commands::remove_relation,
+            commands::update_relation,
             // 叙事线索
             commands::create_thread,
             commands::update_thread,
