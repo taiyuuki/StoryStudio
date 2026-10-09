@@ -1161,8 +1161,9 @@ impl Tool for EditFragmentTextTool {
             适用于只改几句话或一个段落的场景（比 rewrite_fragment 更精确可控，不依赖 LLM 改写）。\
             ⚠️ 参数顺序勿颠倒：old_text 是正文里【已有】的文字，new_text 是【要改成】的文字。\
             ⚠️ old_text 应从正文中原样复制（先 read_scene_full_text / read_fragment_text 取原文）。\
-            匹配为精确优先，失败自动模糊兜底：容忍空白/换行/全角空格差异与中英文引号互换，\
-            但其余文字与标点须逐字一致。\
+            匹配为三级兜底：精确 → 归一化（容忍空白/换行/全角空格差异与中英文引号互换）\
+            → 近似（与正文有 60% 以上文字重合的连续段落，适合引文被轻微转写的场景，\
+            命中时回执会提示相似度，建议核对）。\
             默认要求 old_text 在正文中唯一出现；若多次出现需加 replace_all=true（否则报错并列出所有位置）。\
             要覆盖整篇正文请用 write_fragment_text，要续写请用 append_fragment_text。"
                     .into(),
@@ -1176,7 +1177,7 @@ impl Tool for EditFragmentTextTool {
                 (
                     "old_text",
                     "string",
-                    "要被替换的原文片段，从正文中原样复制。精确匹配优先，失败自动容忍空白/换行/引号差异，其余须逐字一致",
+                    "要被替换的原文片段，从正文中原样复制。匹配三级兜底：精确 → 归一化（容忍空白/换行/引号差异）→ 近似（60% 文字重合）",
                     true,
                 ),
                 (
@@ -1225,47 +1226,52 @@ impl Tool for EditFragmentTextTool {
             std::fs::read_to_string(&frag_path).map_err(|e| format!("读取片段失败: {e}"))?;
         let frag = FragmentFile::parse(&content).map_err(|e| format!("解析片段失败: {e}"))?;
 
-        // 匹配策略：先精确字节匹配，失败则模糊匹配（容忍空白/换行差异）
+        // 匹配策略（三级，与 ai_check 的引文归因容错对齐）：
+        // 精确字节匹配 → 去空白/标点归一化 → LCS 近似（引文被轻微转写时定位最接近段落）
         // 统一用字节范围 (from, to) 表示匹配结果
         let exact_ranges: Vec<(usize, usize)> = find_all_occurrences(&frag.text, &old_text)
             .iter()
             .map(|&pos| (pos, pos + old_text.len()))
             .collect();
 
-        let (ranges, matched_via_fuzzy) = if !exact_ranges.is_empty() {
-            (exact_ranges, false)
+        let (ranges, approx_similarity) = if !exact_ranges.is_empty() {
+            (exact_ranges, None)
         } else {
-            // 精确匹配失败 → 模糊匹配
             match find_fuzzy_ranges(&frag.text, &old_text) {
-                Some(fuzzy) if !fuzzy.is_empty() => (fuzzy, true),
-                _ => {
-                    // 模糊匹配也失败 → 找最接近的片段帮助定位
-                    let hint = find_closest_excerpt(&frag.text, &old_text);
-                    let mut msg = "old_text 未在正文中找到（精确匹配和模糊匹配均失败；\
-                        模糊匹配已容忍空白/换行差异及常见中英文标点互换）。\n\
-                        可能原因：不可见字符差异、罕见的标点/符号变体、文字本身有出入。\n\
-                        建议：用 read_scene_full_text / read_fragment_text 重新读取，复制精确文本。\n"
-                        .to_string();
-                    // 填反检测：old_text 找不到而 new_text 能在正文中精确找到，
-                    // 十有八九是两个参数互换了（反向替换的前兆）
-                    if !new_text.is_empty() && !find_all_occurrences(&frag.text, &new_text).is_empty()
-                    {
-                        msg.push_str(&format!(
-                            "\n⚠️ 疑似 old_text 与 new_text 填反：new_text「{new_text}」\
-                            在正文中找得到而 old_text 没有。请互换两个参数后重试。"
-                        ));
+                Some(fuzzy) if !fuzzy.is_empty() => (fuzzy, None),
+                _ => match find_lcs_range(&frag.text, &old_text) {
+                    Some((range, similarity)) => (vec![range], Some(similarity)),
+                    None => {
+                        // 三级匹配全部失败 → 找最接近的片段帮助定位
+                        let hint = find_closest_excerpt(&frag.text, &old_text);
+                        let mut msg = "old_text 未在正文中找到（精确、归一化、近似三级匹配均失败；\
+                            归一化已容忍空白/换行差异及常见中英文标点互换，\
+                            近似要求与正文有 60% 以上文字重合且为连续段落）。\n\
+                            可能原因：文字与原文出入过大，或引文拼接了正文里不相邻的内容。\n\
+                            建议：用 read_scene_full_text / read_fragment_text 重新读取，复制精确文本。\n"
+                            .to_string();
+                        // 填反检测：old_text 找不到而 new_text 能在正文中精确找到，
+                        // 十有八九是两个参数互换了（反向替换的前兆）
+                        if !new_text.is_empty() && !find_all_occurrences(&frag.text, &new_text).is_empty()
+                        {
+                            msg.push_str(&format!(
+                                "\n⚠️ 疑似 old_text 与 new_text 填反：new_text「{new_text}」\
+                                在正文中找得到而 old_text 没有。请互换两个参数后重试。"
+                            ));
+                        }
+                        if let Some(hint) = hint {
+                            msg.push_str(&format!("\n最接近的正文片段（供参考）：\n  \"{hint}\""));
+                        }
+                        msg.push_str(&format!("\n你提供的 old_text:\n  \"{old_text}\""));
+                        return Err(msg);
                     }
-                    if let Some(hint) = hint {
-                        msg.push_str(&format!("\n最接近的正文片段（供参考）：\n  \"{hint}\""));
-                    }
-                    msg.push_str(&format!("\n你提供的 old_text:\n  \"{old_text}\""));
-                    return Err(msg);
-                }
+                },
             }
         };
 
-        if matched_via_fuzzy {
-            eprintln!("[edit_fragment_text] {fragment_id} 使用了模糊匹配（空白/标点容错）");
+        if let Some(sim) = approx_similarity {
+            let pct = (sim * 100.0).round() as u8;
+            eprintln!("[edit_fragment_text] {fragment_id} 使用了 LCS 近似匹配（相似度 {pct}%）");
         }
 
         if ranges.len() > 1 && !replace_all {
@@ -1305,6 +1311,14 @@ impl Tool for EditFragmentTextTool {
         );
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
             msg.push_str(&note);
+        }
+        // 近似匹配的替换不是逐字对应：明示请核对，防止"改错段落"被当成功
+        if let Some(sim) = approx_similarity {
+            let pct = (sim * 100.0).round() as u8;
+            msg.push_str(&format!(
+                "\n⚠️ 本次通过 LCS 近似匹配定位（相似度 {pct}%），替换的是与 old_text 最接近的段落而非逐字原文；\
+                建议 read_fragment_text 核对替换结果是否符合预期"
+            ));
         }
         // 断言证据片段被局部修改：事实依据可能漂移（best-effort）
         if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
@@ -1415,6 +1429,87 @@ fn normalize_char(c: char) -> char {
         '？' => '?',
         _ => c,
     }
+}
+
+/// 近似匹配（第三级兜底）：needle 与正文的最长公共子序列对齐。
+///
+/// 用于前两级（精确 / 去空白归一化）均失配、但引文只是被轻微转写
+/// （改一两字、省略、跳字）的场景——ai_check 的引文归因容忍这类转写
+/// （LCS 覆盖 ≥60% 即归因），编辑侧对齐同级容错，才不会出现
+/// "检测端能归因、编辑端必然失败"的能力错位。
+///
+/// 返回 (字节范围, 相似度)；similarity = LCS 覆盖 needle 归一化长度的比例。
+/// 门槛：needle 归一化 ≥8 字、覆盖 ≥60%、且命中跨度 ≤ needle 长度的
+/// 1.5 倍 + 8（零散命中横跨多段时整段替换的风险大于收益，宁缺毋滥）。
+fn find_lcs_range(haystack: &str, needle: &str) -> Option<((usize, usize), f64)> {
+    const MIN_NEEDLE_CHARS: usize = 8;
+
+    // 复用 find_fuzzy_ranges 的归一化视图：空白移除 + 标点变体折叠
+    let hay_view: Vec<(char, usize)> = haystack
+        .char_indices()
+        .filter_map(|(i, ch)| {
+            let n = normalize_char(ch);
+            (!n.is_whitespace()).then_some((n, i))
+        })
+        .collect();
+    let needle_chars: Vec<char> = needle
+        .chars()
+        .map(normalize_char)
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let n_len = needle_chars.len();
+    if n_len < MIN_NEEDLE_CHARS || hay_view.is_empty() {
+        return None;
+    }
+    let m = hay_view.len();
+
+    // LCS 完整 DP 表（u16 足够：needle 长度远小于 u16 上限），供回溯定位区间
+    let stride = m + 1;
+    let mut dp = vec![0u16; (n_len + 1) * stride];
+    for i in 1..=n_len {
+        let nc = needle_chars[i - 1];
+        let (prev, row) = dp.split_at_mut(i * stride);
+        let prev = &prev[(i - 1) * stride..];
+        let row = &mut row[..stride];
+        for j in 1..=m {
+            row[j] = if nc == hay_view[j - 1].0 {
+                prev[j - 1] + 1
+            } else {
+                row[j - 1].max(prev[j])
+            };
+        }
+    }
+    let lcs_len = dp[n_len * stride + m] as usize;
+    if lcs_len * 10 < n_len * 6 {
+        return None; // 覆盖不足 60%：视作找不到
+    }
+
+    // 回溯收集正文侧命中的字符索引（逆序），首尾即替换区间
+    let (mut i, mut j) = (n_len, m);
+    let mut first_j = usize::MAX;
+    let mut last_j = 0usize;
+    let mut matched = 0usize;
+    while i > 0 && j > 0 {
+        if needle_chars[i - 1] == hay_view[j - 1].0 {
+            first_j = first_j.min(j - 1);
+            last_j = last_j.max(j - 1);
+            matched += 1;
+            i -= 1;
+            j -= 1;
+        } else if dp[(i - 1) * stride + j] >= dp[i * stride + j - 1] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    debug_assert_eq!(matched, lcs_len);
+    let span_len = last_j - first_j + 1;
+    if span_len > n_len + n_len / 2 + 8 {
+        return None; // 命中过于零散：拒绝整段替换
+    }
+    let from = hay_view[first_j].1;
+    let to = hay_view[last_j].1 + hay_view[last_j].0.len_utf8();
+    Some(((from, to), lcs_len as f64 / n_len as f64))
 }
 
 /// 为字节范围列表构造带上下文的摘录
@@ -3577,6 +3672,65 @@ fragments = []
         // 可能包含最接近片段（取决于 find_closest_excerpt 是否找到部分匹配）
         // 至少应含"未在正文中找到"
         assert!(err.contains("未在正文中找到"));
+    }
+
+    // —— 第三级 LCS 近似匹配 ——
+
+    #[test]
+    fn edit_lcs_matches_paraphrased_old_text() {
+        // 引文被轻微转写（顺着→沿着）：精确与归一化均失配，LCS 应兜底命中
+        let (_tmp, ctx, fid) =
+            setup_fragment("林风推开门，雨水顺着发梢滴落。他抬头望向灰蒙蒙的天空。");
+
+        let tool = EditFragmentTextTool::new(ctx.clone());
+        let result = tool.execute(&serde_json::json!({
+            "fragment_id": fid,
+            "old_text": "雨水沿着发梢滴落",
+            "new_text": "冰雨如鞭般抽打在脸上",
+        }));
+
+        let msg = result.expect("LCS 近似匹配应成功: ");
+        assert!(msg.contains("近似匹配"), "回执应提示近似匹配: {msg}");
+        assert!(msg.contains("相似度"), "回执应含相似度: {msg}");
+        assert!(msg.contains("核对"), "回执应建议核对: {msg}");
+
+        // 正文应是新文本，且被替换的正是原句而非邻句
+        let read = ReadFragmentTextTool::new(ctx);
+        let out = read
+            .execute(&serde_json::json!({ "fragment_id": "f_0001" }))
+            .unwrap();
+        assert!(out.contains("冰雨如鞭般抽打在脸上"), "{out}");
+        assert!(out.contains("林风推开门"), "邻句不应被波及: {out}");
+        assert!(out.contains("灰蒙蒙的天空"), "邻句不应被波及: {out}");
+    }
+
+    #[test]
+    fn edit_lcs_rejects_scattered_hits() {
+        // 引文由正文里相隔很远的字拼成（覆盖率高但跨度大）：应拒绝整段替换
+        let (_tmp, ctx, fid) = setup_fragment("甲乙丙丁戊。己庚辛壬癸。子丑寅卯辰。巳午未申酉。戌亥。");
+
+        let tool = EditFragmentTextTool::new(ctx);
+        let result = tool.execute(&serde_json::json!({
+            "fragment_id": fid,
+            "old_text": "甲丙戊庚壬丑卯巳未亥",
+            "new_text": "替换",
+        }));
+        assert!(result.is_err(), "零散命中不应触发替换");
+        assert!(result.unwrap_err().contains("未在正文中找到"));
+    }
+
+    #[test]
+    fn edit_lcs_rejects_low_similarity() {
+        // 文字重合度低（<60%）：三级匹配全部失败
+        let (_tmp, ctx, fid) = setup_fragment("林风推开门，雨水顺着发梢滴落。");
+
+        let tool = EditFragmentTextTool::new(ctx);
+        let result = tool.execute(&serde_json::json!({
+            "fragment_id": fid,
+            "old_text": "皓月当空繁星点点夜色",
+            "new_text": "替换",
+        }));
+        assert!(result.is_err());
     }
 
     #[test]
