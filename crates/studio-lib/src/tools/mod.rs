@@ -210,6 +210,42 @@ pub(super) fn get_json_array_opt(
     }
 }
 
+/// 把批量参数的项归一化为 JSON 对象。
+///
+/// schema 声明 array of object，但模型常无视声明把每项序列化成字符串传入
+/// （design_chapters 的 chapters 曾因此整链报「缺少参数: title」）。
+/// - 对象 → 原样
+/// - 字符串 → 走 [`crate::llm_json`] 宽松梯度解析，须得对象
+/// - 其他类型 / 解析结果非对象 → 报错并指明第几项
+pub(super) fn normalize_object_items(
+    items: Vec<serde_json::Value>,
+    key: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| match v {
+            serde_json::Value::Object(_) => Ok(v),
+            serde_json::Value::String(raw) => {
+                let parsed = crate::llm_json::parse_value(&raw)
+                    .map_err(|e| format!("{key} 第 {} 项是字符串，但{e}", i + 1))?;
+                if parsed.is_object() {
+                    Ok(parsed)
+                } else {
+                    Err(format!(
+                        "{key} 第 {} 项应为 JSON 对象，字符串解析得到非对象值",
+                        i + 1
+                    ))
+                }
+            }
+            other => Err(format!(
+                "{key} 第 {} 项应为原生 JSON 对象（不要序列化成字符串），收到: {other}",
+                i + 1
+            )),
+        })
+        .collect()
+}
+
 pub(super) fn get_u32_opt(args: &serde_json::Value, key: &str) -> Option<u32> {
     match args.get(key) {
         Some(v) => v

@@ -14,7 +14,7 @@ use story_project_format::{
 
 use super::{
     check_index, get_index, get_json_array_opt, get_str, get_str_opt, get_str_array_opt,
-    object_schema, ToolContext,
+    normalize_object_items, object_schema, ToolContext,
 };
 
 // ============================================================================
@@ -35,21 +35,65 @@ impl Tool for DesignChaptersTool {
         ToolDef {
             name: "design_chapters".into(),
             description: "根据大纲和卷结构设计章节脉络，一次性追加多章到 chapters.toml。每章含标题、所属卷序号、梗概、目标、节拍、涉及角色/线索、章末钩子等。设计阶段无需 chapter_id（虚拟章），动笔时再 create_chapter 落实。卷分组通常无需提供：章节按 volume_order 自动归卷，卷分组为空时自动从 outline.toml 的卷大纲导入。".into(),
-            parameters: object_schema(vec![
-                ("chapters", "array", "章节数组，每项: {title, volume_order(1-based,0=未分卷), summary?, goal?, beats?:[...], characters?:[...], threads?:[...], hook?, notes?}", true),
-                ("volumes", "array", "可选：卷分组数组，每项: {name, order(1-based), theme?, summary?}。若提供则整体替换大纲卷结构（写入 outline.toml）。项目已有卷时无需传，章节按 volume_order 直接归卷", false),
-                ("replace", "boolean", "是否替换现有章节脉络（默认 false=追加）。传 true 会清空已有章节，慎用", false),
-            ]),
+            // chapters / volumes 的每项是对象数组：items 显式声明为 object
+            // （裸 "type": "array" 无 items 时部分模型默认按字符串数组传，
+            // 序列化字符串项会在读取 title/name 时整链报「缺少参数」）
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "chapters": {
+                        "type": "array",
+                        "description": "章节数组，每项必须是原生 JSON 对象（不要把对象序列化成字符串）",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string", "description": "章节标题" },
+                                "volume_order": { "type": "integer", "description": "所属卷序号（1-based；0=未分卷）" },
+                                "summary": { "type": "string", "description": "可选：本章梗概" },
+                                "goal": { "type": "string", "description": "可选：本章目标" },
+                                "beats": { "type": "array", "items": { "type": "string" }, "description": "可选：节拍列表" },
+                                "characters": { "type": "array", "items": { "type": "string" }, "description": "可选：涉及角色" },
+                                "threads": { "type": "array", "items": { "type": "string" }, "description": "可选：涉及线索" },
+                                "hook": { "type": "string", "description": "可选：章末钩子" },
+                                "notes": { "type": "string", "description": "可选：备注" }
+                            },
+                            "required": ["title"]
+                        }
+                    },
+                    "volumes": {
+                        "type": "array",
+                        "description": "可选：卷分组数组，每项必须是原生 JSON 对象。若提供则整体替换大纲卷结构（写入 outline.toml）。项目已有卷时无需传，章节按 volume_order 直接归卷",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "卷名" },
+                                "order": { "type": "integer", "description": "卷序号（1-based）" },
+                                "theme": { "type": "string", "description": "可选：卷主题" },
+                                "summary": { "type": "string", "description": "可选：卷梗概" }
+                            },
+                            "required": ["name"]
+                        }
+                    },
+                    "replace": {
+                        "type": "boolean",
+                        "description": "是否替换现有章节脉络（默认 false=追加）。传 true 会清空已有章节，慎用"
+                    }
+                },
+                "required": ["chapters"]
+            }),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        // 兼容原生数组与 JSON 字符串两种形态（模型常无视 schema 声明）
+        // 兼容原生数组与 JSON 字符串两种形态（模型常无视 schema 声明）；
+        // 项级再做对象归一化——字符串项宽松解析为对象
         let chapter_inputs = match get_json_array_opt(arguments, "chapters")? {
-            Some(items) => items,
+            Some(items) => normalize_object_items(items, "chapters")?,
             None => return Err("缺少参数: chapters".to_string()),
         };
-        let volumes_json = get_json_array_opt(arguments, "volumes")?;
+        let volumes_json = get_json_array_opt(arguments, "volumes")?
+            .map(|items| normalize_object_items(items, "volumes"))
+            .transpose()?;
         let replace = arguments
             .get("replace")
             .and_then(|v| v.as_bool())
@@ -803,6 +847,49 @@ mod tests {
         // 7. 验证 chapters.toml 落盘内容正确
         let out = get.execute(&serde_json::json!({})).unwrap();
         assert!(out.contains("进度: 1/1 完成"));
+    }
+
+    #[test]
+    fn design_chapters_accepts_string_items() {
+        // 用户真实案例：模型无视 items 的 object 声明，把每章/每卷序列化成
+        // 字符串传入。旧实现在 get_str(input, "title") 处报「缺少参数: title」；
+        // 现按 llm_json 宽松梯度把字符串项解析回对象，与原生对象项混用亦可。
+        let (_tmp, ctx) = setup();
+        let design = DesignChaptersTool::new(ctx.clone());
+        let res = design
+            .execute(&serde_json::json!({
+                "chapters": [
+                    "{\"title\": \"雨夜\", \"volume_order\": 1, \"summary\": \"投宿客栈\", \"hook\": \"旧案\"}",
+                    {"title": "渡河", "volume_order": 1}
+                ],
+                "volumes": ["{\"name\": \"第一卷 风起\", \"order\": 1}"]
+            }))
+            .unwrap();
+        assert!(res.contains("已设计 2 个章节脉络"), "{res}");
+
+        let (file, vols, _) = load_chapters(&ctx).unwrap();
+        assert_eq!(vols.len(), 1);
+        assert_eq!(vols[0].name, "第一卷 风起");
+        assert_eq!(file.chapters[0].title, "雨夜");
+        assert_eq!(file.chapters[0].summary.as_deref(), Some("投宿客栈"));
+        assert_eq!(file.chapters[0].hook.as_deref(), Some("旧案"));
+        assert_eq!(file.chapters[1].title, "渡河");
+    }
+
+    #[test]
+    fn design_chapters_string_item_garbage_errors_with_index() {
+        // 字符串项解析失败要指明第几项，而非误导性的「缺少参数: title」
+        let (_tmp, ctx) = setup();
+        let design = DesignChaptersTool::new(ctx.clone());
+        let err = design
+            .execute(&serde_json::json!({
+                "chapters": [
+                    {"title": "正常章"},
+                    "完全不是 JSON 的散文"
+                ]
+            }))
+            .unwrap_err();
+        assert!(err.contains("chapters 第 2 项"), "应指明项序: {err}");
     }
 
     #[test]
