@@ -1121,6 +1121,12 @@ impl Tool for WriteFragmentTextTool {
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
             msg.push_str(&note);
         }
+        // 覆盖已有片段时：若它是断言证据，提示事实依据可能漂移（best-effort）
+        if !is_new {
+            if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
+                msg.push_str(&note);
+            }
+        }
         // 首次写入正文自动推进脉络 planned → writing（best-effort）
         if let Some(note) = crate::mutations::auto_advance_outline_writing(&paths, &scene_id) {
             msg.push_str(&note);
@@ -1298,6 +1304,10 @@ impl Tool for EditFragmentTextTool {
             "片段 {fragment_id} 已修改（原 {original_len} 字 → 新 {new_len} 字，替换 {replace_count} 处）"
         );
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
+            msg.push_str(&note);
+        }
+        // 断言证据片段被局部修改：事实依据可能漂移（best-effort）
+        if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
             msg.push_str(&note);
         }
         Ok(msg)
@@ -1775,6 +1785,10 @@ impl Tool for DeleteFragmentTool {
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
             msg.push_str(&note);
         }
+        // 删除的片段若是断言证据：证据悬空警示（best-effort）
+        if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, true) {
+            msg.push_str(&note);
+        }
         Ok(msg)
     }
 }
@@ -1908,6 +1922,10 @@ impl Tool for RewriteFragmentTool {
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id) {
             msg.push_str(&note);
         }
+        // 改写证据片段：事实依据可能漂移（best-effort）
+        if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
+            msg.push_str(&note);
+        }
         Ok(msg)
     }
 }
@@ -2030,6 +2048,10 @@ impl Tool for SplitFragmentTool {
             crate::workflow::count_words(&before),
             crate::workflow::count_words(&after)
         );
+        // 原片段只剩前半：若它是断言证据，事实依据可能已随后半移走（best-effort）
+        if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
+            msg.push_str(&note);
+        }
         // 后半段重跑理解锚定（best-effort，不影响拆分结果）：显式锚点全留在
         // 前半，后半的指代出场（代词/称谓）与 appears/mentioned 角色需要重新
         // 识别——确定性文本匹配在解析层自动完成，这里补 LLM 理解层
@@ -2089,9 +2111,14 @@ impl Tool for MergeFragmentsTool {
         crate::mutations::merge_fragments(&paths, &primary_id, &secondary_id)
             .map_err(|e| e.to_string())?;
 
-        Ok(format!(
+        let mut msg = format!(
             "片段 {secondary_id} 已合并到 {primary_id}（正文与锚点已合并，{secondary_id} 已删除）"
-        ))
+        );
+        // 被合并的片段已删除：若它是断言证据，证据随片段悬空（best-effort）
+        if let Some(note) = crate::mutations::evidence_usage_note(&paths, &secondary_id, true) {
+            msg.push_str(&note);
+        }
+        Ok(msg)
     }
 }
 

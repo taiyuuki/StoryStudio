@@ -1870,7 +1870,7 @@ pub fn sync_unresolved_refs(
     // 清理：正文已不含该 quote 的记录
     let before = file.refs.len();
     file.refs
-        .retain(|r| !(r.fragment_id == fragment_id && !body.contains(&r.quote)));
+        .retain(|r| r.fragment_id != fragment_id || body.contains(&r.quote));
     if file.refs.len() != before {
         changed = true;
     }
@@ -2605,14 +2605,96 @@ fn register_evidence(paths: &ProjectPaths, fragment_id: &str) -> Result<String, 
         .unwrap_or(0);
     let id = format!("ev_{:04}", max_num + 1);
 
+    // 摘录登记时的正文开头：evidence 依据的是当时的内容，留快照才能在
+    // 片段被改写后核对事实依据是否已漂移
+    let quote = std::fs::read_to_string(&frag_path)
+        .ok()
+        .map(|content| evidence_quote_excerpt(crate::fragment::fragment_body(&content)))
+        .unwrap_or_default();
+
     file.evidence.push(EvidenceDef {
         id: id.clone(),
         loc: fragment_id.to_string(),
-        quote: String::new(),
+        quote,
         source: "manual".to_string(),
     });
     file.save(&evidence_path)?;
     Ok(id)
+}
+
+/// 证据引文摘录：片段正文的开头快照（空白折叠为单空格，上限 80 字）。
+fn evidence_quote_excerpt(body: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    let mut out = String::new();
+    for ch in body.trim().chars() {
+        if out.chars().count() >= MAX_CHARS {
+            out.push('…');
+            break;
+        }
+        if ch.is_whitespace() {
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// 证据使用警示（修改/删除正文回执用）：片段被 active 断言登记为证据时
+/// 返回提示行。`removed = true` 表示片段已删除（证据悬空，将由编译器
+/// evidence_mismatch 告警），`false` 表示内容被改写（事实依据可能漂移）。
+///
+/// best-effort：知识库文件缺失或读取失败时返回 None，不影响主流程。
+pub fn evidence_usage_note(
+    paths: &ProjectPaths,
+    fragment_id: &str,
+    removed: bool,
+) -> Option<String> {
+    let evidence_file =
+        EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).ok()?;
+    let ev_ids: Vec<&str> = evidence_file
+        .evidence
+        .iter()
+        .filter(|e| e.loc == fragment_id)
+        .map(|e| e.id.as_str())
+        .collect();
+    if ev_ids.is_empty() {
+        return None;
+    }
+
+    // 只列 active 断言：superseded/contradicted 的证据漂移无需打扰
+    let assertions = AssertionsFile::load_or_default(&paths.assertions_toml()).ok()?;
+    let uses: Vec<String> = assertions
+        .assertions
+        .iter()
+        .filter(|a| {
+            is_active_status(&a.status) && a.evidence.iter().any(|ev| ev_ids.contains(&ev.as_str()))
+        })
+        .map(|a| format!("{}（{} {}）", a.id, a.subject, a.predicate))
+        .collect();
+    if uses.is_empty() {
+        return None;
+    }
+
+    let mut note = if removed {
+        format!(
+            "\n⚠️ 此片段是 {} 条 active 断言的证据，删除后证据将悬空（compile_check 的 evidence_mismatch 会告警）：",
+            uses.len()
+        )
+    } else {
+        format!(
+            "\n⚠️ 此片段是 {} 条 active 断言的证据，本次改动可能动摇其事实依据：",
+            uses.len()
+        )
+    };
+    let head: Vec<String> = uses.iter().take(5).map(|u| format!("  - {u}")).collect();
+    note.push_str(&head.join("\n"));
+    note.push_str(
+        "\n若情节已变，请核实断言（query_assertions 查看，retire_assertion / delete_assertion 处理）",
+    );
+    Some(note)
 }
 
 // ============================================================================
@@ -4652,6 +4734,53 @@ mod tests {
 
         let result = add_assertion(&paths, "c_0001", "alive", "true", Some("f_9999"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn register_evidence_stores_quote_excerpt() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = create_fragment(&paths, &sc, "林风推门而入，尘土簌簌落下。\n他环顾四周。").unwrap();
+
+        add_assertion(&paths, "c_0001", "located_at", "l_0001", Some(&fid)).unwrap();
+
+        let file =
+            EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        let ev = file.evidence.iter().find(|e| e.loc == fid).unwrap();
+        assert!(
+            ev.quote.starts_with("林风推门而入"),
+            "登记证据应摘录正文开头，实际: '{}'",
+            ev.quote
+        );
+        assert_eq!(ev.quote, "林风推门而入，尘土簌簌落下。 他环顾四周。");
+    }
+
+    #[test]
+    fn evidence_usage_note_reports_active_assertions_only() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = create_fragment(&paths, &sc, "正文内容。").unwrap();
+        let other = create_fragment(&paths, &sc, "无关片段。").unwrap();
+
+        let a1 = add_assertion(&paths, "c_0001", "located_at", "l_0001", Some(&fid)).unwrap();
+        let a2 = add_assertion(&paths, "c_0001", "alive", "true", Some(&fid)).unwrap();
+        // a2 置为 superseded：不应出现在提示里
+        set_assertion_status(&paths, &a2.id, "superseded").unwrap();
+
+        let note = evidence_usage_note(&paths, &fid, false).expect("证据片段应有提示");
+        assert!(note.contains(&a1.id), "提示应包含 active 断言 id: {note}");
+        assert!(!note.contains(&a2.id), "提示不应包含 superseded 断言: {note}");
+        assert!(note.contains("事实依据"), "改写提示应说明风险: {note}");
+
+        let removed_note = evidence_usage_note(&paths, &fid, true).expect("删除场景应有提示");
+        assert!(removed_note.contains("悬空"), "删除提示应说明证据悬空: {removed_note}");
+
+        // 无关片段：无证据登记 → 无提示
+        assert!(evidence_usage_note(&paths, &other, false).is_none());
     }
 
     // —— 写入路径剥离模型复读 frontmatter / repair_project ——
