@@ -458,6 +458,197 @@ fn format_report_for_llm(
     out
 }
 
+// ============================================================================
+// ai_check_pov — POV 视角越权软检测
+// ============================================================================
+
+pub struct AiCheckPovTool {
+    ctx: ToolContext,
+}
+impl AiCheckPovTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for AiCheckPovTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "ai_check_pov".into(),
+            description: "检测限知视角（POV）场景的视角越权硬伤：穿墙窥视他人内心、\
+            叙述直陈 POV 尚不知道的线索事实、越权感知不在场信息。\
+            以场景 POV 与认知矩阵（各线索在该时点的 unknown/suspected/known）\
+            为基准做 LLM 软检测——这是语义判断，编译器规则无法确定性拦截。\
+            场景须已设置 pov。交付关键 POV 章节前过一遍。"
+                .into(),
+            parameters: object_schema(vec![(
+                "scene_id",
+                "string",
+                "场景 ID（如 sc_01_01，须已设置 POV）",
+                true,
+            )]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        use story_ai_runtime::provider::{GenerateRequest, Message};
+
+        let scene_id = get_str(arguments, "scene_id")?;
+        let provider = self.ctx.provider.as_ref().ok_or_else(|| {
+            "ai_check_pov 需要 provider，但当前未配置。请确保通过项目模式运行。".to_string()
+        })?;
+        let paths = self.ctx.paths();
+        let structure = story_project_format::StructureFile::from_toml_str(
+            &std::fs::read_to_string(paths.structure_toml())
+                .map_err(|e| format!("读取 structure.toml 失败: {e}"))?,
+        )
+        .map_err(|e| format!("解析 structure.toml 失败: {e}"))?;
+        let scene = structure
+            .scene
+            .get(&scene_id)
+            .ok_or_else(|| format!("场景 '{scene_id}' 不存在"))?;
+        let pov = scene
+            .pov
+            .clone()
+            .ok_or_else(|| format!("场景 {scene_id} 未设置 POV，先 update_scene(pov_character_id=...) 再检测"))?;
+        let pov_name = std::fs::read_to_string(
+            paths
+                .file_for_id(&pov)
+                .unwrap_or_else(|| paths.characters_dir().join(format!("{pov}.toml"))),
+        )
+        .ok()
+        .and_then(|c| story_project_format::EntityFile::from_toml_str(&c).ok())
+        .map(|e| e.display_name)
+        .unwrap_or_else(|| pov.clone());
+
+        // 场景正文（按 fragments 顺序拼接）
+        let mut text = String::new();
+        for fid in &scene.fragments {
+            if let Ok(c) = std::fs::read_to_string(paths.fragments_dir().join(format!("{fid}.md"))) {
+                text.push_str(crate::fragment::fragment_body(&c));
+                text.push('\n');
+            }
+        }
+        if text.trim().is_empty() {
+            return Err(format!("场景 {scene_id} 无正文，无从检测"));
+        }
+
+        // POV 认知清单：各线索在该场景时点的状态（阅读序 ≤ 本场景的最后一条）
+        let reading_order: Vec<String> = structure
+            .book
+            .chapters
+            .iter()
+            .filter_map(|c| structure.chapter.get(c))
+            .flat_map(|c| c.scenes.clone())
+            .collect();
+        let at = reading_order
+            .iter()
+            .position(|s| s == &scene_id)
+            .unwrap_or(usize::MAX);
+        let mut cognition = String::new();
+        if let Ok(tc) = std::fs::read_to_string(paths.threads_toml()) {
+            if let Ok(file) = story_project_format::ThreadsFile::from_toml_str(&tc) {
+                for t in &file.threads {
+                    let state = t
+                        .knowledge
+                        .iter()
+                        .find(|k| {
+                            matches!(
+                                &k.observer,
+                                story_project_format::threads_file::ObserverDef::Character { character }
+                                    if character == &pov
+                            )
+                        })
+                        .and_then(|k| {
+                            let mut best: Option<(&str, usize)> = None;
+                            for e in &k.state_timeline {
+                                if let Some(pos) = reading_order.iter().position(|s| s == &e.scene) {
+                                    if pos <= at && best.is_none_or(|(_, bp)| pos >= bp) {
+                                        best = Some((e.state.as_str(), pos));
+                                    }
+                                }
+                            }
+                            best.map(|(s, _)| s.to_string())
+                        })
+                        .unwrap_or_else(|| "unknown".to_string());
+                    cognition.push_str(&format!("- 线索 {}「{}」：{}\n", t.id, t.title, state));
+                }
+            }
+        }
+
+        let system = crate::prompt_custom::resolve(
+            &crate::prompt_custom::POV_CHECK,
+            Some(self.ctx.project_dir.as_path()),
+        );
+        let user = format!(
+            "POV 角色：{pov_name}（{pov}）\n场景：{scene_id}\n\nPOV 在本场景的认知状态：\n{cognition}\n场景正文：\n\n{}",
+            {
+                // 超长截断保护（与 ai_check 的送审上限同量级）
+                const MAX_CHARS: usize = 6000;
+                let mut t = text.clone();
+                if t.chars().count() > MAX_CHARS {
+                    t = t.chars().take(MAX_CHARS).collect::<String>();
+                    t.push_str("\n…（超长截断）");
+                }
+                t
+            }
+        );
+        let request = GenerateRequest {
+            system,
+            messages: vec![Message::user(user)],
+            model: String::new(),
+            temperature: 0.2,
+            max_tokens: 2048,
+            tools: Vec::new(),
+        };
+        let resp = super::retry_generate(provider, &request)
+            .map_err(|e| format!("视角检测调用失败: {e}"))?;
+        let raw = crate::llm_json::strip_think(&resp.text);
+        // 容错解析：剥围栏后取首个 JSON 对象
+        let json_text = raw
+            .trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+        let parsed: serde_json::Value = serde_json::from_str(json_text)
+            .map_err(|e| format!("视角检测报告解析失败: {e}\n原始输出开头: {}", &raw.chars().take(200).collect::<String>()))?;
+
+        let leaks = parsed
+            .get("leaks")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let summary = parsed
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if leaks.is_empty() {
+            return Ok(format!(
+                "场景 {scene_id}（POV {pov_name}）未发现视角越权。{summary}"
+            ));
+        }
+        let mut out = format!(
+            "场景 {scene_id}（POV {pov_name}）发现 {} 处疑似视角越权：\n",
+            leaks.len()
+        );
+        for (i, leak) in leaks.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. [{}]\n   「{}」\n   → {}\n",
+                i + 1,
+                leak.get("kind").and_then(|v| v.as_str()).unwrap_or("越权"),
+                leak.get("quote").and_then(|v| v.as_str()).unwrap_or("（无引文）"),
+                leak.get("explanation").and_then(|v| v.as_str()).unwrap_or("")
+            ));
+        }
+        if !summary.is_empty() {
+            out.push_str(&format!("总结：{summary}"));
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

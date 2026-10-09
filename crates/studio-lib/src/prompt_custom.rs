@@ -47,6 +47,16 @@ pub const AGENT_PROJECT: PromptSpec = PromptSpec {
     builtin: crate::prompts::AGENT_PROJECT,
 };
 
+/// POV 视角越权软检测（ai_check_pov）
+pub const POV_CHECK: PromptSpec = PromptSpec {
+    id: "pov_check",
+    label: "视角越权检测",
+    group: "AI 审校",
+    description: "限知视角场景的越权认知/穿墙内心软检测（ai_check_pov 工具）。",
+    placeholders: &[],
+    builtin: crate::prompts::POV_CHECK,
+};
+
 // —— 续写与补全 ——
 
 /// 场景续写（AI 续写按钮）的 system prompt

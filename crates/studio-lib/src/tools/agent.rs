@@ -188,6 +188,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(AiCheckTool::new(ctx.clone())));
     registry.register(Box::new(AiCheckScopeTool::chapter(ctx.clone())));
     registry.register(Box::new(AiCheckScopeTool::scene(ctx.clone())));
+    registry.register(Box::new(AiCheckPovTool::new(ctx.clone())));
     registry.register(Box::new(UpdateEntityTool::new(ctx.clone())));
     registry.register(Box::new(GetOutlineTool::new(ctx.clone())));
     registry.register(Box::new(SetOutlineItemTool::new(ctx.clone())));

@@ -16,6 +16,9 @@ pub(crate) const AI_CHECK: &str = include_str!("prompts/ai_check.md");
 /// 档案与正文一致性核对（profile_check）的 system prompt
 pub(crate) const PROFILE_CHECK: &str = include_str!("prompts/profile_check.md");
 
+/// POV 视角越权软检测（ai_check_pov 用）
+pub(crate) const POV_CHECK: &str = include_str!("prompts/pov_check.md");
+
 /// 开书第 1 步：概念候选生成。
 /// 占位符：`{{idea}}` / `{{genre_line}}` / `{{extras}}` / `{{guide}}` / `{{candidates}}`
 pub(crate) const BOOK_CONCEPTS: &str = include_str!("prompts/book_concepts.md");
