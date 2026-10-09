@@ -25,7 +25,7 @@ impl Tool for CompileCheckTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "compile_check".into(),
-            description: "运行编译器，返回诊断结果（错误/警告/提示）。".into(),
+            description: "运行编译器，返回诊断结果（错误/警告/提示），\n            并附加时间线连续性校验：按阅读序比较各场景的 story_time（数值锚或可解析的历法标签锚），\n            时间倒流会报 timeline_regression 警告。".into(),
             parameters: object_schema(vec![]),
         }
     }
@@ -34,7 +34,9 @@ impl Tool for CompileCheckTool {
         let result = crate::compile::compile_project(&self.ctx.project_dir)
             .map_err(|e| format!("编译失败: {e}"))?;
         let diagnostics = result.diagnostics;
-        if diagnostics.is_empty() {
+        // 时间线倒流校验（依赖纪元表，附在编译器之后一并报告）
+        let timeline = crate::timeline::continuity_warnings(&self.ctx.paths());
+        if diagnostics.is_empty() && timeline.is_empty() {
             return Ok("编译通过，无诊断问题。".to_string());
         }
 
@@ -70,6 +72,15 @@ impl Tool for CompileCheckTool {
         }
         for h in &hints {
             report.push_str(&format!("  💡 HINT [{}]: {}\n", h.code, h.message));
+        }
+        if !timeline.is_empty() {
+            report.push_str(&format!(
+                "时间线连续性: {} 处疑似倒流\n",
+                timeline.len()
+            ));
+            for w in &timeline {
+                report.push_str(&format!("  ⚠️ WARNING [timeline_regression]: {w}\n"));
+            }
         }
         Ok(report)
     }
