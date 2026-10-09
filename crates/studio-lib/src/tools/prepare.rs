@@ -30,6 +30,25 @@ impl PrepareWritingTool {
     }
 }
 
+
+/// 最近一个已有正文的章节 ID（阅读序最后一个首场景有片段的章）。
+fn last_written_chapter(paths: &story_project_format::ProjectPaths) -> Option<String> {
+    let structure = crate::mutations::load_structure(paths).ok()?;
+    let mut last: Option<String> = None;
+    for ch_id in &structure.book.chapters {
+        let ch = structure.chapter.get(ch_id)?;
+        if ch.scenes.iter().any(|sc| {
+            structure
+                .scene
+                .get(sc)
+                .is_some_and(|s| !s.fragments.is_empty())
+        }) {
+            last = Some(ch_id.clone());
+        }
+    }
+    last
+}
+
 impl Tool for PrepareWritingTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
@@ -370,6 +389,31 @@ impl Tool for PrepareWritingTool {
                         "\n题材: {genre}（类型专项指导可调 get_writing_guide）\n"
                     ));
                 }
+            }
+        }
+
+        // —— 上一章开场指纹：让本章第一笔有意识地错开上一章 ——
+        // 确定性统计（与 ai_check 跨章开场降级同源），不调 LLM
+        if let Some(last_ch) = last_written_chapter(&self.ctx.paths()) {
+            if let Some((streak, kind)) =
+                super::ai_check::opening_streak(&self.ctx.project_dir, &last_ch)
+            {
+                let advice = if streak >= 2 {
+                    format!(
+                        "已连续 {streak} 章以「{kind}」开场，建议本章换成{}",
+                        match kind {
+                            "对话" => "动作或景物起笔".to_string(),
+                            "时间景描" => "对话或动作直入".to_string(),
+                            "景物" => "对话或人物动作直入".to_string(),
+                            _ => "对话或景物起笔".to_string(),
+                        }
+                    )
+                } else {
+                    format!("上一章为「{kind}」起笔，可保持也可错开（连续 2 章以上同型会提示）")
+                };
+                out.push_str(&format!(
+                    "\n[开场指纹] 上一章开场类型：{kind}。{advice}。"
+                ));
             }
         }
 

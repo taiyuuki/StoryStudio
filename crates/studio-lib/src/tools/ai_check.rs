@@ -22,7 +22,7 @@ fn is_opening_feature(feature_id: &str, feature_name: &str) -> bool {
 
 /// 章开场分类：取该章阅读序第一个片段的首行非空文字，
 /// 按保守前缀规则归类。规则粗，但全书口径一致即可支撑"连续性"比较。
-fn classify_opening(body: &str) -> &'static str {
+pub(crate) fn classify_opening(body: &str) -> &'static str {
     let Some(line) = body.lines().map(str::trim).find(|l| !l.is_empty()) else {
         return "空";
     };
@@ -51,7 +51,7 @@ fn classify_opening(body: &str) -> &'static str {
 ///
 /// 任一章无法解析开场（缺场景/片段/文件）则返回 None——统计失败时
 /// 不降级不升级，保持报告原样（fail-open）。
-fn opening_streak(dir: &std::path::Path, chapter_id: &str) -> Option<(usize, &'static str)> {
+pub(crate) fn opening_streak(dir: &std::path::Path, chapter_id: &str) -> Option<(usize, &'static str)> {
     let paths = ProjectPaths::new(dir);
     let structure =
         StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?).ok()?;
