@@ -692,6 +692,15 @@ impl Tool for SearchEntitiesTool {
 // get_entity_detail
 // ============================================================================
 
+
+/// 断言 object 的简洁展示（布尔/整数直出，字符串去引号）
+fn object_display(v: &toml::Value) -> String {
+    match v {
+        toml::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 pub struct GetEntityDetailTool {
     ctx: ToolContext,
 }
@@ -817,6 +826,40 @@ impl Tool for GetEntityDetailTool {
         }
         out.push_str(&format!("\n  出场({} 个片段):\n", grouped.len()));
         out.push_str(&appearances.join("\n"));
+
+        // —— 当前事实投影：该实体的 active 断言（档案是建档快照，动态状态走断言，
+        //      此分节把两者合并成完整视图，免得再查 query_assertions）——
+        let active: Vec<String> = std::fs::read_to_string(
+            self.ctx.paths().knowledge_dir().join("assertions.toml"),
+        )
+        .ok()
+        .and_then(|c| story_project_format::AssertionsFile::from_toml_str(&c).ok())
+        .map(|f| {
+            f.assertions
+                .iter()
+                .filter(|a| a.subject == entity_id && (a.status.is_empty() || a.status == "active"))
+                .map(|a| {
+                    format!(
+                        "  - {}.{} = {}{}",
+                        a.id,
+                        a.predicate,
+                        object_display(&a.object),
+                        if a.evidence.is_empty() {
+                            String::new()
+                        } else {
+                            format!("（证据 {}）", a.evidence.join(","))
+                        }
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+        if !active.is_empty() {
+            out.push_str(&format!("\n\n  当前事实（active 断言投影，{} 条）:\n", active.len()));
+            out.push_str(&active.join("\n"));
+            out.push_str("\n  档案若滞后于这些动态状态，profile_check 会提示更新。");
+        }
+
         out.push_str("\n\n提示：可用 profile_check 核对该实体档案与正文描写的一致性（软提示）。");
 
         Ok(out)
