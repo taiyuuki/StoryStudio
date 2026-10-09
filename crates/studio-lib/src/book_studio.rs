@@ -1321,36 +1321,9 @@ fn llm_json(
     })
 }
 
-/// 宽松解析模型输出的 JSON 对象：原文 → 剥代码围栏 → 截取首 '{' 到末 '}'
+/// 宽松解析模型输出的 JSON 对象（统一走 [`crate::llm_json`] 的容错梯度）
 pub(crate) fn parse_json_object_lenient(raw: &str) -> Result<serde_json::Value, String> {
-    let t = raw.trim();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
-        if v.is_object() {
-            return Ok(v);
-        }
-    }
-    // 剥 ```json 围栏
-    let body = if let Some(stripped) = t.strip_prefix("```") {
-        stripped
-            .trim_start_matches("json")
-            .trim_start_matches("JSON")
-            .trim_start()
-            .strip_suffix("```")
-            .map(str::trim)
-            .unwrap_or(t)
-    } else {
-        t
-    };
-    if let (Some(s), Some(e)) = (body.find('{'), body.rfind('}')) {
-        if e > s {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body[s..=e]) {
-                if v.is_object() {
-                    return Ok(v);
-                }
-            }
-        }
-    }
-    Err("输出中找不到 JSON 对象".to_string())
+    crate::llm_json::parse_object(raw)
 }
 
 fn opt_str(v: &serde_json::Value, key: &str) -> Option<String> {

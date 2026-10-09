@@ -196,6 +196,9 @@ role 取值：appears（指代对象在场有言行）/ mentioned（被谈起）
 
     let response = super::retry_generate(provider, &request)
         .map_err(|e| format!("锚定调用失败: {e}"))?;
+    // 截断的锚定 JSON 会整体解析失败；提前报错让调用方调参重试
+    crate::llm_json::ensure_not_truncated(response.stop_reason, 65536)
+        .map_err(|e| format!("锚定结果{e}"))?;
 
     let mut outcome = parse_anchor_response(&response.text, &roster)?;
     downgrade_numeric_anchors(&mut outcome, &roster);
@@ -230,43 +233,34 @@ fn downgrade_numeric_anchors(outcome: &mut AnchorOutcome, roster: &[RosterEntry]
     outcome.unresolved.extend(downgraded);
 }
 
-/// 宽松解析模型的锚定输出（复用 design_chapters 的容错思路）
+/// 宽松解析模型的锚定输出（统一走 llm_json 容错梯度）
+///
+/// 模型可能输出对象 `{"anchors": [...], "unresolved": [...]}`，也可能直接
+/// 输出数组。解析失败返回 Err 让调用方重试，不再静默返回空结果——
+/// 空结果会被上层当作"无指代可锚"跳过落锚，出场记录就此缺档。
 fn parse_anchor_response(text: &str, roster: &[RosterEntry]) -> Result<AnchorOutcome, String> {
-    use super::chapters::parse_json_array_lenient;
+    let value = crate::llm_json::parse_value(text).map_err(|e| {
+        format!("锚定结果解析失败（{e}）。请原样重试一次；反复失败建议换更稳定的模型")
+    })?;
 
-    let mut outcome = AnchorOutcome { anchored: Vec::new(), unresolved: Vec::new() };
-
-    // 模型可能输出对象 {"anchors": [...], "unresolved": [...]}，也可能直接输出数组
-    let trimmed = text.trim();
-    let anchors_json: Vec<serde_json::Value> = if let Ok(v) =
-        serde_json::from_str::<serde_json::Value>(trimmed)
-    {
-        if let Some(arr) = v.get("anchors").and_then(|a| a.as_array()) {
-            arr.clone()
-        } else if v.is_array() {
-            v.as_array().unwrap().clone()
-        } else {
-            return Ok(outcome);
-        }
-    } else {
-        // 剥围栏/截取后重试
-        let t = trimmed
-            .trim_start_matches("```")
-            .trim_start_matches("json")
-            .trim();
-        let t = t.strip_suffix("```").unwrap_or(t);
-        match serde_json::from_str::<serde_json::Value>(t.trim()) {
-            Ok(v) => match v.get("anchors").and_then(|a| a.as_array()) {
-                Some(arr) => arr.clone(),
-                None => return Ok(outcome),
-            },
-            Err(_) => {
-                // 数组形态兜底
-                let _ = parse_json_array_lenient(trimmed, "anchors");
-                return Ok(outcome);
-            }
+    let anchors_json: Vec<serde_json::Value> = match &value {
+        serde_json::Value::Array(arr) => arr.clone(),
+        serde_json::Value::Object(_) => value
+            .get("anchors")
+            .and_then(|a| a.as_array())
+            .cloned()
+            .ok_or_else(|| {
+                "锚定结果对象缺少 anchors 字段（应为 {\"anchors\":[...],\"unresolved\":[...]}）。请重试"
+                    .to_string()
+            })?,
+        _ => {
+            return Err(
+                "锚定结果顶层既不是对象也不是数组，格式不符预期。请重试".to_string()
+            )
         }
     };
+
+    let mut outcome = AnchorOutcome { anchored: Vec::new(), unresolved: Vec::new() };
 
     let valid_ids: std::collections::HashSet<&str> =
         roster.iter().map(|e| e.id.as_str()).collect();
@@ -285,14 +279,12 @@ fn parse_anchor_response(text: &str, roster: &[RosterEntry]) -> Result<AnchorOut
     }
 
     // unresolved（对象形态才有）
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(arr) = v.get("unresolved").and_then(|a| a.as_array()) {
-            for item in arr {
-                let quote = item.get("quote").and_then(|x| x.as_str()).unwrap_or("");
-                let hint = item.get("hint").and_then(|x| x.as_str()).unwrap_or("");
-                if !quote.is_empty() {
-                    outcome.unresolved.push((quote.to_string(), hint.to_string()));
-                }
+    if let Some(arr) = value.get("unresolved").and_then(|a| a.as_array()) {
+        for item in arr {
+            let quote = item.get("quote").and_then(|x| x.as_str()).unwrap_or("");
+            let hint = item.get("hint").and_then(|x| x.as_str()).unwrap_or("");
+            if !quote.is_empty() {
+                outcome.unresolved.push((quote.to_string(), hint.to_string()));
             }
         }
     }

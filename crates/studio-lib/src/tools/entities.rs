@@ -1029,8 +1029,12 @@ impl Tool for ProfileCheckTool {
         };
         let response = super::retry_generate(provider, &request)
             .map_err(|e| format!("一致性核对调用失败: {e}"))?;
+        // 思考型模型把配额耗在 reasoning 上时 JSON 必然残缺，
+        // 直接报错让调用方调参重试，优于把残缺文本喂进解析兜底
+        crate::llm_json::ensure_not_truncated(response.stop_reason, 16384)
+            .map_err(|e| format!("核对结果{e}"))?;
 
-        let report = parse_profile_check_response(&response.text);
+        let report = parse_profile_check_response(&response.text)?;
         Ok(format_profile_check(
             &entity_id,
             &entity.display_name,
@@ -1039,38 +1043,16 @@ impl Tool for ProfileCheckTool {
     }
 }
 
-/// 宽松解析 LLM 的核对输出（直解 → 剥围栏 → 首尾花括号）
-fn parse_profile_check_response(raw: &str) -> ProfileCheckLlm {
-    let cleaned = raw.trim();
-    let candidates = {
-        let mut v = vec![cleaned.to_string()];
-        let stripped = cleaned
-            .trim_start_matches("```")
-            .trim_start_matches("json")
-            .trim();
-        v.push(
-            stripped
-                .strip_suffix("```")
-                .unwrap_or(stripped)
-                .trim()
-                .to_string(),
-        );
-        if let (Some(s), Some(e)) = (cleaned.find('{'), cleaned.rfind('}')) {
-            if e > s {
-                v.push(cleaned[s..=e].to_string());
-            }
-        }
-        v
-    };
-    for c in candidates {
-        if let Ok(report) = serde_json::from_str::<ProfileCheckLlm>(&c) {
-            return report;
-        }
-    }
-    ProfileCheckLlm {
-        conflicts: vec![],
-        summary: format!("核对结果解析失败，原始内容：{cleaned}"),
-    }
+/// 宽松解析 LLM 的核对输出（统一走 llm_json 容错梯度）
+///
+/// 解析失败返回 Err 而非伪装成"未见明显出入"的空报告——
+/// 静默假阴性会让真正的档案出入漏网。
+fn parse_profile_check_response(raw: &str) -> Result<ProfileCheckLlm, String> {
+    let value = crate::llm_json::parse_object(raw).map_err(|e| {
+        format!("核对结果解析失败（{e}）。请原样重试一次；反复失败建议换更稳定的模型")
+    })?;
+    serde_json::from_value::<ProfileCheckLlm>(value)
+        .map_err(|e| format!("核对结果 JSON 结构不符预期（{e}）。请重试一次"))
 }
 
 fn format_profile_check(entity_id: &str, name: &str, report: &ProfileCheckLlm) -> String {
@@ -2018,7 +2000,7 @@ kind = "weapon"
     fn profile_check_response_parses_conflicts() {
         // 康明远式案例：档案「退休副局长」 vs 正文现职行为
         let raw = r#"{"conflicts":[{"field":"occupation","profile_value":"退休副局长、市警察协会顾问","text_value":"现职局长，到场下令专案重启","quote":"康明远宣布专案重启","fragment_id":"f_0001"}],"summary":"档案与正文职务描述存在出入。"}"#;
-        let report = parse_profile_check_response(raw);
+        let report = parse_profile_check_response(raw).unwrap();
         assert_eq!(report.conflicts.len(), 1);
         assert_eq!(report.conflicts[0].field, "occupation");
         assert_eq!(report.conflicts[0].fragment_id, "f_0001");
@@ -2031,19 +2013,21 @@ kind = "weapon"
     }
 
     #[test]
-    fn profile_check_response_parses_fenced_and_empty() {
+    fn profile_check_response_parses_fenced_and_rejects_garbage() {
         let fenced = "```json\n{\"conflicts\":[],\"summary\":\"未见明显出入。\"}\n```";
-        let report = parse_profile_check_response(fenced);
+        let report = parse_profile_check_response(fenced).unwrap();
         assert!(report.conflicts.is_empty());
         assert_eq!(report.summary, "未见明显出入。");
 
         let out = format_profile_check("c_0001", "某角色", &report);
         assert!(out.contains("未见明显出入"), "{out}");
 
-        // 完全无法解析 → 不 panic，summary 提示解析失败
-        let report = parse_profile_check_response("这不是 JSON");
-        assert!(report.conflicts.is_empty());
-        assert!(report.summary.contains("解析失败"));
+        // 完全无法解析 → Err（不伪装成"未见明显出入"，避免静默假阴性）
+        let err = parse_profile_check_response("这不是 JSON").unwrap_err();
+        assert!(err.contains("解析失败"), "{err}");
+        // 思考链污染也能剥掉后正常解析
+        let think = "<think>let me check the profile</think>\n{\"conflicts\":[],\"summary\":\"OK\"}";
+        assert!(parse_profile_check_response(think).is_ok());
     }
 
     #[test]

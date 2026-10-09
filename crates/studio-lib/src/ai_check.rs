@@ -538,52 +538,64 @@ fn read_fragment_body(paths: &ProjectPaths, fragment_id: &str) -> Result<String,
 
 /// 解析 LLM 返回的报告文本为 AiCheckItem 列表
 ///
-/// 健壮性策略：
-/// 1. 先尝试直接 JSON 解析
+/// 健壮性策略（容错函数统一来自 [`crate::llm_json`]）：
+/// 1. 剥思考链后直接 JSON 解析
 /// 2. 失败则尝试从 ```json ... ``` 围栏提取
-/// 3. 仍失败则把原始文本包成一个 parse_error item 返回（不直接报错）
+/// 3. 仍失败则截取首 `{` 到末 `}` 的子串
+/// 4. 修复字符串内部未转义引号后重试
+/// 5. 宽松提取——逐个对象抢救，只救出能解析的 item
+/// 6. 全部失败：降级为一个 parse_error item（原文只附截断摘录，不整段倾泻）
 fn parse_report(raw: &str) -> Vec<AiCheckItem> {
-    let cleaned = raw.trim();
+    let cleaned = crate::llm_json::strip_think(raw).trim().to_string();
 
     // 尝试 1：直接解析
-    if let Some(report) = try_parse_json(cleaned) {
+    if let Some(report) = try_parse_json(&cleaned) {
         return report_to_items(report);
     }
 
     // 尝试 2：提取 ```json ... ``` 围栏
-    if let Some(json_str) = extract_json_fence(cleaned) {
+    if let Some(json_str) = crate::llm_json::extract_json_fence(&cleaned) {
         if let Some(report) = try_parse_json(&json_str) {
             return report_to_items(report);
         }
     }
 
     // 尝试 3：寻找第一个 { 到最后一个 } 的子串
-    if let Some(json_str) = extract_json_object(cleaned) {
+    if let Some(json_str) = crate::llm_json::extract_json_object(&cleaned) {
         if let Some(report) = try_parse_json(&json_str) {
             return report_to_items(report);
         }
     }
 
     // 尝试 4：LLM 常在字符串值里嵌未转义双引号导致 JSON 破裂，
-    // 把字符串内部的 ASCII 双引号替换成中文引号后再试一次。
-    let repaired = repair_unescaped_quotes(cleaned);
-    if let Some(report) = try_parse_any(&repaired) {
+    // 把字符串内部的 ASCII 双引号转义后再试一次。
+    let repaired = crate::llm_json::repair_unescaped_quotes(&cleaned);
+    if let Some(report) = try_parse_json(&repaired)
+        .or_else(|| try_parse_json(
+            &crate::llm_json::extract_json_object(&repaired).unwrap_or_default(),
+        ))
+    {
         return report_to_items(report);
     }
 
     // 尝试 5：宽松提取——逐个对象抢救，只救出能解析的 item（丢 summary 无所谓）
-    let loose_items = loose_extract_items(cleaned);
+    let loose_items = loose_extract_items(&cleaned);
     if !loose_items.is_empty() {
         return loose_items;
     }
 
-    // 全部失败：降级为原始文本展示
+    // 全部失败：降级为摘录展示（截断，避免整段原文倾泻）
+    let excerpt: String = cleaned.chars().take(300).collect();
+    let ellipsis = if cleaned.chars().count() > 300 { "……" } else { "" };
     vec![AiCheckItem {
         quote: String::new(),
         feature_id: "parse_error".to_string(),
         feature_name: "报告解析失败".to_string(),
         severity: AiCheckSeverity::Weak,
-        explanation: format!("LLM 返回的内容无法解析为 JSON，原始内容：\n\n{raw}"),
+        explanation: format!(
+            "LLM 返回的内容无法解析为 JSON（已尝试剥思考链/剥围栏/修复引号），\
+             建议重试一次。原始内容开头：\n\n{excerpt}{ellipsis}"
+        ),
         fragment_id: None,
         fragment_uncertain: false,
     }]
@@ -593,120 +605,22 @@ fn try_parse_json(s: &str) -> Option<LlmReport> {
     serde_json::from_str::<LlmReport>(s).ok()
 }
 
-/// 从 ```json ... ``` 或 ``` ... ``` 围栏中提取内容
-fn extract_json_fence(s: &str) -> Option<String> {
-    let start_markers = ["```json", "```JSON", "```"];
-    for marker in &start_markers {
-        if let Some(start_idx) = s.find(marker) {
-            let after = &s[start_idx + marker.len()..];
-            if let Some(end_idx) = after.find("```") {
-                return Some(after[..end_idx].trim().to_string());
-            }
-        }
-    }
-    None
-}
-
-/// 从第一个 { 到最后一个 } 的子串
-fn extract_json_object(s: &str) -> Option<String> {
-    let start = s.find('{')?;
-    let end = s.rfind('}')?;
-    if end > start {
-        Some(s[start..=end].to_string())
-    } else {
-        None
-    }
-}
-
 /// 修复 JSON 字符串值里未转义的 ASCII 双引号。
 ///
 /// LLM 常在 summary/explanation 里写 `来"升华"情绪` 这种嵌套引号，破坏 JSON。
-/// 策略：状态机扫描，仅在「字符串值内部」把成对的 ASCII 双引号替换成中文引号「」。
-/// 键名的引号、结构性的引号保持不动。
-fn repair_unescaped_quotes(input: &str) -> String {
-    let chars: Vec<char> = input.chars().collect();
-    let mut out = String::with_capacity(input.len());
-    let mut in_string = false;
-    let mut escape = false;
-    let mut pending_open_quote = true; // 字符串内的下一个裸 " 视作开引号「
-    let mut i = 0;
-
-    while i < chars.len() {
-        let c = chars[i];
-
-        if !in_string {
-            out.push(c);
-            if c == '"' {
-                in_string = true;
-                pending_open_quote = true;
-            }
-            i += 1;
-            continue;
-        }
-
-        // in_string == true
-        if escape {
-            out.push(c);
-            escape = false;
-            i += 1;
-            continue;
-        }
-        match c {
-            '\\' => {
-                out.push(c);
-                escape = true;
-            }
-            '"' => {
-                // 判断这个 " 是字符串的结束引号，还是值内部未转义的引号。
-                // 启发式：看后面跳过空白后是不是 JSON 结构字符（, } ] :）或字段名模式。
-                if is_structural_close(&chars, i + 1) {
-                    // 真正的字符串结束
-                    out.push('"');
-                    in_string = false;
-                } else {
-                    // 值内部的裸引号 → 替换成中文引号
-                    out.push(if pending_open_quote { '「' } else { '」' });
-                    pending_open_quote = !pending_open_quote;
-                }
-            }
-            _ => out.push(c),
-        }
-        i += 1;
-    }
-    out
-}
-
-/// 判断 `from` 位置（跳过空白后）是否是 JSON 结构性字符，用于判定前一个 " 是不是字符串结束。
-fn is_structural_close(chars: &[char], from: usize) -> bool {
-    let mut j = from;
-    while j < chars.len()
-        && (chars[j] == ' ' || chars[j] == '\n' || chars[j] == '\r' || chars[j] == '\t')
-    {
-        j += 1;
-    }
-    match chars.get(j) {
-        // 值结束符：逗号、闭合括号
-        Some(',') | Some('}') | Some(']') => true,
-        // 键值分隔符："key" 后面跟冒号，说明这个 " 是键名结束
-        Some(':') => true,
-        // 新字段："key": value 前一个字符串结束
-        Some('"') => true,
-        _ => false,
-    }
-}
-
 /// 宽松提取：扫描所有花括号匹配的 {...} 子串（含嵌套），逐个尝试解析为单个 item。
 /// 能救一个是一个，丢掉 summary 也无所谓。非 item 结构（如整个 report 对象）会自然解析失败被跳过。
 fn loose_extract_items(input: &str) -> Vec<AiCheckItem> {
     let chars: Vec<char> = input.chars().collect();
     // 收集所有 {..} 匹配区间（按 { 出现的位置栈式匹配）
-    let candidates = collect_brace_spans(&chars);
+    let candidates = crate::llm_json::collect_brace_spans(&chars);
     let mut items = Vec::new();
     for (s, e) in candidates {
         let obj: String = chars[s..=e].iter().collect();
         // 先原样解析，失败则修复引号后重试
-        let parsed = serde_json::from_str::<LlmItem>(&obj)
-            .or_else(|_| serde_json::from_str::<LlmItem>(&repair_unescaped_quotes(&obj)));
+        let parsed = serde_json::from_str::<LlmItem>(&obj).or_else(|_| {
+            serde_json::from_str::<LlmItem>(&crate::llm_json::repair_unescaped_quotes(&obj))
+        });
         if let Ok(item) = parsed {
             items.push(AiCheckItem {
                 quote: item.quote,
@@ -720,39 +634,6 @@ fn loose_extract_items(input: &str) -> Vec<AiCheckItem> {
         }
     }
     items
-}
-
-/// 收集所有花括号匹配区间（包括嵌套的内层对象）。
-/// 返回 (start, end) 索引对列表，按闭合顺序排列。
-fn collect_brace_spans(chars: &[char]) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
-    let mut stack: Vec<usize> = Vec::new();
-    let mut in_string = false;
-    let mut escape = false;
-
-    for (i, &c) in chars.iter().enumerate() {
-        if in_string {
-            if escape {
-                escape = false;
-            } else if c == '\\' {
-                escape = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match c {
-            '"' => in_string = true,
-            '{' => stack.push(i),
-            '}' => {
-                if let Some(start) = stack.pop() {
-                    spans.push((start, i));
-                }
-            }
-            _ => {}
-        }
-    }
-    spans
 }
 
 fn report_to_items(report: LlmReport) -> Vec<AiCheckItem> {
@@ -781,12 +662,13 @@ fn parse_severity(s: &str) -> AiCheckSeverity {
 
 /// 从原始文本中提取 summary（解析失败时用）
 fn extract_summary(raw: &str) -> Option<String> {
-    let cleaned = raw.trim();
+    let stripped = crate::llm_json::strip_think(raw);
+    let cleaned = stripped.trim();
     // 先原样尝试（含围栏/对象提取），失败则修复未转义引号后再试
     if let Some(report) = try_parse_any(cleaned) {
         return Some(report.summary);
     }
-    let repaired = repair_unescaped_quotes(cleaned);
+    let repaired = crate::llm_json::repair_unescaped_quotes(cleaned);
     let report = try_parse_any(&repaired)?;
     Some(report.summary)
 }
@@ -794,8 +676,8 @@ fn extract_summary(raw: &str) -> Option<String> {
 /// 依次尝试：直接解析 → 围栏提取 → 对象提取
 fn try_parse_any(s: &str) -> Option<LlmReport> {
     try_parse_json(s)
-        .or_else(|| extract_json_fence(s).and_then(|j| try_parse_json(&j)))
-        .or_else(|| extract_json_object(s).and_then(|j| try_parse_json(&j)))
+        .or_else(|| crate::llm_json::extract_json_fence(s).and_then(|j| try_parse_json(&j)))
+        .or_else(|| crate::llm_json::extract_json_object(s).and_then(|j| try_parse_json(&j)))
 }
 
 fn default_summary(items: &[AiCheckItem]) -> String {
@@ -897,15 +779,18 @@ mod tests {
     #[test]
     fn test_repair_preserves_structure() {
         let input = r#"{"key":"value","nested":"a"b"c"}"#;
-        let repaired = repair_unescaped_quotes(input);
+        let repaired = crate::llm_json::repair_unescaped_quotes(input);
         // 结构性引号和键名引号应保持为 ASCII "
         assert!(
             repaired.contains(r#""key":"value""#),
             "键值对应完整保留: {repaired}"
         );
-        // 值内部的引号应被替换成中文引号
-        assert!(repaired.contains('「'), "内部引号应替换为「: {repaired}");
-        assert!(repaired.contains('」'), "内部引号应替换为」: {repaired}");
+        // 值内部的引号应被转义保留（不改动内容）
+        assert!(
+            repaired.contains(r#""nested":"a\"b\"c""#),
+            "内部引号应转义: {repaired}"
+        );
+        assert!(serde_json::from_str::<serde_json::Value>(&repaired).is_ok());
     }
 
     /// 完全无法解析的内容应降级为 parse_error

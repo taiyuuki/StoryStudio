@@ -625,91 +625,10 @@ fn parse_str_array(obj: &serde_json::Value, key: &str) -> Result<Vec<String>, St
 }
 
 /// 解析 JSON 字符串形式的字符串数组（宽松解析）
-/// 宽松解析模型输出的 JSON 数组字符串。
-///
-/// 依次尝试：原文 → 剥 ```json 围栏 → 截取首个 '[' 到最后一个 ']' →
-/// 在截取片段上修复字符串内部未转义的 ASCII 引号（模型常把中文引号
-/// 写成 "，导致严格解析失败）。
+/// 统一走 [`crate::llm_json`] 的容错梯度：剥思考链 → 原文 → 剥 ```json 围栏 →
+/// 截取首个 '[' 到最后一个 ']' → 修复字符串内部未转义的 ASCII 引号。
 pub(crate) fn parse_json_array_lenient(raw: &str, field: &str) -> Result<Vec<serde_json::Value>, String> {
-    let t = raw.trim();
-
-    if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(t) {
-        return Ok(v);
-    }
-
-    // 剥代码围栏（```json ... ``` 或 ``` ... ```）
-    if let Some(stripped) = t.strip_prefix("```") {
-        let body = stripped
-            .trim_start_matches("json")
-            .trim_start_matches("JSON")
-            .trim_start();
-        if let Some(body) = body.strip_suffix("```") {
-            if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(body.trim()) {
-                return Ok(v);
-            }
-        }
-    }
-
-    // 截取首个 '[' 到最后一个 ']'（容许前后缀说明文字）
-    if let (Some(s), Some(e)) = (t.find('['), t.rfind(']')) {
-        if e > s {
-            let slice = &t[s..=e];
-            if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(slice) {
-                return Ok(v);
-            }
-            let repaired = repair_stray_quotes(slice);
-            if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(&repaired) {
-                return Ok(v);
-            }
-        }
-    }
-
-    Err(format!(
-        "{field} 不是合法的 JSON 数组（已尝试剥围栏/截取数组/修复引号）。\
-        请确认输出为 JSON 数组，字符串内的引号用「」或转义"
-    ))
-}
-
-/// 修复 JSON 文本中字符串内部未转义的 ASCII 引号。
-///
-/// 一个引号视为"结构性"的，当且仅当：前一个非空白字符是 `[ { , :` 之一，
-/// 或后一个非空白字符是 `] } , :` 之一；其余视为字符串内容，转义为 `\"`。
-/// 已被反斜杠转义的引号保持原样。
-fn repair_stray_quotes(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 8);
-    for (i, &c) in chars.iter().enumerate() {
-        if c != '"' {
-            out.push(c);
-            continue;
-        }
-        // 已转义（前一个字符是奇数个连续反斜杠的末尾——简化：前一个字符是 \ 且再前一个不是 \）
-        let prev_char = if i > 0 { Some(chars[i - 1]) } else { None };
-        if prev_char == Some('\\') {
-            let prev_prev = if i > 1 { Some(chars[i - 2]) } else { None };
-            if prev_prev != Some('\\') {
-                out.push('"');
-                continue;
-            }
-        }
-        let prev_structural = chars[..i]
-            .iter()
-            .rev()
-            .find(|c| !c.is_whitespace())
-            .map(|c| matches!(c, '[' | '{' | ',' | ':'))
-            .unwrap_or(true);
-        let next_structural = chars[i + 1..]
-            .iter()
-            .find(|c| !c.is_whitespace())
-            .map(|c| matches!(c, ']' | '}' | ',' | ':'))
-            .unwrap_or(true);
-        if prev_structural || next_structural {
-            out.push('"');
-        } else {
-            out.push_str("\\\"");
-        }
-    }
-    out
+    crate::llm_json::parse_array(raw).map_err(|e| format!("{field}{e}"))
 }
 
 // ============================================================================
@@ -1036,6 +955,6 @@ mod tests {
         let err = design
             .execute(&serde_json::json!({"chapters": "{\"bad\": 1}"}))
             .unwrap_err();
-        assert!(err.contains("合法的 JSON 数组"));
+        assert!(err.contains("不是 JSON 数组"), "{err}");
     }
 }

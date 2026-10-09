@@ -17,6 +17,7 @@ pub mod error;
 pub mod export;
 pub mod fragment;
 pub mod git;
+pub mod llm_json;
 pub mod history;
 pub mod journal;
 pub mod stats;

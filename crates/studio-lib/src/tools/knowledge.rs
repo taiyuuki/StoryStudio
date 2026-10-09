@@ -1850,7 +1850,8 @@ impl Tool for RewriteFragmentTool {
             ));
         }
 
-        let new_text = response.text.trim().to_string();
+        // 剥思考链：部分端点把 reasoning 内联混入 content，防止英文推理写进正文
+        let new_text = crate::llm_json::strip_think(&response.text).trim().to_string();
         if new_text.is_empty() {
             return Err("LLM 返回空内容，改写失败".to_string());
         }

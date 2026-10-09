@@ -380,7 +380,8 @@ impl GetStoryRecapTool {
 
         match super::retry_generate(provider, &request) {
             Ok(resp) => {
-                let summary = resp.text.trim().to_string();
+                // 剥思考链：部分端点把 reasoning 内联混入 content，会污染摘要
+                let summary = crate::llm_json::strip_think(&resp.text).trim().to_string();
                 if summary.is_empty() {
                     Ok(Some(format_brief(&text, 120)))
                 } else {
