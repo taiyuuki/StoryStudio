@@ -19,7 +19,7 @@ use story_ai_runtime::{AiProvider, Tool, ToolDef};
 use story_exporter::collect_manuscript;
 use story_ir::StableId;
 use story_project_format::knowledge_file::AssertionDef;
-use story_project_format::{AssertionsFile, ChaptersFile, RelationDef, RelationsFile};
+use story_project_format::{AssertionsFile, ChaptersFile, ProjectPaths, RelationDef, RelationsFile};
 
 use super::{format_brief, get_str, get_str_opt, object_schema, ToolContext};
 
@@ -66,7 +66,7 @@ impl Tool for GetStoryRecapTool {
         ToolDef {
             name: "get_story_recap".into(),
             description: "回顾已有正文：按章节→场景顺序输出故事进展。\
-            优先使用场景已保存的 summary；缺失时若 provider 可用则现场生成摘要。\
+            优先使用场景已保存的 summary；缺失时若 provider 可用则现场生成摘要并自动落盘（下次回顾直接复用）。\
             用于动笔新章节前快速了解前情，避免逐个读 fragment 浪费 token。"
                 .into(),
             parameters: object_schema(vec![
@@ -197,6 +197,11 @@ impl Tool for GetStoryRecapTool {
         out.push('\n');
 
         let provider = self.ctx.provider.as_ref();
+        let paths = self.ctx.paths();
+        // LLM 真摘要自动落盘（下次回顾复用，不再重复生成）；
+        // 降级的正文截断不落盘——写进 summary 字段会污染元数据
+        let mut persisted_count = 0usize;
+        let mut truncated_count = 0usize;
 
         for ch_id in &chapter_ids {
             let chapter = match ir.document.get_chapter(ch_id) {
@@ -278,7 +283,18 @@ impl Tool for GetStoryRecapTool {
                 } else {
                     // 缺失 → 现场生成或降级
                     let fragments = ir.document.fragments_of_scene(sc_id);
-                    self.summarize_scene(provider, fragments, &ir.document, suppress_generation)?
+                    match self.summarize_scene(provider, fragments, &ir.document, suppress_generation)? {
+                        Some(gen) => {
+                            if gen.from_llm && persist_scene_summary(&paths, sc_id.as_str(), &gen.text) {
+                                persisted_count += 1;
+                            }
+                            if !gen.from_llm {
+                                truncated_count += 1;
+                            }
+                            Some(gen.text)
+                        }
+                        None => None,
+                    }
                 };
 
                 if let Some(s) = summary {
@@ -318,10 +334,14 @@ impl Tool for GetStoryRecapTool {
             out.push('\n');
         }
 
-        // 若现场生成了摘要，提示 AI 可以选择落盘
-        if will_generate && !suppress_generation {
+        // 现场生成的摘要已自动落盘；降级截断的未落盘（等有 provider 后再回顾一次即可补齐）
+        if persisted_count > 0 {
+            out.push_str(&format!(
+                "提示: 已为 {persisted_count} 个缺失摘要的场景现场生成摘要并自动落盘，下次回顾直接复用。\n"
+            ));
+        } else if truncated_count > 0 {
             out.push_str(
-                "提示: 部分场景摘要是现场生成的（未保存）。可用 update_scene(scene_id, summary=...) 落盘以便下次复用。\n",
+                "提示: 部分场景无摘要且未能生成（无 provider 或数量超限），本次以正文截断代替（未落盘）。\n",
             );
         }
 
@@ -329,18 +349,45 @@ impl Tool for GetStoryRecapTool {
     }
 }
 
+/// 现场生成的场景摘要。`from_llm` 区分 LLM 真摘要（值得落盘复用）与
+/// 降级用的正文截断（落盘会污染 summary 字段，仅本次展示）。
+struct GeneratedSummary {
+    text: String,
+    from_llm: bool,
+}
+
+/// 把现场生成的摘要落盘到 structure.toml（best-effort：失败仅记日志，
+/// 不影响回顾输出——落盘是省重复生成的优化项，不属于主流程）。
+fn persist_scene_summary(paths: &ProjectPaths, scene_id: &str, summary: &str) -> bool {
+    let update = crate::mutations::SceneUpdate {
+        title: None,
+        pov: None,
+        mood: None,
+        function: None,
+        summary: Some(Some(summary)),
+        story_time: None,
+    };
+    match crate::mutations::update_scene(paths, scene_id, &update) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("[get_story_recap] 摘要落盘失败（scene {scene_id}）: {e}");
+            false
+        }
+    }
+}
+
 impl GetStoryRecapTool {
     /// 对一个场景的 fragment 集合生成摘要。
-    /// - `suppress=true`：不调 LLM，直接取正文截断
-    /// - provider=None：取正文截断
-    /// - 否则：调 LLM 生成
+    /// - `suppress=true`：不调 LLM，直接取正文截断（from_llm=false）
+    /// - provider=None：取正文截断（from_llm=false）
+    /// - 否则：调 LLM 生成（from_llm=true；LLM 失败/空返回时降级截断，from_llm=false）
     fn summarize_scene(
         &self,
         provider: Option<&Arc<dyn AiProvider>>,
         fragment_ids: &[StableId],
         document: &story_ir::DocumentGraph,
         suppress: bool,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<GeneratedSummary>, String> {
         // 拼接正文
         let mut text = String::new();
         for fid in fragment_ids {
@@ -359,7 +406,7 @@ impl GetStoryRecapTool {
         // 无 provider 或被抑制 → 正文截断
         let provider = match provider {
             Some(p) if !suppress => p,
-            _ => return Ok(Some(format_brief(&text, 120))),
+            _ => return Ok(Some(GeneratedSummary { text: format_brief(&text, 120), from_llm: false })),
         };
 
         // 调 LLM 生成摘要
@@ -383,15 +430,15 @@ impl GetStoryRecapTool {
                 // 剥思考链：部分端点把 reasoning 内联混入 content，会污染摘要
                 let summary = crate::llm_json::strip_think(&resp.text).trim().to_string();
                 if summary.is_empty() {
-                    Ok(Some(format_brief(&text, 120)))
+                    Ok(Some(GeneratedSummary { text: format_brief(&text, 120), from_llm: false }))
                 } else {
-                    Ok(Some(summary))
+                    Ok(Some(GeneratedSummary { text: summary, from_llm: true }))
                 }
             }
             Err(e) => {
                 // LLM 失败不致命，降级为正文截断
                 eprintln!("[get_story_recap] 摘要生成失败，降级为正文截断: {e}");
-                Ok(Some(format_brief(&text, 120)))
+                Ok(Some(GeneratedSummary { text: format_brief(&text, 120), from_llm: false }))
             }
         }
     }
@@ -1917,7 +1964,14 @@ fragments = ["f_0001"]
         let result = tool.execute(&serde_json::json!({})).unwrap();
 
         assert!(result.contains("LLM生成的场景摘要"));
-        assert!(result.contains("现场生成")); // 提示信息
+        assert!(result.contains("自动落盘"), "应提示摘要已自动落盘: {result}");
+
+        // 摘要应已持久化到 structure.toml（下次回顾直接复用）
+        let structure = std::fs::read_to_string(tmp.path().join("structure.toml")).unwrap();
+        assert!(
+            structure.contains("LLM生成的场景摘要"),
+            "LLM 摘要应落盘到 structure.toml: {structure}"
+        );
     }
 
     #[test]
@@ -1931,6 +1985,14 @@ fragments = ["f_0001"]
         let result = tool.execute(&serde_json::json!({})).unwrap();
         assert!(result.contains("林风走进山谷"));
         assert!(result.contains("无 provider")); // 降级提示
+        assert!(result.contains("未落盘"), "截断不应落盘: {result}");
+
+        // 降级截断不落盘：structure.toml 不应出现截断文本
+        let structure = std::fs::read_to_string(tmp.path().join("structure.toml")).unwrap();
+        assert!(
+            !structure.contains("林风走进山谷"),
+            "正文截断不应写进 summary: {structure}"
+        );
     }
 
     // —— get_character_state ——

@@ -581,8 +581,8 @@ impl Tool for SaveSceneSummariesTool {
         ToolDef {
             name: "save_scene_summaries".into(),
             description: "批量保存场景摘要到 structure.toml（一次调用替代多次 update_scene）。\
-            适用于 get_story_recap 之后把生成的摘要统一落盘，避免下次回顾重复生成。"
-                .into(),
+            适用于阅读正文后自行总结摘要统一落盘；get_story_recap 现场生成的摘要已自动落盘，\
+            无需再用本工具补录。"                .into(),
             parameters: object_schema(vec![(
                 "summaries",
                 "object-array",
