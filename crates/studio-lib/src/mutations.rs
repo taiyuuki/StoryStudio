@@ -1131,6 +1131,29 @@ pub fn merge_entities(
 /// chapter_id，避免脉络与结构两套 ID 脱钩。
 /// 返回新章节 ID。
 pub fn create_chapter(paths: &ProjectPaths, title: &str) -> Result<String, StudioError> {
+    create_chapter_linked(paths, title).map(|(id, _)| id)
+}
+
+/// create_chapter 与脉络表联动的结果（回执提示用）
+#[derive(Debug)]
+pub enum OutlineLinkOutcome {
+    /// 脉络表为空或无待回填虚拟章：无需联动
+    NoCandidate,
+    /// 命中同名虚拟章并已回填 chapter_id
+    Linked(String),
+    /// 未命中同名，但存在标题相近的待回填虚拟章（疑似同一章、写法有出入）
+    NearMiss(String),
+}
+
+/// 创建章节并联动章节脉络，返回 (新章节 ID, 脉络联动结果)。
+///
+/// 脉络联动：chapters.toml 存在标题归一化相同的待回填虚拟章时自动
+/// 回填 chapter_id；标题只是相近（包含关系或长公共前缀）时不自动回填，
+/// 以 NearMiss 暴露给调用方提示人工确认。
+pub fn create_chapter_linked(
+    paths: &ProjectPaths,
+    title: &str,
+) -> Result<(String, OutlineLinkOutcome), StudioError> {
     let structure_path = paths.structure_toml();
     let mut structure = load_structure(paths)?;
 
@@ -1156,9 +1179,9 @@ pub fn create_chapter(paths: &ProjectPaths, title: &str) -> Result<String, Studi
     structure.save(&structure_path)?;
 
     // 按标题自动关联章节脉络（同名且未回填 chapter_id 的待写章）
-    link_chapter_outline_by_title(paths, &new_id, title);
+    let outcome = link_chapter_outline_by_title(paths, &new_id, title);
 
-    Ok(new_id)
+    Ok((new_id, outcome))
 }
 
 /// 标题归一化：去空白、去全半角标点、去"第X章"前缀，用于模糊匹配。
@@ -1189,23 +1212,54 @@ fn normalize_chapter_title(title: &str) -> String {
 }
 
 /// 在 chapters.toml 中找标题匹配且未回填 chapter_id 的脉络，回填之。
-fn link_chapter_outline_by_title(paths: &ProjectPaths, chapter_id: &str, title: &str) {
+///
+/// 未命中同名时不静默了事：存在标题相近的待回填虚拟章时返回 NearMiss，
+/// 让调用方在回执里提示——否则脉络条目会永久停留虚拟态且无人知晓。
+fn link_chapter_outline_by_title(
+    paths: &ProjectPaths,
+    chapter_id: &str,
+    title: &str,
+) -> OutlineLinkOutcome {
     let Ok(mut file) = load_chapters_file(paths) else {
-        return;
+        return OutlineLinkOutcome::NoCandidate;
     };
     if file.chapters.is_empty() {
-        return;
+        return OutlineLinkOutcome::NoCandidate;
     }
     let normalized = normalize_chapter_title(title);
     if normalized.is_empty() {
-        return;
+        return OutlineLinkOutcome::NoCandidate;
     }
     let matched = file.chapters.iter().position(|c| {
         c.chapter_id.is_none() && normalize_chapter_title(&c.title) == normalized
     });
     if let Some(index) = matched {
         file.chapters[index].chapter_id = Some(chapter_id.to_string());
+        let linked_title = file.chapters[index].title.clone();
         let _ = save_chapters_file(paths, &file);
+        return OutlineLinkOutcome::Linked(linked_title);
+    }
+
+    // 近似候选：包含关系（任一方向）或公共前缀 ≥4 字，两串都 ≥2 字才有意义
+    let near = file.chapters.iter().find(|c| {
+        if c.chapter_id.is_some() {
+            return false;
+        }
+        let cand = normalize_chapter_title(&c.title);
+        cand.chars().count() >= 2
+            && normalized.chars().count() >= 2
+            && (cand.contains(&normalized)
+                || normalized.contains(&cand)
+                || cand
+                    .chars()
+                    .zip(normalized.chars())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+                    >= 4)
+    });
+    match near {
+        Some(c) => OutlineLinkOutcome::NearMiss(c.title.clone()),
+        None => OutlineLinkOutcome::NoCandidate,
     }
 }
 
@@ -1232,7 +1286,10 @@ pub fn rename_chapter(
 ///
 /// 从 book.chapters 移除 + 删除 chapter 条目。
 /// 级联删除其下所有 scene 及 scene 下的 fragment 文件。
-pub fn delete_chapter(paths: &ProjectPaths, chapter_id: &str) -> Result<(), StudioError> {
+///
+/// 脉络联动：chapters.toml 中指向该章的 chapter_id 被清除（设计记录
+/// 保留、退回虚拟章），避免悬空引用。返回被解除关联的脉络标题。
+pub fn delete_chapter(paths: &ProjectPaths, chapter_id: &str) -> Result<Option<String>, StudioError> {
     let structure_path = paths.structure_toml();
     let mut structure = load_structure(paths)?;
 
@@ -1249,7 +1306,24 @@ pub fn delete_chapter(paths: &ProjectPaths, chapter_id: &str) -> Result<(), Stud
     }
 
     structure.save(&structure_path)?;
-    Ok(())
+
+    let unlinked = unlink_chapter_outline(paths, chapter_id);
+    Ok(unlinked)
+}
+
+/// 删除物理章节后，把脉络表里指向它的 chapter_id 清除（退回虚拟章）。
+///
+/// 返回被解除关联的脉络标题；无关联或读写失败（best-effort）返回 None。
+fn unlink_chapter_outline(paths: &ProjectPaths, chapter_id: &str) -> Option<String> {
+    let mut file = load_chapters_file(paths).ok()?;
+    let entry = file
+        .chapters
+        .iter_mut()
+        .find(|c| c.chapter_id.as_deref() == Some(chapter_id))?;
+    entry.chapter_id = None;
+    let title = entry.title.clone();
+    save_chapters_file(paths, &file).ok()?;
+    Some(title)
 }
 
 /// 创建场景
@@ -2710,6 +2784,8 @@ pub struct RepairReport {
     pub assertions_fixed: usize,
     /// 证据指向的片段文件不存在、跳过的引用数
     pub evidence_skipped: usize,
+    /// 清除悬空 chapter_id（指向已不存在的物理章节）的脉络条目（标题）
+    pub outline_links_cleared: Vec<String>,
 }
 
 /// 一次性数据修复（历史脏数据兜底）：
@@ -2718,6 +2794,8 @@ pub struct RepairReport {
 ///    双层 frontmatter，第二层会被解析器当作正文显示）
 /// 2. 断言 evidence 字段直接存片段 ID（f_XXXX）→ 重建为 evidence.toml
 ///    登记条目（ev_XXXX），消除编译器"证据不存在"误报
+/// 3. 章节脉络 chapter_id 指向已不存在的物理章节（删除章节时脉络未
+///    同步）→ 清除引用、条目退回虚拟章，消除双轨间的悬空指向
 pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
     let paths = ProjectPaths::new(dir);
     let mut report = RepairReport::default();
@@ -2809,6 +2887,27 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
         if !fixed_ids.is_empty() {
             file.save(&assertions_path)?;
             report.assertions_fixed = fixed_ids.len();
+        }
+    }
+
+    // —— 3. 脉络 chapter_id 悬空引用：清除（条目退回虚拟章） ——
+    if paths.chapters_toml().exists() {
+        // structure.toml 缺失/解析失败视为无物理章节：所有指向都算悬空
+        let physical: std::collections::HashSet<String> = load_structure(&paths)
+            .map(|s| s.chapter.keys().cloned().collect())
+            .unwrap_or_default();
+        let mut file = load_chapters_file(&paths)?;
+        for entry in &mut file.chapters {
+            let Some(id) = &entry.chapter_id else {
+                continue;
+            };
+            if !physical.contains(id) {
+                entry.chapter_id = None;
+                report.outline_links_cleared.push(entry.title.clone());
+            }
+        }
+        if !report.outline_links_cleared.is_empty() {
+            save_chapters_file(&paths, &file)?;
         }
     }
 
@@ -5182,6 +5281,90 @@ mod tests {
 
         let file = load_chapters_file(&paths).unwrap();
         assert_eq!(file.chapters[0].chapter_id.as_deref(), Some(ch_id.as_str()));
+    }
+
+    #[test]
+    fn create_chapter_near_miss_title_reported() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // 脉络标题与新建章标题是包含关系（非精确同名）：不应自动回填
+        let mut outline = ChaptersFile::default();
+        outline.chapters.push(ChapterOutlineDef {
+            title: "第三章 上山寻药".into(),
+            ..Default::default()
+        });
+        save_chapters_file(&paths, &outline).unwrap();
+
+        let (ch_id, outcome) = create_chapter_linked(&paths, "上山").unwrap();
+        match outcome {
+            OutlineLinkOutcome::NearMiss(title) => assert_eq!(title, "第三章 上山寻药"),
+            other => panic!("应为 NearMiss，实际 {other:?}"),
+        }
+        let file = load_chapters_file(&paths).unwrap();
+        assert!(
+            file.chapters[0].chapter_id.is_none(),
+            "近似标题不应自动回填"
+        );
+        assert_ne!(file.chapters[0].chapter_id.as_deref(), Some(ch_id.as_str()));
+    }
+
+    #[test]
+    fn delete_chapter_unlinks_outline_entry() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let mut outline = ChaptersFile::default();
+        outline.chapters.push(ChapterOutlineDef {
+            title: "上山".into(),
+            ..Default::default()
+        });
+        save_chapters_file(&paths, &outline).unwrap();
+
+        let ch_id = create_chapter(&paths, "上山").unwrap();
+        assert_eq!(
+            load_chapters_file(&paths).unwrap().chapters[0].chapter_id,
+            Some(ch_id.clone())
+        );
+
+        // 删除物理章节：脉络条目保留但退回虚拟态，返回被解除的标题
+        let unlinked = delete_chapter(&paths, &ch_id).unwrap();
+        assert_eq!(unlinked.as_deref(), Some("上山"));
+        let file = load_chapters_file(&paths).unwrap();
+        assert_eq!(file.chapters.len(), 1, "设计记录应保留");
+        assert!(file.chapters[0].chapter_id.is_none(), "chapter_id 应被清除");
+    }
+
+    #[test]
+    fn repair_project_clears_dangling_chapter_id() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // 一条有效关联（ch_01 真实存在）+ 一条悬空关联（ch_09 不存在）
+        let real = create_chapter(&paths, "实章").unwrap();
+        let mut outline = ChaptersFile::default();
+        outline.chapters.push(ChapterOutlineDef {
+            chapter_id: Some(real.clone()),
+            title: "有效脉络".into(),
+            ..Default::default()
+        });
+        outline.chapters.push(ChapterOutlineDef {
+            chapter_id: Some("ch_09".into()),
+            title: "悬空脉络".into(),
+            ..Default::default()
+        });
+        save_chapters_file(&paths, &outline).unwrap();
+
+        let report = repair_project(tmp.path()).unwrap();
+        assert_eq!(report.outline_links_cleared, vec!["悬空脉络".to_string()]);
+
+        let file = load_chapters_file(&paths).unwrap();
+        assert_eq!(
+            file.chapters[0].chapter_id.as_deref(),
+            Some(real.as_str()),
+            "有效关联不应被误清"
+        );
+        assert!(file.chapters[1].chapter_id.is_none());
     }
 
     // —— insert_fragment_after / move_fragment / merge_fragments ——

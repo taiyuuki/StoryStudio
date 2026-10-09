@@ -73,7 +73,9 @@ pub fn rename_chapter(root: String, chapter_id: String, title: String) -> R<()> 
 
 #[tauri::command]
 pub fn delete_chapter(root: String, chapter_id: String) -> R<()> {
-    mutations::delete_chapter(&paths(&root), &chapter_id).map_err(e)
+    mutations::delete_chapter(&paths(&root), &chapter_id)
+        .map(|_| ())
+        .map_err(e)
 }
 
 #[tauri::command]

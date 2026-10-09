@@ -252,7 +252,10 @@ impl Tool for CreateChapterTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "create_chapter".into(),
-            description: "创建新章节，自动生成章节 ID（ch_XX）并更新 structure.toml。".into(),
+            description: "创建新章节，自动生成章节 ID（ch_XX）并更新 structure.toml。\
+            若章节脉络（chapters.toml）存在标题相同的待写虚拟章，会自动回填 chapter_id 关联；\
+            标题只是相近时不自动关联，回执会提示手动确认。"
+                .into(),
             parameters: object_schema(vec![(
                 "title",
                 "string",
@@ -265,8 +268,24 @@ impl Tool for CreateChapterTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let title = get_str(arguments, "title")?;
         let paths = self.ctx.paths();
-        let new_id = crate::mutations::create_chapter(&paths, &title).map_err(|e| e.to_string())?;
-        Ok(format!("章节已创建: id={new_id}, title={title}"))
+        let (new_id, link) =
+            crate::mutations::create_chapter_linked(&paths, &title).map_err(|e| e.to_string())?;
+        let mut msg = format!("章节已创建: id={new_id}, title={title}");
+        match link {
+            crate::mutations::OutlineLinkOutcome::Linked(outline_title) => {
+                msg.push_str(&format!(
+                    "\n✅ 已自动关联脉络「{outline_title}」并回填 chapter_id"
+                ));
+            }
+            crate::mutations::OutlineLinkOutcome::NearMiss(outline_title) => {
+                msg.push_str(&format!(
+                    "\n⚠️ 脉络「{outline_title}」标题与本章相近但未精确同名，未自动关联；\
+                    若是同一章，请用 update_chapter_outline 手动回填 chapter_id={new_id}"
+                ));
+            }
+            crate::mutations::OutlineLinkOutcome::NoCandidate => {}
+        }
+        Ok(msg)
     }
 }
 
@@ -348,8 +367,15 @@ impl Tool for DeleteChapterTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let chapter_id = get_str(arguments, "chapter_id")?;
         let paths = self.ctx.paths();
-        crate::mutations::delete_chapter(&paths, &chapter_id).map_err(|e| e.to_string())?;
-        Ok(format!("章节 {chapter_id} 及其下所有场景、片段已删除"))
+        let unlinked =
+            crate::mutations::delete_chapter(&paths, &chapter_id).map_err(|e| e.to_string())?;
+        let mut msg = format!("章节 {chapter_id} 及其下所有场景、片段已删除");
+        if let Some(outline_title) = unlinked {
+            msg.push_str(&format!(
+                "；已解除脉络「{outline_title}」的关联（设计记录保留，退回虚拟章）"
+            ));
+        }
+        Ok(msg)
     }
 }
 
@@ -654,7 +680,8 @@ impl Tool for RepairProjectTool {
             description: "一次性修复历史数据的一致性问题：\
             1) 清除片段正文里残留的 YAML 块（曾因写入缺陷叠成双层 frontmatter，\
             会在读取正文时显示 --- anchors --- 字样）；\
-            2) 把断言证据字段里的片段 ID 重建为证据登记条目（消除\"证据不存在\"告警）。\
+            2) 把断言证据字段里的片段 ID 重建为证据登记条目（消除\"证据不存在\"告警）；\
+            3) 清除章节脉络里指向已不存在物理章节的 chapter_id（条目退回虚拟章）。\
             项目迁移或编译出现大量数据类告警时使用；幂等，可重复执行。"
                 .into(),
             parameters: object_schema(vec![]),
@@ -668,6 +695,7 @@ impl Tool for RepairProjectTool {
         if report.fragments_cleaned.is_empty()
             && report.assertions_fixed == 0
             && report.evidence_skipped == 0
+            && report.outline_links_cleared.is_empty()
         {
             return Ok("检查完成：数据一致，无需修复。".to_string());
         }
@@ -690,6 +718,13 @@ impl Tool for RepairProjectTool {
             out.push_str(&format!(
                 "  {} 条证据指向不存在的片段，已保留待人工处理\n",
                 report.evidence_skipped
+            ));
+        }
+        if !report.outline_links_cleared.is_empty() {
+            out.push_str(&format!(
+                "  清除悬空 chapter_id 的脉络 {} 条（退回虚拟章）: {}\n",
+                report.outline_links_cleared.len(),
+                report.outline_links_cleared.join("、")
             ));
         }
         Ok(out)

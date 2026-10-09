@@ -570,6 +570,13 @@ impl Tool for DeleteChapterOutlineTool {
             removed.title,
             file.chapters.len()
         );
+        // 双轨提示：被删脉络若已关联物理章节，设计记录没了但实现仍在
+        if let Some(ch_id) = &removed.chapter_id {
+            msg.push_str(&format!(
+                "；⚠️ 该脉络原关联物理章节 {ch_id}（structure.toml 与正文保留不动，\
+                如需一并删除请用 delete_chapter）"
+            ));
+        }
         if !ensure_note.is_empty() {
             msg.push_str(&format!("；{ensure_note}"));
         }
