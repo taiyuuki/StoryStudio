@@ -1291,6 +1291,10 @@ impl Tool for WriteFragmentTextTool {
         if let Some(hint) = crate::mutations::chapter_completion_hint(&paths, &scene_id) {
             msg.push_str(&hint);
         }
+        // 场景已有正文但缺 summary/story_time：提示顺手补齐（best-effort）
+        if let Some(note) = crate::mutations::scene_metadata_gap_note(&paths, &scene_id) {
+            msg.push_str(&note);
+        }
         Ok(msg)
     }
 }
@@ -1990,6 +1994,10 @@ impl Tool for AppendFragmentTextTool {
         // 本章所有场景都有正文时提示收尾（best-effort，不影响追加）
         if let Some(hint) = crate::mutations::chapter_completion_hint(&paths, &fragment_id) {
             msg.push_str(&hint);
+        }
+        // 场景已有正文但缺 summary/story_time：提示顺手补齐（best-effort）
+        if let Some(note) = crate::mutations::scene_metadata_gap_note(&paths, &fragment_id) {
+            msg.push_str(&note);
         }
         Ok(msg)
     }
@@ -2817,8 +2825,25 @@ fragments = []
     }
 
     #[test]
-    fn add_relation_symmetric_creates_paired_edges() {
+    fn write_receipt_hints_missing_scene_metadata() {
+        // 场景无 summary/story_time：写入正文后回执应提示补齐
         let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let tool = WriteFragmentTextTool::new(ctx);
+        let res = tool
+            .execute(&serde_json::json!({
+                "scene_id": "sc_01_01",
+                "text": "这是一段用于测试的正文内容，足够长以通过最小字数校验。"
+            }))
+            .unwrap();
+        assert!(res.contains("缺少"), "应提示元数据缺失: {res}");
+        assert!(res.contains("update_scene"), "应引导补齐动作: {res}");
+    }
+
+    #[test]
+    fn add_relation_symmetric_creates_paired_edges() {        let tmp = setup_test_project();
         write_structure_with_scene(tmp.path());
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 

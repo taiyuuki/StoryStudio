@@ -250,6 +250,38 @@ pub fn chapter_completion_hint(
     ))
 }
 
+/// 场景元数据缺失提示（写正文回执用）：场景已有正文但 summary 或
+/// story_time 缺失时返回提示行。这两项直接喂 get_story_recap 的摘要质量
+/// 与时间线注记，高速写作时最容易长期空白——提示落在写入时机，把
+/// 补齐动作推进到 Agent 的当前上下文里。best-effort，不影响写入。
+pub fn scene_metadata_gap_note(paths: &ProjectPaths, scene_or_fragment_id: &str) -> Option<String> {
+    let scene_id = if scene_or_fragment_id.starts_with("f_") {
+        scene_of_fragment_id(paths, scene_or_fragment_id)?
+    } else {
+        scene_or_fragment_id.to_string()
+    };
+    let structure = load_structure(paths).ok()?;
+    let scene = structure.scene.get(&scene_id)?;
+    if scene.fragments.is_empty() {
+        return None; // 尚无正文，元数据缺失是常态（还没到补的时机）
+    }
+    let mut missing = Vec::new();
+    if scene.summary.as_deref().is_none_or(|s| s.trim().is_empty()) {
+        missing.push("summary（摘要）");
+    }
+    if scene.story_time.is_none() {
+        missing.push("story_time（故事时间）");
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n💡 场景 {scene_id} 已有正文但缺少{}，建议顺手用 update_scene 补齐\
+         （影响 get_story_recap 的回顾质量与时间线注记）",
+        missing.join("、")
+    ))
+}
+
 /// 首次写入正文时自动推进脉络状态 planned → writing（幂等，单向）。
 ///
 /// completed 保持人工/质检门槛不自动推进——完成态喂给编译诊断的封卷
@@ -1453,6 +1485,7 @@ pub fn update_chapter(
 }
 
 /// 场景可更新字段的集合（patch 式更新，None = 不修改该字段）
+#[derive(Default)]
 pub struct SceneUpdate<'a> {
     pub title: Option<&'a str>,
     pub pov: Option<Option<&'a str>>,
@@ -3929,7 +3962,6 @@ mod tests {
     }
 
     // —— 时变关系（场景锚生效区间）与对称声明 ——
-
     #[test]
     fn add_relation_full_with_window_and_symmetric() {
         let tmp = setup_test_project();
@@ -5629,6 +5661,51 @@ mod tests {
             "有效关联不应被误清"
         );
         assert!(file.chapters[1].chapter_id.is_none());
+    }
+
+    #[test]
+    fn scene_metadata_gap_note_reports_missing_fields() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+
+        // 无正文：不提示（还没到补元数据的时机）
+        assert!(scene_metadata_gap_note(&paths, &sc).is_none());
+
+        create_fragment(&paths, &sc, "正文内容。").unwrap();
+        let note = scene_metadata_gap_note(&paths, &sc).expect("缺 summary+story_time 应提示");
+        assert!(note.contains("summary"), "{note}");
+        assert!(note.contains("story_time"), "{note}");
+
+        // 补齐 summary 后只剩 story_time 缺失
+        update_scene(
+            &paths,
+            &sc,
+            &SceneUpdate {
+                summary: Some(Some("摘要")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let note = scene_metadata_gap_note(&paths, &sc).expect("仍缺 story_time 应提示");
+        assert!(note.contains("story_time"), "{note}");
+        assert!(!note.contains("summary"), "{note}");
+
+        // 全部补齐 → 无提示
+        update_scene(
+            &paths,
+            &sc,
+            &SceneUpdate {
+                story_time: Some(Some(story_project_format::structure_toml::StoryTimeDef {
+                    year: Some(1086),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(scene_metadata_gap_note(&paths, &sc).is_none());
     }
 
     // —— insert_fragment_after / move_fragment / merge_fragments ——
