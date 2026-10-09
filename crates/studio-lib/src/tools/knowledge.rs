@@ -684,7 +684,27 @@ impl Tool for CreateThreadTool {
         )
         .map_err(|e| e.to_string())?;
 
-        Ok(format!("线索已创建: id={new_id}"))
+        let mut msg = format!("线索已创建: id={new_id}");
+        // planted_at 指向尚不存在的场景：不阻断（先设计后落笔是正当流程），
+        // 但明说悬空，防笔误沉到编译期才暴露
+        if let Some(anchor) = &planted {
+            let structure = crate::mutations::load_structure(&paths).ok();
+            let exists = structure.as_ref().is_some_and(|st| {
+                anchor.starts_with("f_")
+                    && st
+                        .scene
+                        .values()
+                        .any(|sc| sc.fragments.iter().any(|f| f == anchor))
+                    || st.scene.contains_key(anchor)
+            });
+            if !exists {
+                msg.push_str(&format!(
+                    "\n⚠️ 埋设锚点 {anchor} 尚不存在于 structure.toml（若属\"先设计后落笔\"可忽略，\
+                     落笔后无需处理；若为笔误请 update_thread 修正）"
+                ));
+            }
+        }
+        Ok(msg)
     }
 }
 

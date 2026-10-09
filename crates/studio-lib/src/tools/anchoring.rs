@@ -357,7 +357,10 @@ pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) 
         note.push_str(
             "\n处置方式：resolve_unresolved_ref 建档（匿名指代可用占位名如「九一真凶」）、\
              归拢到已有实体或忽略；已处置的后续不再提示。\
-             多条指代若指向同一实体，可在一次调用中用 refs 批量处置。",
+             多条指代若指向同一实体，可在一次调用中用 refs 批量处置。\n\
+             💡 若是已稳定出场、真名未揭的代称角色（如「刻印匠」），更优路径是\
+             create_character 传 placeholder 建档（正文继续用代称），\
+             真名揭露当章调 reveal_character_name 切换。",
         );
     }
     note
