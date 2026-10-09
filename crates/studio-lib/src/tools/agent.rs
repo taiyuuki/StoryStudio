@@ -157,6 +157,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(DeleteAssertionTool::new(ctx.clone())));
     registry.register(Box::new(AddRelationTool::new(ctx.clone())));
     registry.register(Box::new(RemoveRelationTool::new(ctx.clone())));
+    registry.register(Box::new(UpdateRelationTool::new(ctx.clone())));
     registry.register(Box::new(CreateThreadTool::new(ctx.clone())));
     registry.register(Box::new(GetThreadsTool::new(ctx.clone())));
     registry.register(Box::new(GetThreadDetailTool::new(ctx.clone())));

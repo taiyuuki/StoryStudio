@@ -9,6 +9,10 @@
 //!   valid = { from = { year = 1085 } }
 //!   evidence = ["f_0007"]
 //!
+//! valid 区间边界的两种写法（时变关系）：
+//!   from = { year = 1085 }            # 绝对历法
+//!   from = { scene = "sc_02_01" }      # 叙事锚（场景 ID，按阅读序比较）
+//!
 //! 与知识库断言（assertions.toml）的区别：
 //! - 断言用于正文一致性校验（年龄矛盾、死亡后复活等），带 status/extracted_by
 //! - 关系是纯拓扑边，映射到 SemanticGraph，供关系图与实体页消费
@@ -61,7 +65,7 @@ pub struct RelationDef {
 }
 
 /// valid 区间的 TOML 表示
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ValidityDef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<StoryTimeDef>,
@@ -69,14 +73,21 @@ pub struct ValidityDef {
     pub until: Option<StoryTimeDef>,
 }
 
-/// StoryTime 的 TOML 表示（简化为 year/month/day）
+/// StoryTime 的 TOML 表示：绝对历法（year/month/day）或叙事锚（scene）。
+///
+/// scene 优先于历法字段——关系随剧情演变时，用场景 ID 定位生效/失效
+/// 边界比绝对纪法更贴合作者的写作语言（"第二章起反目"）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoryTimeDef {
-    pub year: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub month: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub day: Option<u8>,
+    /// 叙事锚：场景（或片段）ID
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<String>,
 }
 
 impl RelationsFile {
@@ -127,7 +138,7 @@ impl RelationDef {
 }
 
 impl ValidityDef {
-    fn to_validity_window(&self) -> ValidityWindow {
+    pub fn to_validity_window(&self) -> ValidityWindow {
         ValidityWindow::new(
             self.from.as_ref().map(|t| t.to_story_time()),
             self.until.as_ref().map(|t| t.to_story_time()),
@@ -147,8 +158,11 @@ impl ValidityDef {
 
 impl StoryTimeDef {
     fn to_story_time(&self) -> StoryTime {
+        if let Some(scene) = &self.scene {
+            return StoryTime::narrative(StableId::new_unchecked(scene));
+        }
         StoryTime::absolute(StoryCalendar {
-            year: self.year,
+            year: self.year.unwrap_or(0),
             month: self.month,
             day: self.day,
         })
@@ -157,11 +171,18 @@ impl StoryTimeDef {
     fn from_story_time(t: &StoryTime) -> Option<Self> {
         match &t.coord {
             TimeCoord::Absolute(cal) => Some(Self {
-                year: cal.year,
+                year: Some(cal.year),
                 month: cal.month,
                 day: cal.day,
+                scene: None,
             }),
-            _ => None, // Narrative/BeforeStory/AfterStory/Unknown 暂不序列化
+            TimeCoord::Narrative(id) => Some(Self {
+                year: None,
+                month: None,
+                day: None,
+                scene: Some(id.as_str().to_string()),
+            }),
+            _ => None, // BeforeStory/AfterStory/Unknown 暂不序列化
         }
     }
 }
@@ -277,5 +298,41 @@ relation = "knows"
         let file = RelationsFile::from_toml_str(toml_str).unwrap();
         let edges = file.to_semantic_edges();
         assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn scene_anchored_validity_roundtrip() {
+        // 时变关系：生效边界用场景锚（叙事坐标），序列化为 scene 字段
+        let toml_str = r#"
+[[relation]]
+id = "se_0001"
+from = "c_001"
+to = "c_002"
+relation = "enemy_of"
+
+[relation.valid]
+from = { scene = "sc_01_02" }
+until = { scene = "sc_03_01" }
+"#;
+        let file = RelationsFile::from_toml_str(toml_str).unwrap();
+        let edges = file.to_semantic_edges();
+        let valid = edges[0].valid.as_ref().expect("valid 应解析");
+        assert!(matches!(
+            &valid.from.as_ref().expect("from 应存在").coord,
+            TimeCoord::Narrative(id) if id.as_str() == "sc_01_02"
+        ));
+        assert!(matches!(
+            &valid.until.as_ref().expect("until 应存在").coord,
+            TimeCoord::Narrative(id) if id.as_str() == "sc_03_01"
+        ));
+
+        // Roundtrip：scene 锚不丢
+        let serialized = RelationsFile::from_edges(&edges)
+            .to_toml_string()
+            .unwrap();
+        assert!(serialized.contains("scene = \"sc_01_02\""), "{serialized}");
+        assert!(serialized.contains("scene = \"sc_03_01\""), "{serialized}");
+        let reparsed = RelationsFile::from_toml_str(&serialized).unwrap();
+        assert_eq!(reparsed.to_semantic_edges()[0].valid, edges[0].valid);
     }
 }

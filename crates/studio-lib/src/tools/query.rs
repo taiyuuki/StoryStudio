@@ -19,7 +19,10 @@ use story_ai_runtime::{AiProvider, Tool, ToolDef};
 use story_exporter::collect_manuscript;
 use story_ir::StableId;
 use story_project_format::knowledge_file::AssertionDef;
-use story_project_format::{AssertionsFile, ChaptersFile, ProjectPaths, RelationDef, RelationsFile};
+use story_project_format::{
+    AssertionsFile, ChaptersFile, ProjectPaths, RelationDef, RelationTimeDef, RelationsFile,
+    ValidityDef,
+};
 
 use super::{format_brief, get_str, get_str_opt, object_schema, ToolContext};
 
@@ -462,7 +465,10 @@ impl Tool for GetRelationsTool {
         ToolDef {
             name: "get_relations".into(),
             description: "查询角色/实体之间的关系。可按实体 ID 或关系类型过滤，\
-            省略参数则列出全部关系。用于核对人物关系网、检查关系一致性。"
+            省略参数则列出全部关系。带生效区间的时变关系会显示边界；\
+            传 at_scene（场景 ID）只返回该叙事时点仍成立的关系——\
+            查\"某场景时这两人的关系\"必用此参数，否则会混入尚未生效/已过期的关系。\
+            用于核对人物关系网、检查关系一致性。"
                 .into(),
             parameters: object_schema(vec![
                 (
@@ -477,6 +483,12 @@ impl Tool for GetRelationsTool {
                     "关系类型过滤（如 mentor_of / enemy_of / family_of / knows）",
                     false,
                 ),
+                (
+                    "at_scene",
+                    "string",
+                    "叙事时点过滤（场景/片段 ID）：只返回该位置仍成立的关系（按生效区间与阅读序比较）",
+                    false,
+                ),
             ]),
         }
     }
@@ -484,6 +496,7 @@ impl Tool for GetRelationsTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let entity_filter = get_str_opt(arguments, "entity_id");
         let type_filter = get_str_opt(arguments, "relation_type");
+        let at_scene = get_str_opt(arguments, "at_scene");
 
         let paths = self.ctx.paths();
         let relations_path = paths.relations_toml();
@@ -494,7 +507,7 @@ impl Tool for GetRelationsTool {
             Err(_) => RelationsFile::default(),
         };
 
-        // 可选：解析 IR 以便把实体 ID 翻译成名称
+        // 可选：解析 IR 以便把实体 ID 翻译成名称 + 叙事时点的阅读序比较
         let parse_output = self.ctx.parse().ok();
         let display_name = |id: &str| -> String {
             parse_output
@@ -502,6 +515,27 @@ impl Tool for GetRelationsTool {
                 .and_then(|po| po.ir.semantic.get(&StableId::new_unchecked(id)))
                 .map(|n| n.display_name().to_string())
                 .unwrap_or_else(|| id.to_string())
+        };
+
+        // at_scene：叙事坐标按阅读序（ordinal_in）比较；
+        // 无窗口的边视为全时段成立
+        let scene_ordinal = match (&at_scene, parse_output.as_ref()) {
+            (Some(sc), Some(po)) => {
+                let sid = StableId::new_unchecked(sc);
+                let known = po.ir.document.get_scene(&sid).is_some()
+                    || po.ir.document.get_fragment(&sid).is_some();
+                if !known {
+                    return Err(format!("场景/片段 '{sc}' 不存在，无法作为 at_scene 时点"));
+                }
+                Some((
+                    story_ir::StoryTime::narrative(sid).ordinal_in(&po.ir.document),
+                    &po.ir.document,
+                ))
+            }
+            (Some(sc), None) => {
+                return Err(format!("无法解析项目结构，不能校验 at_scene '{sc}'"));
+            }
+            _ => None,
         };
 
         let mut filtered: Vec<&RelationDef> = file
@@ -512,7 +546,22 @@ impl Tool for GetRelationsTool {
                     .as_ref()
                     .is_none_or(|e| e == &r.from || e == &r.to);
                 let type_match = type_filter.as_ref().is_none_or(|t| t == &r.relation);
-                entity_match && type_match
+                let time_match = match (&r.valid, &scene_ordinal) {
+                    (None, _) | (_, None) => true,
+                    (Some(valid), Some((now, doc))) => {
+                        let window = valid.to_validity_window();
+                        let after_from = window
+                            .from
+                            .as_ref()
+                            .is_none_or(|f| now >= &f.ordinal_in(doc));
+                        let before_until = window
+                            .until
+                            .as_ref()
+                            .is_none_or(|u| now < &u.ordinal_in(doc));
+                        after_from && before_until
+                    }
+                };
+                entity_match && type_match && time_match
             })
             .collect();
 
@@ -520,9 +569,14 @@ impl Tool for GetRelationsTool {
         filtered.sort_by_key(|r| r.id.as_str());
 
         let mut out = String::new();
-        out.push_str(&format!("关系列表({}):\n", filtered.len()));
+        let scope_note = if at_scene.is_some() {
+            format!(" @ {}", at_scene.as_deref().unwrap_or_default())
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("关系列表({}){scope_note}:\n", filtered.len()));
         if filtered.is_empty() {
-            if entity_filter.is_some() || type_filter.is_some() {
+            if entity_filter.is_some() || type_filter.is_some() || at_scene.is_some() {
                 out.push_str("  （无匹配关系）");
             } else {
                 out.push_str("  （尚未记录任何关系，可用 add_relation 添加）");
@@ -538,12 +592,50 @@ impl Tool for GetRelationsTool {
             } else {
                 format!(" (证据: {})", r.evidence.join(", "))
             };
+            let valid_note = r
+                .valid
+                .as_ref()
+                .map(format_validity_def)
+                .unwrap_or_default();
             out.push_str(&format!(
-                "  {}: {}({}) --{}--> {}({}){}\n",
-                r.id, from_name, r.from, r.relation, to_name, r.to, evidence
+                "  {}: {}({}) --{}--> {}({}){}{}\n",
+                r.id, from_name, r.from, r.relation, to_name, r.to, valid_note, evidence
             ));
         }
         Ok(out)
+    }
+}
+
+/// 渲染关系的生效区间（无界边界不显示）。
+fn format_validity_def(v: &ValidityDef) -> String {
+    let bound = |t: &RelationTimeDef| -> String {
+        match &t.scene {
+            Some(scene) => format!("场景 {scene}"),
+            None => {
+                let mut s = t
+                    .year
+                    .map(|y| y.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                if let Some(m) = t.month {
+                    s.push_str(&format!("-{m:02}"));
+                    if let Some(d) = t.day {
+                        s.push_str(&format!("-{d:02}"));
+                    }
+                }
+                s
+            }
+        }
+    };
+    let from = v.from.as_ref().map(|t| format!("自 {}", bound(t)));
+    let until = v.until.as_ref().map(|t| format!("至 {} 前", bound(t)));
+    let parts: Vec<&str> = [from.as_deref(), until.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join(", "))
     }
 }
 
@@ -1201,9 +1293,28 @@ impl Tool for GetCharacterStateTool {
                     .get(other_id)
                     .map(|n| n.display_name().to_string())
                     .unwrap_or_else(|| other_id.as_str().to_string());
+                // 时变关系显示生效区间（无界边界不显示）
+                let valid_note = edge.valid.as_ref().map(|v| {
+                    let from = v.from.as_ref().map(|t| format!("自 {t}"));
+                    let until = v.until.as_ref().map(|t| format!("至 {t} 前"));
+                    let parts: Vec<&str> = [from.as_deref(), until.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    if parts.is_empty() {
+                        String::new()
+                    } else {
+                        format!("（{}）", parts.join(", "))
+                    }
+                });
                 out.push_str(&format!(
-                    "  {} {} {}({}) [{}]\n",
-                    entity_name, direction, other_name, other_id, edge.relation
+                    "  {} {} {}({}) [{}]{}\n",
+                    entity_name,
+                    direction,
+                    other_name,
+                    other_id,
+                    edge.relation,
+                    valid_note.unwrap_or_default()
                 ));
             }
         }
@@ -1993,6 +2104,96 @@ fragments = ["f_0001"]
             !structure.contains("林风走进山谷"),
             "正文截断不应写进 summary: {structure}"
         );
+    }
+
+    // —— get_relations 时变过滤（at_scene 按阅读序比较生效区间）——
+
+    /// 2 章 × 各 1 场景；关系：无窗口 / 第二章起生效 / 第二章前已失效
+    fn write_time_variant_relations_fixture(dir: &std::path::Path) {
+        let structure = r#"[book]
+id = "b_root"
+title = "测试"
+chapters = ["ch_01", "ch_02"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[chapter.ch_02]
+title = "第二章"
+scenes = ["sc_02_01"]
+
+[scene.sc_01_01]
+title = "起点"
+fragments = []
+
+[scene.sc_02_01]
+title = "转折"
+fragments = []
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        let relations = r#"
+[[relation]]
+id = "se_0001"
+from = "c_0001"
+to = "c_0002"
+relation = "knows"
+
+[[relation]]
+id = "se_0002"
+from = "c_0001"
+to = "c_0002"
+relation = "enemy_of"
+
+[relation.valid]
+from = { scene = "sc_02_01" }
+
+[[relation]]
+id = "se_0003"
+from = "c_0003"
+to = "c_0001"
+relation = "rival_of"
+
+[relation.valid]
+until = { scene = "sc_02_01" }
+"#;
+        std::fs::write(dir.join("relations.toml"), relations).unwrap();
+    }
+
+    #[test]
+    fn get_relations_filters_by_at_scene() {
+        let tmp = setup_test_project();
+        write_time_variant_relations_fixture(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = GetRelationsTool::new(ctx);
+
+        // 第一章时点：knows（无窗口）+ rival_of（第二章前有效）；enemy_of 未生效
+        let out = tool
+            .execute(&serde_json::json!({"at_scene": "sc_01_01"}))
+            .unwrap();
+        assert!(out.contains("se_0001"), "{out}");
+        assert!(out.contains("se_0003"), "{out}");
+        assert!(!out.contains("se_0002"), "未生效关系不应出现: {out}");
+
+        // 第二章时点：knows + enemy_of；rival_of 已失效
+        let out = tool
+            .execute(&serde_json::json!({"at_scene": "sc_02_01"}))
+            .unwrap();
+        assert!(out.contains("se_0001"), "{out}");
+        assert!(out.contains("se_0002"), "{out}");
+        assert!(!out.contains("se_0003"), "已失效关系不应出现: {out}");
+
+        // 不过滤时全列出，且渲染生效区间
+        let out = tool.execute(&serde_json::json!({})).unwrap();
+        assert!(out.contains("自 场景 sc_02_01"), "应渲染生效起点: {out}");
+        assert!(out.contains("至 场景 sc_02_01 前"), "应渲染失效终点: {out}");
+
+        // 未知场景锚 → 报错
+        let err = tool
+            .execute(&serde_json::json!({"at_scene": "sc_99_99"}))
+            .unwrap_err();
+        assert!(err.contains("不存在"), "{err}");
     }
 
     // —— get_character_state ——

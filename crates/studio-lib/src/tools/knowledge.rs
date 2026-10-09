@@ -260,7 +260,10 @@ impl Tool for AddRelationTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "add_relation".into(),
-            description: "添加角色之间的关系，写入 relations.toml。关系是单向的（from → to）。\
+            description: "添加角色之间的关系，写入 relations.toml。关系是单向的（from → to）；\
+            对称关系（rival_of/family_of 等）传 symmetric=true 会自动创建反向边（成对，删除时也成对删）。\
+            关系随剧情演变（相识→反目→和解）时用 valid_from_scene/valid_until_scene 声明生效区间\
+            （场景锚，按阅读序比较），过期关系不用删除、保留演变轨迹。\
             一次添加多条（如建档后补全人物关系网）用 relations 批量传入。"
                 .into(),
             parameters: object_schema(vec![
@@ -276,9 +279,27 @@ impl Tool for AddRelationTool {
                     false,
                 ),
                 (
+                    "valid_from_scene",
+                    "string",
+                    "关系生效的场景/片段 ID（叙事锚）：该场景起关系成立；省略 = 自故事开始",
+                    false,
+                ),
+                (
+                    "valid_until_scene",
+                    "string",
+                    "关系失效的场景/片段 ID（不含该场景）：到该场景前关系已不成立；省略 = 直到故事结束",
+                    false,
+                ),
+                (
+                    "symmetric",
+                    "boolean",
+                    "对称关系声明：自动同时创建 to→from 的反向边（同一关系类型）。适用于 rival_of/family_of/lover_of 等；有向关系（mentor_of 等）保持 false",
+                    false,
+                ),
+                (
                     "relations",
                     "object-array",
-                    "批量添加：数组，每项为原生 JSON 对象 {\"from\": \"...\", \"to\": \"...\", \"relation\": \"...\"}。与 from/to/relation 二选一",
+                    "批量添加：数组，每项为原生 JSON 对象 {\"from\",\"to\",\"relation\",\"valid_from_scene?\",\"valid_until_scene?\",\"symmetric?\"}。与单条参数二选一",
                     false,
                 ),
             ]),
@@ -295,37 +316,67 @@ impl Tool for AddRelationTool {
             }
             // 项归一化：模型常把每项序列化成字符串传入
             let items = normalize_object_items(items, "relations")?;
-            let mut triples: Vec<(String, String, String)> =
+            let mut inputs: Vec<crate::mutations::RelationInput> =
                 Vec::with_capacity(items.len());
             for item in &items {
-                triples.push((
-                    get_str(item, "from")?,
-                    get_str(item, "to")?,
-                    get_str(item, "relation")?,
-                ));
+                inputs.push(relation_input_from_json(item)?);
             }
-            let ids = crate::mutations::add_relations(&paths, &triples)
+            let ids = crate::mutations::add_relation_full(&paths, &inputs)
                 .map_err(|e| e.to_string())?;
-            let detail = triples
-                .iter()
-                .zip(&ids)
-                .map(|((from, to, relation), id)| format!("{id}: {from} --{relation}--> {to}"))
-                .collect::<Vec<_>>()
-                .join("；");
-            return Ok(format!("已批量添加 {} 条关系：{detail}", ids.len()));
+            return Ok(format!("已批量添加 {} 条关系（含对称反向边）：{}", ids.len(), ids.join(", ")));
         }
 
         let from = get_str(arguments, "from")?;
         let to = get_str(arguments, "to")?;
         let relation = get_str(arguments, "relation")?;
 
-        let new_id = crate::mutations::add_relation(&paths, &from, &to, &relation)
+        let input = crate::mutations::RelationInput {
+            from,
+            to,
+            relation,
+            ..relation_input_from_json(arguments)?
+        };
+        let has_window = input.valid_from_scene.is_some() || input.valid_until_scene.is_some();
+        let ids = crate::mutations::add_relation_full(&paths, &[input])
             .map_err(|e| e.to_string())?;
-
-        Ok(format!(
-            "关系已添加: id={new_id}, {from} --{relation}--> {to}"
-        ))
+        let mut msg = format!("关系已添加: id={}", ids[0]);
+        if ids.len() > 1 {
+            msg.push_str(&format!("（含对称反向边 {}）", ids[1]));
+        }
+        if has_window {
+            msg.push_str("（已声明生效区间，get_relations 可按 at_scene 过滤时变关系）");
+        }
+        Ok(msg)
     }
+}
+
+/// 从 JSON 对象解析 RelationInput 的可选字段（窗口 + 对称声明）。
+///
+/// 单条与批量共用；from/to/relation 由调用方按各自必填规则解析后填充。
+fn relation_input_from_json(item: &serde_json::Value) -> Result<crate::mutations::RelationInput, String> {
+    let get_scene = |key: &str| -> Result<Option<String>, String> {
+        match item.get(key) {
+            None => Ok(None),
+            Some(v) if v.is_null() => Ok(None),
+            Some(v) => v
+                .as_str()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(Some)
+                .ok_or_else(|| format!("{key} 应为场景 ID 字符串")),
+        }
+    };
+    Ok(crate::mutations::RelationInput {
+        from: String::new(),
+        to: String::new(),
+        relation: String::new(),
+        valid_from_scene: get_scene("valid_from_scene")?,
+        valid_until_scene: get_scene("valid_until_scene")?,
+        symmetric: item
+            .get("symmetric")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    })
 }
 
 // ============================================================================
@@ -345,7 +396,10 @@ impl Tool for RemoveRelationTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "remove_relation".into(),
-            description: "移除角色之间的关系边，从 relations.toml 删除。".into(),
+            description: "移除角色之间的关系边，从 relations.toml 删除。\
+            若该边是对称声明的成对边（存在同类型的反向边），回执会提示孪生边 ID，需一并删除。\
+            时变关系（有生效区间）过期后无需删除——保留演变轨迹即可。"
+                .into(),
             parameters: object_schema(vec![(
                 "relation_id",
                 "string",
@@ -359,9 +413,111 @@ impl Tool for RemoveRelationTool {
         let relation_id = get_str(arguments, "relation_id")?;
 
         let paths = self.ctx.paths();
+        let twin = crate::mutations::find_symmetric_twin(&paths, &relation_id);
         crate::mutations::remove_relation(&paths, &relation_id).map_err(|e| e.to_string())?;
 
-        Ok(format!("关系已移除: {relation_id}"))
+        let mut msg = format!("关系已移除: {relation_id}");
+        if let Some(twin_id) = twin {
+            msg.push_str(&format!(
+                "；⚠️ 存在同类型的反向边 {twin_id}（对称声明创建），如需彻底移除请一并 remove_relation"
+            ));
+        }
+        Ok(msg)
+    }
+}
+
+// ============================================================================
+// update_relation
+// ============================================================================
+
+pub struct UpdateRelationTool {
+    ctx: ToolContext,
+}
+impl UpdateRelationTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for UpdateRelationTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "update_relation".into(),
+            description: "更新关系边的生效区间（时变关系）。\
+            用场景/片段 ID 声明边界：valid_from_scene = 关系成立的起点，\
+            valid_until_scene = 关系失效的位置（不含该场景）。\
+            传空字符串清除对应边界（改为无界），省略 = 不修改。\
+            例：师徒决裂 → update_relation(se_0001, valid_until_scene=\"sc_05_02\")。"
+                .into(),
+            parameters: object_schema(vec![
+                ("relation_id", "string", "关系边 ID（se_ 前缀）", true),
+                (
+                    "valid_from_scene",
+                    "string",
+                    "生效场景/片段 ID（叙事锚）；空字符串清除该边界；省略 = 不修改",
+                    false,
+                ),
+                (
+                    "valid_until_scene",
+                    "string",
+                    "失效场景/片段 ID（不含该场景）；空字符串清除该边界；省略 = 不修改",
+                    false,
+                ),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let relation_id = get_str(arguments, "relation_id")?;
+
+        // 空串 = 清除边界；缺省 = 不修改（None 外层）
+        let bound = |key: &str| -> Option<Option<String>> {
+            arguments
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(Some)
+                .or_else(|| {
+                    // 显式传了空串 → 清除
+                    arguments
+                        .get(key)
+                        .and_then(|v| v.as_str())
+                        .map(|_| None)
+                })
+        };
+        let from = bound("valid_from_scene");
+        let until = bound("valid_until_scene");
+        if from.is_none() && until.is_none() {
+            return Err(
+                "至少提供一个要修改的边界（valid_from_scene / valid_until_scene，空串表示清除）"
+                    .into(),
+            );
+        }
+
+        let paths = self.ctx.paths();
+        crate::mutations::update_relation_valid(
+            &paths,
+            &relation_id,
+            from.as_ref().map(|inner| inner.as_deref()),
+            until.as_ref().map(|inner| inner.as_deref()),
+        )
+        .map_err(|e| e.to_string())?;
+
+        let mut msg = format!("关系 {relation_id} 生效区间已更新");
+        if let Some(Some(scene)) = &from {
+            msg.push_str(&format!("（自 {scene} 起）"));
+        }
+        if let Some(None) = &from {
+            msg.push_str("（起点已清除=自故事开始）");
+        }
+        if let Some(Some(scene)) = &until {
+            msg.push_str(&format!("（至 {scene} 前止）"));
+        }
+        if let Some(None) = &until {
+            msg.push_str("（终点已清除=直到故事结束）");
+        }
+        Ok(msg)
     }
 }
 
@@ -2658,6 +2814,77 @@ title = "开场"
 fragments = []
 "#;
         std::fs::write(dir.join("structure.toml"), structure).unwrap();
+    }
+
+    #[test]
+    fn add_relation_symmetric_creates_paired_edges() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let tool = AddRelationTool::new(ctx);
+        let msg = tool
+            .execute(&serde_json::json!({
+                "from": "c_0001",
+                "to": "c_0002",
+                "relation": "rival_of",
+                "symmetric": true,
+            }))
+            .unwrap();
+        assert!(msg.contains("对称反向边"), "{msg}");
+
+        let content = std::fs::read_to_string(tmp.path().join("relations.toml")).unwrap();
+        assert_eq!(content.matches("[[relation]]").count(), 2, "{content}");
+
+        // remove_relation 提示孪生边
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let remove = RemoveRelationTool::new(ctx);
+        let msg = remove
+            .execute(&serde_json::json!({"relation_id": "se_0001"}))
+            .unwrap();
+        assert!(msg.contains("反向边 se_0002"), "应提示孪生边: {msg}");
+    }
+
+    #[test]
+    fn update_relation_tool_sets_and_clears_window() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let dir = tmp.path();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let add = AddRelationTool::new(ctx.clone());
+        add.execute(&serde_json::json!({
+            "from": "c_0001", "to": "c_0002", "relation": "mentor_of"
+        }))
+        .unwrap();
+
+        // 设置失效边界（师徒决裂）
+        let tool = UpdateRelationTool::new(ctx.clone());
+        let msg = tool
+            .execute(&serde_json::json!({
+                "relation_id": "se_0001",
+                "valid_until_scene": "sc_01_01"
+            }))
+            .unwrap();
+        assert!(msg.contains("至 sc_01_01 前止"), "{msg}");
+        let content = std::fs::read_to_string(dir.join("relations.toml")).unwrap();
+        assert!(content.contains("scene = \"sc_01_01\""), "{content}");
+
+        // 空串清除边界
+        let msg = tool
+            .execute(&serde_json::json!({
+                "relation_id": "se_0001",
+                "valid_until_scene": ""
+            }))
+            .unwrap();
+        assert!(msg.contains("终点已清除"), "{msg}");
+        let content = std::fs::read_to_string(dir.join("relations.toml")).unwrap();
+        assert!(!content.contains("scene"), "清除后不应再有场景锚: {content}");
+
+        // 两个边界都不提供 → 报错
+        assert!(tool
+            .execute(&serde_json::json!({"relation_id": "se_0001"}))
+            .is_err());
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub use knowledge_file::{AssertionsFile, EvidenceFile, KnowledgeFileError};
 pub use outline_file::{ConflictDef, OutlineFile, OutlineFileError, StoryMeta, VolumeDef};
 pub use paths::ProjectPaths;
 pub use project_toml::{AiConfig, KnowledgeConfig, ProjectConfig};
-pub use relation_file::{RelationDef, RelationFileError, RelationsFile};
+pub use relation_file::{RelationDef, RelationFileError, RelationsFile, StoryTimeDef as RelationTimeDef, ValidityDef};
 pub use slug::slugify;
 pub use structure_toml::{BookDef, ChapterDef, SceneDef, StructureFile};
 pub use threads_file::{ThreadsFile, ThreadsFileError};

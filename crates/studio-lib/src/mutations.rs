@@ -18,8 +18,8 @@ use story_project_format::knowledge_file::{AssertionDef, EvidenceDef, EvidenceFi
 use story_project_format::structure_toml::StoryTimeDef;
 use story_project_format::{
     is_valid_status, AnchoringFile, AssertionsFile, ChapterDef, ChapterOutlineDef, ChaptersFile,
-    EntityFile, FragmentFile, OutlineFile, ProjectPaths, RelationDef, RelationsFile, SceneDef,
-    StructureFile, ThreadsFile, UnresolvedRefDef,
+    EntityFile, FragmentFile, OutlineFile, ProjectPaths, RelationDef, RelationTimeDef,
+    RelationsFile, SceneDef, StructureFile, ThreadsFile, UnresolvedRefDef, ValidityDef,
 };
 
 use crate::error::StudioError;
@@ -3041,6 +3041,34 @@ pub fn set_assertion_status(
 // Relation 变更
 // ============================================================================
 
+/// 带时变窗口与对称声明的关系输入项
+#[derive(Debug, Clone)]
+pub struct RelationInput {
+    pub from: String,
+    pub to: String,
+    pub relation: String,
+    /// 生效场景锚（None = 自故事开始）
+    pub valid_from_scene: Option<String>,
+    /// 失效场景锚（不含该场景；None = 直到故事结束）
+    pub valid_until_scene: Option<String>,
+    /// 对称关系（rival_of/family_of 等）：自动同时创建 to→from 反向边
+    pub symmetric: bool,
+}
+
+impl RelationInput {
+    /// 无窗口、不对称的最简三元组（旧 add_relation 语义）
+    pub fn simple(from: &str, to: &str, relation: &str) -> Self {
+        Self {
+            from: from.to_string(),
+            to: to.to_string(),
+            relation: relation.to_string(),
+            valid_from_scene: None,
+            valid_until_scene: None,
+            symmetric: false,
+        }
+    }
+}
+
 /// 添加角色关系边
 ///
 /// 生成 se_XXXX ID（十进制 4 位），写入 relations.toml。
@@ -3051,11 +3079,8 @@ pub fn add_relation(
     to: &str,
     relation: &str,
 ) -> Result<String, StudioError> {
-    add_relations(
-        paths,
-        &[(from.to_string(), to.to_string(), relation.to_string())],
-    )
-    .map(|mut ids| ids.remove(0))
+    add_relation_full(paths, &[RelationInput::simple(from, to, relation)])
+        .map(|mut ids| ids.remove(0))
 }
 
 /// 批量添加角色关系：一次读写 relations.toml。
@@ -3065,11 +3090,41 @@ pub fn add_relations(
     paths: &ProjectPaths,
     relations: &[(String, String, String)],
 ) -> Result<Vec<String>, StudioError> {
-    if relations.is_empty() {
+    let items: Vec<RelationInput> = relations
+        .iter()
+        .map(|(f, t, r)| RelationInput::simple(f, t, r))
+        .collect();
+    add_relation_full(paths, &items)
+}
+
+/// 批量添加关系（完整形态）：支持场景锚定的生效区间与对称声明。
+///
+/// - valid_from/valid_until_scene 绑定叙事坐标（场景/片段 ID，按阅读序比较），
+///   关系随剧情演变（相识 → 反目 → 和解）不再只能靠删边重加
+/// - symmetric=true 时为每条输入创建 from→to 与 to→from 两条边（同一关系
+///   类型，适合 rival_of/family_of 等对称关系）；有向关系（mentor_of 等）
+///   请传 false 并按方向分别声明
+///
+/// 返回实际创建的全部关系 ID（对称时每条输入产生 2 个）。
+pub fn add_relation_full(
+    paths: &ProjectPaths,
+    items: &[RelationInput],
+) -> Result<Vec<String>, StudioError> {
+    if items.is_empty() {
         return Err(StudioError::Config("relations 不能为空".to_string()));
     }
-    let relations_path = paths.relations_toml();
 
+    // 场景锚存在性前置校验（失败则整体不落盘）
+    for item in items {
+        if let Some(scene) = &item.valid_from_scene {
+            ensure_narrative_anchor_exists(paths, scene)?;
+        }
+        if let Some(scene) = &item.valid_until_scene {
+            ensure_narrative_anchor_exists(paths, scene)?;
+        }
+    }
+
+    let relations_path = paths.relations_toml();
     let mut file: RelationsFile = RelationsFile::load_or_default(&relations_path)?;
 
     // se_ 前缀 + 4 位十进制自增
@@ -3080,23 +3135,131 @@ pub fn add_relations(
         .max()
         .unwrap_or(0);
 
-    let mut ids = Vec::with_capacity(relations.len());
-    for (from, to, relation) in relations {
+    let mut ids = Vec::new();
+    for item in items {
+        let scene_def = |scene: &str| RelationTimeDef {
+            year: None,
+            month: None,
+            day: None,
+            scene: Some(scene.to_string()),
+        };
+        let valid = if item.valid_from_scene.is_some() || item.valid_until_scene.is_some() {
+            Some(ValidityDef {
+                from: item.valid_from_scene.as_deref().map(scene_def),
+                until: item.valid_until_scene.as_deref().map(scene_def),
+            })
+        } else {
+            None
+        };
+
         max_num += 1;
-        let new_id = format!("se_{max_num:04}");
+        let forward_id = format!("se_{max_num:04}");
         file.relations.push(RelationDef {
-            id: new_id.clone(),
-            from: from.clone(),
-            to: to.clone(),
-            relation: relation.clone(),
-            valid: None,
+            id: forward_id.clone(),
+            from: item.from.clone(),
+            to: item.to.clone(),
+            relation: item.relation.clone(),
+            valid: valid.clone(),
             evidence: vec![],
         });
-        ids.push(new_id);
+        ids.push(forward_id);
+
+        if item.symmetric {
+            max_num += 1;
+            let reverse_id = format!("se_{max_num:04}");
+            file.relations.push(RelationDef {
+                id: reverse_id.clone(),
+                from: item.to.clone(),
+                to: item.from.clone(),
+                relation: item.relation.clone(),
+                valid,
+                evidence: vec![],
+            });
+            ids.push(reverse_id);
+        }
     }
 
     file.save(&relations_path)?;
     Ok(ids)
+}
+
+/// 校验叙事锚（场景/片段 ID）在 structure.toml 中存在，避免悬空时变边界。
+fn ensure_narrative_anchor_exists(paths: &ProjectPaths, id: &str) -> Result<(), StudioError> {
+    let structure = load_structure(paths)?;
+    let is_scene = structure.scene.contains_key(id);
+    let is_fragment = structure
+        .scene
+        .values()
+        .any(|s| s.fragments.iter().any(|f| f == id));
+    if !is_scene && !is_fragment {
+        return Err(StudioError::NotFound(format!(
+            "场景/片段 '{id}' 不存在，无法作为关系的生效/失效锚点"
+        )));
+    }
+    Ok(())
+}
+
+/// 更新关系边的生效区间（按 relation_id）。
+///
+/// from/until 均为 Option<Option<&str>>：外层 None = 不修改该边界，
+/// Some(None) = 清除（改为无界），Some(Some(scene_id)) = 设置场景锚。
+pub fn update_relation_valid(
+    paths: &ProjectPaths,
+    relation_id: &str,
+    from: Option<Option<&str>>,
+    until: Option<Option<&str>>,
+) -> Result<(), StudioError> {
+    if from.is_none() && until.is_none() {
+        return Err(StudioError::Config(
+            "至少提供一个要修改的边界（valid_from_scene / valid_until_scene）".to_string(),
+        ));
+    }
+    if let Some(Some(scene)) = from {
+        ensure_narrative_anchor_exists(paths, scene)?;
+    }
+    if let Some(Some(scene)) = until {
+        ensure_narrative_anchor_exists(paths, scene)?;
+    }
+
+    let relations_path = paths.relations_toml();
+    let mut file: RelationsFile = RelationsFile::load_or_default(&relations_path)?;
+    let edge = file
+        .relations
+        .iter_mut()
+        .find(|r| r.id == relation_id)
+        .ok_or_else(|| StudioError::NotFound(format!("关系 '{relation_id}' 不存在")))?;
+
+    let scene_def = |scene: &str| RelationTimeDef {
+        year: None,
+        month: None,
+        day: None,
+        scene: Some(scene.to_string()),
+    };
+    let mut valid = edge.valid.clone().unwrap_or_default();
+    if let Some(bound) = from {
+        valid.from = bound.map(scene_def);
+    }
+    if let Some(bound) = until {
+        valid.until = bound.map(scene_def);
+    }
+    edge.valid = (valid.from.is_some() || valid.until.is_some()).then_some(valid);
+
+    file.save(&relations_path)?;
+    Ok(())
+}
+
+/// 查找关系边的对称孪生（同类型、from/to 互换的另一条边）。
+///
+/// remove_relation 前调用，提示调用方对称声明创建的成对边需一并处理。
+pub fn find_symmetric_twin(paths: &ProjectPaths, relation_id: &str) -> Option<String> {
+    let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).ok()?;
+    let edge = file.relations.iter().find(|r| r.id == relation_id)?;
+    file.relations
+        .iter()
+        .find(|r| {
+            r.id != edge.id && r.relation == edge.relation && r.from == edge.to && r.to == edge.from
+        })
+        .map(|r| r.id.clone())
 }
 
 /// 移除角色关系边
@@ -3763,6 +3926,107 @@ mod tests {
             "以被删实体为 to 的关系应被清理"
         );
         assert!(ids.contains(&r3.as_str()), "与被删实体无关的关系应保留");
+    }
+
+    // —— 时变关系（场景锚生效区间）与对称声明 ——
+
+    #[test]
+    fn add_relation_full_with_window_and_symmetric() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc1 = create_scene(&paths, &ch, "场景一", None).unwrap();
+        let sc2 = create_scene(&paths, &ch, "场景二", None).unwrap();
+
+        // 对称 + 生效区间：应产生成对边，各带窗口
+        let ids = add_relation_full(
+            &paths,
+            &[RelationInput {
+                from: "c_0001".into(),
+                to: "c_0002".into(),
+                relation: "rival_of".into(),
+                valid_from_scene: Some(sc1.clone()),
+                valid_until_scene: Some(sc2.clone()),
+                symmetric: true,
+            }],
+        )
+        .unwrap();
+        assert_eq!(ids.len(), 2, "对称声明应创建成对边");
+
+        let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
+        let forward = file.relations.iter().find(|r| r.id == ids[0]).unwrap();
+        let reverse = file.relations.iter().find(|r| r.id == ids[1]).unwrap();
+        assert_eq!(forward.from, "c_0001");
+        assert_eq!(reverse.from, "c_0002", "反向边方向应互换");
+        for edge in [forward, reverse] {
+            let valid = edge.valid.as_ref().expect("窗口应落盘");
+            assert_eq!(valid.from.as_ref().unwrap().scene.as_deref(), Some(sc1.as_str()));
+            assert_eq!(valid.until.as_ref().unwrap().scene.as_deref(), Some(sc2.as_str()));
+        }
+
+        // 孪生查找：正向边能找到反向边，反之亦然
+        assert_eq!(find_symmetric_twin(&paths, &ids[0]).as_deref(), Some(ids[1].as_str()));
+        assert_eq!(find_symmetric_twin(&paths, &ids[1]).as_deref(), Some(ids[0].as_str()));
+    }
+
+    #[test]
+    fn add_relation_full_rejects_unknown_scene_anchor() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let result = add_relation_full(
+            &paths,
+            &[RelationInput {
+                valid_from_scene: Some("sc_99_99".into()),
+                ..RelationInput::simple("c_0001", "c_0002", "knows")
+            }],
+        );
+        assert!(result.is_err(), "未知场景锚应整体拒绝");
+
+        // 失败不落盘
+        let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
+        assert!(file.relations.is_empty());
+    }
+
+    #[test]
+    fn update_relation_valid_sets_and_clears_bounds() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc1 = create_scene(&paths, &ch, "场景一", None).unwrap();
+        let sc2 = create_scene(&paths, &ch, "场景二", None).unwrap();
+
+        let id = add_relation(&paths, "c_0001", "c_0002", "mentor_of").unwrap();
+
+        // 设置起点
+        update_relation_valid(&paths, &id, Some(Some(&sc1)), None).unwrap();
+        let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
+        let edge = file.relations.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(
+            edge.valid.as_ref().unwrap().from.as_ref().unwrap().scene.as_deref(),
+            Some(sc1.as_str())
+        );
+
+        // 补终点
+        update_relation_valid(&paths, &id, None, Some(Some(&sc2))).unwrap();
+        let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
+        let edge = file.relations.iter().find(|r| r.id == id).unwrap();
+        let valid = edge.valid.as_ref().unwrap();
+        assert_eq!(valid.until.as_ref().unwrap().scene.as_deref(), Some(sc2.as_str()));
+
+        // 清除终点 → 仅剩起点
+        update_relation_valid(&paths, &id, None, Some(None)).unwrap();
+        let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
+        let edge = file.relations.iter().find(|r| r.id == id).unwrap();
+        let valid = edge.valid.as_ref().unwrap();
+        assert!(valid.until.is_none());
+        assert!(valid.from.is_some());
+
+        // 两个边界都清空 → valid 整体移除（退回全时段）
+        update_relation_valid(&paths, &id, Some(None), Some(None)).unwrap();
+        let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
+        let edge = file.relations.iter().find(|r| r.id == id).unwrap();
+        assert!(edge.valid.is_none(), "边界全清后 valid 应回到无窗口");
     }
 
     #[test]
