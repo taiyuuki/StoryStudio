@@ -265,6 +265,69 @@ impl Tool for DeleteAssertionTool {
 }
 
 // ============================================================================
+// refresh_evidence — 重锚证据摘录
+// ============================================================================
+
+pub struct RefreshEvidenceTool {
+    ctx: ToolContext,
+}
+impl RefreshEvidenceTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for RefreshEvidenceTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "refresh_evidence".into(),
+            description: "重锚证据摘录：重读片段正文，刷新 evidence.toml 里的登记基线。\
+            正文被合理编辑、evidence_mismatch 报\"内容已偏离登记时的摘录\"且核实事实\
+            仍成立后使用，告警即消。按 fragment_id 刷新该片段的全部证据条目，\
+            或按 evidence_id 刷新单条。"
+                .into(),
+            parameters: object_schema(vec![
+                (
+                    "fragment_id",
+                    "string",
+                    "片段 ID（f_XXXX）：刷新指向它的全部证据条目。与 evidence_id 至少提供其一",
+                    false,
+                ),
+                (
+                    "evidence_id",
+                    "string",
+                    "证据 ID（ev_XXXX）：只刷新这一条。与 fragment_id 至少提供其一",
+                    false,
+                ),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let fragment_id = get_str_opt(arguments, "fragment_id");
+        let evidence_id = get_str_opt(arguments, "evidence_id");
+
+        let paths = self.ctx.paths();
+        let refreshed = crate::mutations::refresh_evidence(
+            &paths,
+            evidence_id.as_deref(),
+            fragment_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        let detail = refreshed
+            .iter()
+            .map(|(ev, frag)| format!("{ev}({frag})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!(
+            "已刷新 {} 条证据摘录基线：{detail}",
+            refreshed.len()
+        ))
+    }
+}
+
+// ============================================================================
 // add_relation
 // ============================================================================
 

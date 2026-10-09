@@ -668,17 +668,20 @@ impl Rule for EvidenceMismatch {
                 } else if !evidence.quote.is_empty() {
                     // 片段还在但内容已偏离登记时的摘录：证据"名存实亡"
                     // （片段没删、依据的事实可能已被改写掉）。
-                    // 摘录登记时空白已折叠，双侧去空白后比对，换行差异不误报。
+                    // 摘录登记时空白已折叠，双侧去空白后比对，换行差异不误报；
+                    // 历史摘录带省略号尾巴（正文里不存在该字符），剥离后再比。
                     if let Some(frag) = ctx.ir.document.get_fragment(&evidence.loc) {
                         let body = strip_all_ws(&frag.text);
                         let quote = strip_all_ws(&evidence.quote);
-                        if !body.contains(&quote) {
+                        let quote = quote.trim_end_matches('…');
+                        if !quote.is_empty() && !body.contains(quote) {
                             ctx.warning(
                                 self.id(),
                                 "evidence_mismatch",
                                 format!(
                                     "断言 {} 的证据 {} 指向的片段 {} 内容已偏离登记时的摘录，\
-                                     正文可能已被改写，请核实断言仍然成立",
+                                     正文可能已被改写；核实事实仍成立后可用 refresh_evidence 刷新基线，\
+                                     不成立则 retire/delete 断言",
                                     id, evidence_id, evidence.loc
                                 ),
                                 SourceLocation::assertion(id.clone()),
@@ -1147,6 +1150,26 @@ mod tests {
         }));
         let codes = run_rule(&EvidenceMismatch, &ir, None, Some(&kb));
         assert!(codes.is_empty(), "摘录仍在正文中不应告警: {codes:?}");
+    }
+
+    /// 回归：历史摘录带省略号尾巴（80 字截断时代的产物），正文未变时
+    /// 剥离省略号后比对，不得误报漂移。
+    #[test]
+    fn evidence_mismatch_strips_legacy_ellipsis_suffix() {
+        let body_text = "夜雨敲在瓦上，檐角滴水连成一线，远处的更声穿过雨幕传来。".repeat(3);
+        let quote_80: String = body_text.chars().take(80).collect();
+        let kb = kb_with_evidence(&format!("{quote_80}…"));
+        let mut ir = StoryIR::new();
+        ir.document.insert(DocNode::Fragment(FragmentNode {
+            id: StableId::new_unchecked("f_0001"),
+            scene: None,
+            prev: None,
+            next: None,
+            text: format!("开头。\n{body_text}\n结尾。"),
+            anchors: Vec::new(),
+        }));
+        let codes = run_rule(&EvidenceMismatch, &ir, None, Some(&kb));
+        assert!(codes.is_empty(), "带省略号尾巴的历史摘录不应误报: {codes:?}");
     }
 
     #[test]

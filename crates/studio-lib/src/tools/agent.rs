@@ -155,6 +155,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(AddAssertionTool::new(ctx.clone())));
     registry.register(Box::new(RetireAssertionTool::new(ctx.clone())));
     registry.register(Box::new(DeleteAssertionTool::new(ctx.clone())));
+    registry.register(Box::new(RefreshEvidenceTool::new(ctx.clone())));
     registry.register(Box::new(AddRelationTool::new(ctx.clone())));
     registry.register(Box::new(RemoveRelationTool::new(ctx.clone())));
     registry.register(Box::new(UpdateRelationTool::new(ctx.clone())));

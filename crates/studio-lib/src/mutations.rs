@@ -2789,12 +2789,15 @@ fn register_evidence(paths: &ProjectPaths, fragment_id: &str) -> Result<String, 
 }
 
 /// 证据引文摘录：片段正文的开头快照（空白折叠为单空格，上限 80 字）。
+///
+/// 摘录是漂移比对的锚，不是展示文本——超长截断**不追加省略号**：
+/// '…' 不会出现在正文里，带上它会让「正文包含摘录」恒为 false，
+/// 导致每个长片段登记证据后必误报漂移（曾在引入时踩过）。
 fn evidence_quote_excerpt(body: &str) -> String {
     const MAX_CHARS: usize = 80;
     let mut out = String::new();
     for ch in body.trim().chars() {
         if out.chars().count() >= MAX_CHARS {
-            out.push('…');
             break;
         }
         if ch.is_whitespace() {
@@ -2806,6 +2809,59 @@ fn evidence_quote_excerpt(body: &str) -> String {
         }
     }
     out.trim_end().to_string()
+}
+
+/// 重锚证据摘录：按 evidence_id（单条）或 fragment_id（该片段的全部条目）
+/// 重读片段正文，刷新 evidence.toml 里的 quote 基线。
+///
+/// 正文被合理编辑后使用——漂移告警核实"事实仍成立"后的确认动作。
+/// 返回刷新的 (证据 ID, 片段 ID) 列表。
+pub fn refresh_evidence(
+    paths: &ProjectPaths,
+    evidence_id: Option<&str>,
+    fragment_id: Option<&str>,
+) -> Result<Vec<(String, String)>, StudioError> {
+    if evidence_id.is_none() && fragment_id.is_none() {
+        return Err(StudioError::Config(
+            "至少提供 evidence_id 或 fragment_id 之一".to_string(),
+        ));
+    }
+    let evidence_path = paths.knowledge_dir().join("evidence.toml");
+    let mut file = EvidenceFile::load_or_default(&evidence_path)?;
+
+    let mut refreshed = Vec::new();
+    for entry in file.evidence.iter_mut() {
+        let matched = match (evidence_id, fragment_id) {
+            (Some(eid), _) if entry.id == eid => true,
+            (_, Some(fid)) => entry.loc == fid,
+            _ => false,
+        };
+        if !matched {
+            continue;
+        }
+        let frag_path = paths.file_for_id(&entry.loc).ok_or_else(|| {
+            StudioError::Config(format!("无效的片段 ID: {}", entry.loc))
+        })?;
+        let quote = std::fs::read_to_string(&frag_path)
+            .map(|content| evidence_quote_excerpt(crate::fragment::fragment_body(&content)))
+            .unwrap_or_default();
+        if quote.is_empty() {
+            return Err(StudioError::NotFound(format!(
+                "证据 {} 指向的片段 {} 无正文可摘录",
+                entry.id, entry.loc
+            )));
+        }
+        entry.quote = quote;
+        refreshed.push((entry.id.clone(), entry.loc.clone()));
+    }
+
+    if refreshed.is_empty() {
+        return Err(StudioError::NotFound(
+            "没有匹配的证据条目（检查 evidence_id / fragment_id）".to_string(),
+        ));
+    }
+    file.save(&evidence_path)?;
+    Ok(refreshed)
 }
 
 /// 证据使用警示（修改/删除正文回执用）：片段被 active 断言登记为证据时
@@ -2858,7 +2914,8 @@ pub fn evidence_usage_note(
     let head: Vec<String> = uses.iter().take(5).map(|u| format!("  - {u}")).collect();
     note.push_str(&head.join("\n"));
     note.push_str(
-        "\n若情节已变，请核实断言（query_assertions 查看，retire_assertion / delete_assertion 处理）",
+        "\n若情节已变，请核实断言（query_assertions 查看，retire_assertion / delete_assertion 处理）；\
+         事实仍成立时用 refresh_evidence(fragment_id=...) 刷新摘录基线",
     );
     Some(note)
 }
@@ -5260,6 +5317,62 @@ mod tests {
             ev.quote
         );
         assert_eq!(ev.quote, "林风推门而入，尘土簌簌落下。 他环顾四周。");
+    }
+
+    /// 回归：长正文（>80 字）的摘录不得追加省略号——'…' 不会出现在正文里，
+    /// 带上它会让漂移比对的 contains 恒 false，每个长片段登记证据后必误报。
+    #[test]
+    fn evidence_excerpt_of_long_body_has_no_ellipsis() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let long_body = "夜雨敲在瓦上".repeat(20); // 120 字
+        let fid = create_fragment(&paths, &sc, &long_body).unwrap();
+
+        add_assertion(&paths, "c_0001", "located_at", "l_0001", Some(&fid)).unwrap();
+
+        let file =
+            EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        let ev = file.evidence.iter().find(|e| e.loc == fid).unwrap();
+        assert!(!ev.quote.contains('…'), "摘录不得含省略号: '{}'", ev.quote);
+        assert_eq!(ev.quote.chars().count(), 80, "摘录应为 80 字上限");
+        // 摘录必须是正文的子串（去空白口径），否则漂移比对必失败
+        let body_flat: String = long_body.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            body_flat.contains(&ev.quote.replace(' ', "")),
+            "摘录应为正文前 80 字"
+        );
+    }
+
+    #[test]
+    fn refresh_evidence_reanchors_quote_after_edit() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = create_fragment(&paths, &sc, "旧正文开头，即将被改写。").unwrap();
+        add_assertion(&paths, "c_0001", "located_at", "l_0001", Some(&fid)).unwrap();
+
+        // 正文被合理编辑
+        write_fragment_text_source(
+            &paths,
+            &fid,
+            "崭新的正文开头，事实依据未变。",
+            crate::stats::WriteSource::Ai,
+        )
+        .unwrap();
+
+        // 按 fragment_id 刷新：摘录基线应更新为新正文
+        let refreshed = refresh_evidence(&paths, None, Some(&fid)).unwrap();
+        assert_eq!(refreshed.len(), 1);
+        let file =
+            EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        assert_eq!(file.evidence[0].quote, "崭新的正文开头，事实依据未变。");
+
+        // 无参数 → 报错；不存在的 id → 报错
+        assert!(refresh_evidence(&paths, None, None).is_err());
+        assert!(refresh_evidence(&paths, Some("ev_9999"), None).is_err());
     }
 
     #[test]
