@@ -838,8 +838,7 @@ impl Rule for ThreadChecker {
             // premature_reveal → Error（按阅读序拓扑比较，弃 ID 字典序——
             // 字典序在 f_000A 及以后或场景乱序时给出错误结论）
             if let (Some(planted), Some(revealed)) = (&thread.planted_at, &thread.revealed_at) {
-                let order =
-                    |anchor: &story_ir::StableId| ctx.ir.document.reading_index(anchor);
+                let order = |anchor: &story_ir::StableId| ctx.ir.document.reading_index(anchor);
                 let revealed_before_planted = match (order(planted), order(revealed)) {
                     (Some(p), Some(r)) => r < p,
                     // 锚点无法定位到结构树（自由文本等）→ 无法判定，不报
@@ -1208,6 +1207,7 @@ mod tests {
             symbol: None,
             display_name: "测试角色".to_string(),
             aliases: vec![],
+            name_concealed: false,
             attributes: Default::default(),
         }));
         let codes = run_rule(&OrphanAssertion, &ir, None, Some(&kb));
@@ -1229,6 +1229,7 @@ mod tests {
                 symbol: None,
                 display_name: "林风".to_string(),
                 aliases: vec![],
+                name_concealed: false,
                 attributes: Default::default(),
             }));
         }
@@ -1250,16 +1251,20 @@ mod tests {
             kind: None,
             position: None,
         }));
-        ir.semantic.insert(SemanticNode::Organization(OrganizationNode {
-            id: StableId::new_unchecked("o_001"),
-            symbol: None,
-            display_name: "星辰学院".to_string(),
-            aliases: vec![],
-            location: None,
-            attributes: Default::default(),
-        }));
+        ir.semantic
+            .insert(SemanticNode::Organization(OrganizationNode {
+                id: StableId::new_unchecked("o_001"),
+                symbol: None,
+                display_name: "星辰学院".to_string(),
+                aliases: vec![],
+                location: None,
+                attributes: Default::default(),
+            }));
         let codes = run_rule(&DuplicateSymbol, &ir, None, None);
-        assert!(codes.is_empty(), "跨类型同名是合法双面实体，不应报警，实际: {codes:?}");
+        assert!(
+            codes.is_empty(),
+            "跨类型同名是合法双面实体，不应报警，实际: {codes:?}"
+        );
     }
 
     #[test]
@@ -1278,14 +1283,15 @@ mod tests {
                 position: None,
             }));
         }
-        ir.semantic.insert(SemanticNode::Organization(OrganizationNode {
-            id: StableId::new_unchecked("o_001"),
-            symbol: None,
-            display_name: "星辰学院".to_string(),
-            aliases: vec![],
-            location: None,
-            attributes: Default::default(),
-        }));
+        ir.semantic
+            .insert(SemanticNode::Organization(OrganizationNode {
+                id: StableId::new_unchecked("o_001"),
+                symbol: None,
+                display_name: "星辰学院".to_string(),
+                aliases: vec![],
+                location: None,
+                attributes: Default::default(),
+            }));
         let codes = run_rule(&DuplicateSymbol, &ir, None, None);
         assert_eq!(codes, vec!["duplicate_display_name"]);
     }
@@ -1577,6 +1583,9 @@ mod tests {
         let mut tc2 = story_ir::ThreadCollection::default();
         tc2.insert(thread_with("sc_b", "sc_a"));
         let codes2 = run_rule_with_threads(&ThreadChecker, &ir, &tc2);
-        assert!(!codes2.contains(&"premature_reveal".to_string()), "{codes2:?}");
+        assert!(
+            !codes2.contains(&"premature_reveal".to_string()),
+            "{codes2:?}"
+        );
     }
 }

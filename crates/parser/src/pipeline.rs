@@ -530,6 +530,7 @@ fn build_semantic_node(file: &EntityFile, id: StableId) -> SemanticNode {
         symbol,
         display_name,
         aliases,
+        name_concealed: file.is_name_concealed(),
         attributes: character_attributes(file),
     })
 }
@@ -540,9 +541,10 @@ fn character_attributes(file: &EntityFile) -> story_ir::EntityAttributes {
     if let Some(p) = &file.profile {
         let mut put = |k: &str, v: &Option<String>| {
             if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
-                attrs
-                    .custom
-                    .insert(k.to_string(), story_ir::AttributeValue::String(v.to_string()));
+                attrs.custom.insert(
+                    k.to_string(),
+                    story_ir::AttributeValue::String(v.to_string()),
+                );
             }
         };
         put("职业", &p.occupation);
@@ -558,11 +560,16 @@ fn character_attributes(file: &EntityFile) -> story_ir::EntityAttributes {
 fn org_attributes(file: &EntityFile) -> story_ir::EntityAttributes {
     let mut attrs = story_ir::EntityAttributes::default();
     if let Some(o) = &file.org {
-        for (k, v) in [("类型", &o.kind), ("理念", &o.ideology), ("简介", &o.summary)] {
+        for (k, v) in [
+            ("类型", &o.kind),
+            ("理念", &o.ideology),
+            ("简介", &o.summary),
+        ] {
             if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
-                attrs
-                    .custom
-                    .insert(k.to_string(), story_ir::AttributeValue::String(v.to_string()));
+                attrs.custom.insert(
+                    k.to_string(),
+                    story_ir::AttributeValue::String(v.to_string()),
+                );
             }
         }
     }
@@ -715,14 +722,8 @@ fn build_document_graph(ir: &mut StoryIR, raw: &RawFiles, errors: &mut Vec<Parse
                         day: t.day,
                     })
                 }),
-                story_time_anchor: sc_def
-                    .story_time
-                    .as_ref()
-                    .and_then(|t| t.anchor.clone()),
-                story_time_gap: sc_def
-                    .story_time
-                    .as_ref()
-                    .and_then(|t| t.gap.clone()),
+                story_time_anchor: sc_def.story_time.as_ref().and_then(|t| t.anchor.clone()),
+                story_time_gap: sc_def.story_time.as_ref().and_then(|t| t.gap.clone()),
                 mood: sc_def.mood.clone(),
                 function: sc_def.function.clone(),
                 summary: sc_def.summary.clone(),

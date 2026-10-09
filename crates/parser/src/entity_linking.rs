@@ -23,8 +23,6 @@ pub struct EntityDictionary {
     kinds: BTreeMap<StableId, String>,
 }
 
-
-
 /// 从全名派生可独立指代的分段（隐性别名）。
 ///
 /// 仅处理含分隔符（·、-、—、空格）的复合名；每段 ≥2 字、且非数字型
@@ -76,6 +74,13 @@ impl EntityDictionary {
         let mut dict = Self::new();
 
         for entity in graph.all_entities() {
+            // 真名遮蔽中的角色不入典：display_name 只是泛称代称（如「中年男人」），
+            // 入典会把正文里所有同类泛称误锚到该角色身上。遮蔽期的出场靠
+            // 理解锚定（LLM 指代消解）与章节脉络预设名单；reveal 后真名与
+            // 代称（已转别名）恢复正常入典。
+            if entity.name_concealed() {
+                continue;
+            }
             dict.kinds
                 .insert(entity.id().clone(), entity.type_name().to_string());
 
@@ -262,6 +267,7 @@ mod tests {
             symbol: None,
             display_name: "林风".to_string(),
             aliases: vec!["林少侠".to_string(), "风哥".to_string()],
+            name_concealed: false,
             attributes: Default::default(),
         };
         graph.insert(story_ir::SemanticNode::Character(lin.clone()));
@@ -271,6 +277,7 @@ mod tests {
             symbol: None,
             display_name: "周明".to_string(),
             aliases: vec![],
+            name_concealed: false,
             attributes: Default::default(),
         };
         graph.insert(story_ir::SemanticNode::Character(zhou));
@@ -288,6 +295,7 @@ mod tests {
             symbol: None,
             display_name: "路人".to_string(),
             aliases: vec!["那个人".to_string()], // 与林风共享"那个人"
+            name_concealed: false,
             attributes: Default::default(),
         };
         graph.insert(story_ir::SemanticNode::Character(other.clone()));
@@ -353,17 +361,15 @@ mod tests {
     #[test]
     fn link_cross_kind_same_name_dual_facet() {
         let mut graph = SemanticGraph::new();
-        graph.insert(story_ir::SemanticNode::Location(
-            story_ir::LocationNode {
-                id: StableId::new_unchecked("l_001"),
-                symbol: None,
-                display_name: "星辰学院".to_string(),
-                aliases: vec![],
-                parent: None,
-                kind: None,
-                position: None,
-            },
-        ));
+        graph.insert(story_ir::SemanticNode::Location(story_ir::LocationNode {
+            id: StableId::new_unchecked("l_001"),
+            symbol: None,
+            display_name: "星辰学院".to_string(),
+            aliases: vec![],
+            parent: None,
+            kind: None,
+            position: None,
+        }));
         graph.insert(story_ir::SemanticNode::Organization(
             story_ir::OrganizationNode {
                 id: StableId::new_unchecked("o_001"),
@@ -394,17 +400,15 @@ mod tests {
     fn link_same_kind_duplicate_still_ambiguous() {
         let mut graph = SemanticGraph::new();
         for id in ["l_001", "l_002"] {
-            graph.insert(story_ir::SemanticNode::Location(
-                story_ir::LocationNode {
-                    id: StableId::new_unchecked(id),
-                    symbol: None,
-                    display_name: "星辰学院".to_string(),
-                    aliases: vec![],
-                    parent: None,
-                    kind: None,
-                    position: None,
-                },
-            ));
+            graph.insert(story_ir::SemanticNode::Location(story_ir::LocationNode {
+                id: StableId::new_unchecked(id),
+                symbol: None,
+                display_name: "星辰学院".to_string(),
+                aliases: vec![],
+                parent: None,
+                kind: None,
+                position: None,
+            }));
         }
         graph.insert(story_ir::SemanticNode::Organization(
             story_ir::OrganizationNode {
@@ -501,6 +505,39 @@ mod tests {
         assert_eq!(mentions[0].entity.as_str(), "l_001");
     }
 
+    /// 真名遮蔽中的角色：display_name 是泛称代称，不入锚定词典——
+    /// 否则正文里任何「中年男人」都会被误锚到该角色
+    #[test]
+    fn concealed_character_not_in_dictionary() {
+        let mut graph = SemanticGraph::new();
+        graph.insert(story_ir::SemanticNode::Character(story_ir::CharacterNode {
+            id: StableId::new_unchecked("c_007"),
+            symbol: Some(story_ir::Symbol::new("shen")),
+            display_name: "中年男人".to_string(),
+            aliases: vec!["灰袍男人".to_string()],
+            name_concealed: true,
+            attributes: Default::default(),
+        }));
+        let dict = EntityDictionary::from_semantic_graph(&graph);
+        assert!(dict.lookup("中年男人").is_empty());
+        assert!(dict.lookup("灰袍男人").is_empty());
+        // 揭露后（name_concealed = false）真名与代称别名正常入典
+        let mut graph2 = SemanticGraph::new();
+        graph2.insert(story_ir::SemanticNode::Character(story_ir::CharacterNode {
+            id: StableId::new_unchecked("c_007"),
+            symbol: None,
+            display_name: "沈孤鸿".to_string(),
+            aliases: vec!["中年男人".to_string()],
+            name_concealed: false,
+            attributes: Default::default(),
+        }));
+        let dict2 = EntityDictionary::from_semantic_graph(&graph2);
+        assert_eq!(
+            dict2.lookup("中年男人"),
+            &[StableId::new_unchecked("c_007")]
+        );
+    }
+
     #[test]
     fn chinese_names_derive_nothing() {
         assert!(derive_name_parts("沈砚之").is_empty());
@@ -521,6 +558,7 @@ mod tests {
             symbol: None,
             display_name: "碧翠丝·艾什沃斯".to_string(),
             aliases: vec!["碧翠丝".to_string()],
+            name_concealed: false,
             attributes: Default::default(),
         }));
         let dict = EntityDictionary::from_semantic_graph(&graph);
@@ -530,6 +568,9 @@ mod tests {
             !mentions.is_empty() && mentions[0].entity.as_str() == "c_004",
             "前缀别名应命中: {mentions:?}"
         );
-        assert!(ambiguities.is_empty(), "同实体重复词条不应判歧义: {ambiguities:?}");
+        assert!(
+            ambiguities.is_empty(),
+            "同实体重复词条不应判歧义: {ambiguities:?}"
+        );
     }
 }

@@ -49,6 +49,10 @@ export interface EntityDto {
   displayName: string
   symbol: string | null
   aliases: string[]
+  /** 真名遮蔽中的预定真名（displayName 为正文代称）；null = 未遮蔽/已揭露 */
+  secretName: string | null
+  /** 真名揭露记录（如「第 7 章」） */
+  nameRevealedIn: string | null
   profile: ProfileDto | null
   geography: GeographyDto | null
   item: ItemDto | null

@@ -419,6 +419,7 @@ fn reparse_entity(
                     symbol,
                     display_name,
                     aliases,
+                    name_concealed: entity_file.is_name_concealed(),
                     attributes: Default::default(),
                 }),
             };

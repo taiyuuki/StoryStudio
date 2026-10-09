@@ -482,7 +482,8 @@ fn run_workflow_inner(
             Ok(resp) => crate::ai_ledger::record(
                 dir,
                 &chapter_label,
-                provider.id(), provider.model(),
+                provider.id(),
+                provider.model(),
                 resp.usage.total() as u64,
                 chapter_gen_started.elapsed().as_millis() as u64,
                 true,
@@ -491,7 +492,8 @@ fn run_workflow_inner(
             Err(e) => crate::ai_ledger::record(
                 dir,
                 &chapter_label,
-                provider.id(), provider.model(),
+                provider.id(),
+                provider.model(),
                 0,
                 chapter_gen_started.elapsed().as_millis() as u64,
                 false,
@@ -937,6 +939,14 @@ fn build_materials(
     for cid in def.characters.iter().take(8) {
         if let Ok(id) = StableId::new(cid.clone()) {
             if let Some(story_ir::SemanticNode::Character(c)) = ir.semantic.get(&id) {
+                // 真名遮蔽中：只给代称 + 禁令，别名与真名一律不进上下文
+                if c.name_concealed {
+                    character_cards.push_str(&format!(
+                        "- {}（真名未揭露：正文只能用此代称，禁止写出真名）\n",
+                        c.display_name
+                    ));
+                    continue;
+                }
                 let mut line = format!("- {}", c.display_name);
                 if !c.aliases.is_empty() {
                     line.push_str(&format!("（别名：{}）", c.aliases.join("、")));

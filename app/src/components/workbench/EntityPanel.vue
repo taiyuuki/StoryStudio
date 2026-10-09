@@ -38,12 +38,30 @@ const draft = reactive<EntityDto>({
   displayName: '',
   symbol: null,
   aliases: [],
+  secretName: null,
+  nameRevealedIn: null,
   profile: null,
   geography: null,
   item: null,
   org: null,
   attributes: {},
 })
+
+const concealed = computed(() => Boolean(draft.secretName?.trim()))
+
+// 揭露真名：display_name 换为预定真名，原代称转入别名（继续锚定历史指代），
+// 清遮蔽状态。与 AI 侧 reveal_character_name 工具同一语义。
+function revealName() {
+  const trueName = draft.secretName?.trim()
+  if (!trueName) return
+  const placeholder = draft.displayName.trim()
+  if (placeholder && placeholder !== trueName && !draft.aliases.includes(placeholder)) {
+    draft.aliases.unshift(placeholder)
+  }
+  draft.displayName = trueName
+  draft.secretName = null
+  draft.nameRevealedIn = '工作台手动揭露'
+}
 
 function edit(e: EntityDto | null) {
   selectedId.value = e?.id ?? null
@@ -227,7 +245,14 @@ function label(r: string): string {
       >
         <span class="ei-avatar" :data-kind="e.kind">{{ e.displayName.slice(0, 1) }}</span>
         <span class="ei-main">
-          <span class="ei-name">{{ e.displayName }}</span>
+          <span class="ei-name">
+            {{ e.displayName }}
+            <i
+              v-if="e.secretName"
+              class="fa-solid fa-user-secret conceal-mark"
+              :title="`真名遮蔽中（预定真名：${e.secretName}）——正文只能用代称，详情页可揭露`"
+            />
+          </span>
           <span class="ei-sub">{{ e.aliases.length ? e.aliases.join('、') : '　' }}</span>
         </span>
         <button class="ei-del" title="删除" @click.stop="remove(e)">
@@ -290,6 +315,16 @@ function label(r: string): string {
         <label>名称</label>
         <input v-model="draft.displayName" />
       </div>
+      <p v-if="concealed" class="conceal-banner">
+        <i class="fa-solid fa-user-secret" />
+        真名遮蔽中——正文与 AI 上下文只能使用代称「{{ draft.displayName }}」，
+        预定真名「{{ draft.secretName }}」已隐藏。正文正式揭露后点右侧按钮切换：
+        <button class="ink-btn ink-btn--sm ink-btn--primary" @click="revealName">揭露真名</button>
+      </p>
+      <p v-else-if="draft.nameRevealedIn" class="conceal-banner conceal-banner--done">
+        <i class="fa-solid fa-check" />
+        真名已揭露（{{ draft.nameRevealedIn }}），原代称已转入别名。
+      </p>
       <div class="d-row">
         <label>别名</label>
         <input v-model="aliasText" placeholder="多个别名用、分隔" />
@@ -753,6 +788,37 @@ function label(r: string): string {
 }
 
 // 描述性别名警示（不阻断保存，只提示误锚风险）
+// 真名遮蔽：列表角标 + 详情横幅
+.conceal-mark {
+  margin-left: 5px;
+  font-size: 10px;
+  color: var(--state-warning);
+  vertical-align: 1px;
+}
+
+.conceal-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  margin: -6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--state-warning);
+
+  i {
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+  button {
+    margin-left: auto;
+  }
+
+  &--done {
+    color: var(--state-success);
+  }
+}
+
 .alias-warn {
   display: flex;
   gap: 7px;

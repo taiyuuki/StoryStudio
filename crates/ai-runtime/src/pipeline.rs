@@ -219,6 +219,7 @@ mod tests {
             symbol: None,
             display_name: "林风".to_string(),
             aliases: vec![],
+            name_concealed: false,
             attributes: Default::default(),
         }));
 

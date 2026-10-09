@@ -307,6 +307,7 @@ mod tests {
             symbol: None,
             display_name: "林风".to_string(),
             aliases: vec!["林少侠".to_string()],
+            name_concealed: false,
             attributes: Default::default(),
         }));
 

@@ -116,6 +116,7 @@ mod tests {
             symbol: None,
             display_name: "林风".to_string(),
             aliases: vec!["林少侠".to_string()],
+            name_concealed: false,
             attributes: Default::default(),
         }));
 
@@ -197,9 +198,14 @@ mod tests {
             vec![StableId::new_unchecked("f_001")],
         );
 
-        let recent = ContextBuilder::new(&ir).recent_fragments(&StableId::new_unchecked("sc_01"), 3);
+        let recent =
+            ContextBuilder::new(&ir).recent_fragments(&StableId::new_unchecked("sc_01"), 3);
         assert!(recent.contains("结尾在这里"), "截尾应保留末尾: {recent:?}");
-        assert!(recent.chars().count() < 1300, "超长片段应被截断: {}", recent.chars().count());
+        assert!(
+            recent.chars().count() < 1300,
+            "超长片段应被截断: {}",
+            recent.chars().count()
+        );
     }
 
     #[test]

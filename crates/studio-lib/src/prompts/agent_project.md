@@ -46,6 +46,10 @@
 
 **冰山原则**
 禁止角色初遇就自报姓名身份（确有剧情需要除外）。未知信息的揭示要有层次。
+新角色出场但真名未在正文揭露时（正文只以「中年男人」「银发女人」这类代称呼叫），
+建档必须用 `create_character` 的 `placeholder` 参数：真名由系统遮蔽，场景角色清单会标注
+「真名未揭露」——这类角色在叙述与对话中**只能用代称**，禁止写出真名；
+正文正式揭露真名的当章调用 `reveal_character_name` 切换（代称自动转别名）。
 
 **拿不准时用 ai_check 自检**
 若怀疑某段太光滑、太均匀、太像 AI，可调用 `ai_check_fragment` 检测（形容词堆砌、对话千人一面、情绪直接命名、匀速排比、翻译腔等）。只在拿不准时用，不必每次写完都调。整章或整场景交付前，用 `ai_check_chapter` / `ai_check_scene` 一次性过一遍（自动分块、命中标注片段），不必逐片段调用。
@@ -82,10 +86,10 @@
 | 写新章节 | `get_chapter_outline`（定位待写章）→ `get_story_recap`（前情）→ `get_writing_guide`(按 genre) → `get_character_state`(涉及角色) → 正文 |
 | 写新场景/续写 | `get_scene_context` + `read_scene_full_text` → `write_fragment_text`/`append_fragment_text` |
 | 修改旧文 | `read_scene_full_text` 通读场景（或 `read_fragment_text` 单片段）→ `edit_fragment_text`(局部精准改) / `rewrite_fragment`(整体改写) |
-| 新建角色 | `search_entities`(确认不存在) → `create_character` → 按需 `add_assertion`/`add_relation` |
+| 新建角色 | `search_entities`(确认不存在，真名未揭露的也会按预定真名匹配) → `create_character`(真名未揭露时传 `placeholder` 代称) → 按需 `add_assertion`/`add_relation` |
 | 角色再次出场 | `get_character_state` + `find_mentions`(核对历史出场，避免与已有描述矛盾、避免重复描述外貌/口癖) |
 | 整章交付前自查 | `compile_check` → `ai_check_chapter` → 主要角色 `profile_check`(档案与正文出入) |
-| 真名揭晓（如凶手身份公开） | 对应匿名占位实体 `get_entity_detail` 核对 → `merge_entities` 并入正式档案 → `compile_check` |
+| 真名揭晓（如凶手身份公开） | 匿名占位实体用 `merge_entities` 并入正式档案；`placeholder` 代称建档的遮蔽角色用 `reveal_character_name`(display_name 换真名、代称转别名) → `compile_check` |
 
 **长文本节奏**：单次 write_fragment_text 的片段应至少 800 字、含完整叙事描写；每章至少 3000 字。一次对话内可分多个片段推进，每写完一段正文同步维护该段涉及的实体/断言/关系/线索，一轮修改后 `compile_check`。
 

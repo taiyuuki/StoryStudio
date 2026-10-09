@@ -79,6 +79,13 @@ pub struct EntityDto {
     pub display_name: String,
     pub symbol: Option<String>,
     pub aliases: Vec<String>,
+    /// 真名遮蔽中的预定真名（display_name 为正文代称）；null = 未遮蔽/已揭露。
+    /// 只读展示用：save_entity_file 不回写此字段，UI 编辑不会误清遮蔽状态
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_name: Option<String>,
+    /// 真名揭露记录（如「第 7 章」），仅展示用
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_revealed_in: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -268,10 +275,9 @@ pub fn build_knowledge(root: &Path) -> Result<KnowledgeDto, String> {
     let paths = story_project_format::ProjectPaths::new(root);
 
     // structure → 片段定位标签与阅读顺序清单
-    let structure = story_project_format::StructureFile::from_toml_str(&read_file(
-        &paths.structure_toml(),
-    )?)
-    .map_err(|e| format!("structure.toml 解析失败: {e}"))?;
+    let structure =
+        story_project_format::StructureFile::from_toml_str(&read_file(&paths.structure_toml())?)
+            .map_err(|e| format!("structure.toml 解析失败: {e}"))?;
 
     let mut frag_label: BTreeMap<String, String> = BTreeMap::new();
     let mut fragments = Vec::new();
@@ -283,7 +289,11 @@ pub fn build_knowledge(root: &Path) -> Result<KnowledgeDto, String> {
             let Some(scene) = structure.scene.get(sid) else {
                 continue;
             };
-            let label = format!("{} · {}", chapter.title, scene.title.as_deref().unwrap_or(""));
+            let label = format!(
+                "{} · {}",
+                chapter.title,
+                scene.title.as_deref().unwrap_or("")
+            );
             for fid in &scene.fragments {
                 if frag_label.insert(fid.clone(), label.clone()).is_none() {
                     fragments.push(FragmentRefDto {
@@ -337,7 +347,11 @@ pub fn build_knowledge(root: &Path) -> Result<KnowledgeDto, String> {
                         })
                     })
                     .collect(),
-                valid_from: a.valid.as_ref().and_then(|v| v.from.as_ref()).map(story_time_label),
+                valid_from: a
+                    .valid
+                    .as_ref()
+                    .and_then(|v| v.from.as_ref())
+                    .map(story_time_label),
                 valid_until: a
                     .valid
                     .as_ref()
@@ -539,12 +553,11 @@ impl From<&story_studio_lib::ai::GlobalAiConfig> for AiConfigDto {
                                 story_ai_runtime::ApiMode::Chat => "chat".to_string(),
                             }),
                             extra_body: p.extra_body.clone(),
-                            extra_headers: p
-                                .extra_headers
-                                .as_ref()
-                                .map(|hs| {
-                                    hs.iter().cloned().collect::<std::collections::BTreeMap<_, _>>()
-                                }),
+                            extra_headers: p.extra_headers.as_ref().map(|hs| {
+                                hs.iter()
+                                    .cloned()
+                                    .collect::<std::collections::BTreeMap<_, _>>()
+                            }),
                             last_test: p.last_test.clone(),
                         })
                         .collect()
@@ -619,6 +632,8 @@ pub fn to_entity_dto(kind: &str, ef: &EntityFile) -> EntityDto {
         display_name: ef.display_name.clone(),
         symbol: ef.symbol.clone(),
         aliases: ef.aliases.clone(),
+        secret_name: ef.secret_name.clone(),
+        name_revealed_in: ef.name_revealed_in.clone(),
         profile: ef.profile.as_ref().map(profile_to_dto),
         geography: ef.geography.as_ref().map(|g| GeographyDto {
             parent: g.parent.clone(),
@@ -801,6 +816,12 @@ pub fn save_entity_file(root: &Path, dto: &EntityDto) -> Result<(), String> {
     ef.id = dto.id.clone();
     ef.display_name = dto.display_name.clone();
     ef.symbol = dto.symbol.clone().filter(|s| !s.is_empty());
+    // 遮蔽状态随 DTO 回写（前端揭示/改名需要落盘）；空串视作清除
+    ef.secret_name = dto.secret_name.clone().filter(|s| !s.trim().is_empty());
+    ef.name_revealed_in = dto
+        .name_revealed_in
+        .clone()
+        .filter(|s| !s.trim().is_empty());
     ef.aliases = dto
         .aliases
         .iter()
@@ -808,20 +829,23 @@ pub fn save_entity_file(root: &Path, dto: &EntityDto) -> Result<(), String> {
         .filter(|s| !s.is_empty())
         .collect();
     if kind == EntityKind::Character {
-        ef.profile = Some(profile_from_dto(dto.profile.as_ref().unwrap_or(&ProfileDto::default())));
+        ef.profile = Some(profile_from_dto(
+            dto.profile.as_ref().unwrap_or(&ProfileDto::default()),
+        ));
     } else {
         ef.profile = None;
     }
     if kind == EntityKind::Location {
-        ef.geography = dto.geography.clone().map(|g| {
-            story_project_format::entity_file::GeographySection {
-                parent: g.parent,
-                kind: g.kind,
-                position: g.position,
-                features: g.features,
-                summary: g.summary,
-            }
-        });
+        ef.geography =
+            dto.geography
+                .clone()
+                .map(|g| story_project_format::entity_file::GeographySection {
+                    parent: g.parent,
+                    kind: g.kind,
+                    position: g.position,
+                    features: g.features,
+                    summary: g.summary,
+                });
     } else {
         ef.geography = None;
     }
@@ -841,14 +865,18 @@ pub fn save_entity_file(root: &Path, dto: &EntityDto) -> Result<(), String> {
         ef.org = None;
     }
     if kind == EntityKind::Item {
-        ef.item = Some(item_from_dto(dto.item.as_ref().unwrap_or(&ItemDto::default())));
+        ef.item = Some(item_from_dto(
+            dto.item.as_ref().unwrap_or(&ItemDto::default()),
+        ));
     } else {
         ef.item = None;
     }
 
     let dir = kind.dir(&story_project_format::ProjectPaths::new(root));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let toml_content = ef.to_toml_string().map_err(|e| format!("序列化实体失败: {e}"))?;
+    let toml_content = ef
+        .to_toml_string()
+        .map_err(|e| format!("序列化实体失败: {e}"))?;
     std::fs::write(dir.join(format!("{}.toml", dto.id)), toml_content)
         .map_err(|e| format!("写入实体文件失败: {e}"))
 }
@@ -909,7 +937,11 @@ pub fn build_worldview(root: &Path) -> Result<WorldviewDto, String> {
         })
         .collect();
     let eras = load_toml::<TimelineFile>(&paths.worldview_timeline_toml())?.eras;
-    Ok(WorldviewDto { concepts, systems, eras })
+    Ok(WorldviewDto {
+        concepts,
+        systems,
+        eras,
+    })
 }
 
 /// 保存世界观（整体写回 worldview/ 目录三个文件）
@@ -927,9 +959,24 @@ pub fn save_worldview(root: &Path, dto: &WorldviewDto) -> Result<(), String> {
             .filter(|c| !c.name.trim().is_empty())
             .map(|c| ConceptDef {
                 name: c.name.trim().to_string(),
-                category: c.category.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
-                summary: c.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
-                details: c.details.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+                category: c
+                    .category
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                summary: c
+                    .summary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                details: c
+                    .details
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
             })
             .collect(),
     };
@@ -940,10 +987,30 @@ pub fn save_worldview(root: &Path, dto: &WorldviewDto) -> Result<(), String> {
             .filter(|s| !s.name.trim().is_empty())
             .map(|s| SystemDef {
                 name: s.name.trim().to_string(),
-                kind: s.kind.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
-                levels: s.levels.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
-                rules: s.rules.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
-                summary: s.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+                kind: s
+                    .kind
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                levels: s
+                    .levels
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                rules: s
+                    .rules
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                summary: s
+                    .summary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
             })
             .collect(),
     };
@@ -1147,13 +1214,15 @@ pub fn save_chapters_outline(root: &Path, dto: &ChaptersOutlineDto) -> Result<()
 }
 
 /// 汇总项目全量工作区数据
-pub fn build_workspace(root: &Path, info: &story_studio_lib::ProjectInfo) -> Result<WorkspaceDto, String> {
+pub fn build_workspace(
+    root: &Path,
+    info: &story_studio_lib::ProjectInfo,
+) -> Result<WorkspaceDto, String> {
     let paths = story_project_format::ProjectPaths::new(root);
 
-    let structure = story_project_format::StructureFile::from_toml_str(
-        &read_file(&paths.structure_toml())?,
-    )
-    .map_err(|e| format!("structure.toml 解析失败: {e}"))?;
+    let structure =
+        story_project_format::StructureFile::from_toml_str(&read_file(&paths.structure_toml())?)
+            .map_err(|e| format!("structure.toml 解析失败: {e}"))?;
     let chapters = load_chapter_dtos(root)?;
 
     // 实体：扫描四类目录
@@ -1197,17 +1266,18 @@ pub fn build_workspace(root: &Path, info: &story_studio_lib::ProjectInfo) -> Res
         .collect();
 
     // 未锚定指代台账（anchoring.toml，可缺省）
-    let unresolved_refs = load_toml::<story_project_format::AnchoringFile>(&paths.anchoring_toml())?
-        .refs
-        .iter()
-        .map(|r| UnresolvedRefDto {
-            fragment_id: r.fragment_id.clone(),
-            quote: r.quote.clone(),
-            hint: r.hint.clone(),
-            status: r.status.clone(),
-            target: r.target.clone(),
-        })
-        .collect();
+    let unresolved_refs =
+        load_toml::<story_project_format::AnchoringFile>(&paths.anchoring_toml())?
+            .refs
+            .iter()
+            .map(|r| UnresolvedRefDto {
+                fragment_id: r.fragment_id.clone(),
+                quote: r.quote.clone(),
+                hint: r.hint.clone(),
+                status: r.status.clone(),
+                target: r.target.clone(),
+            })
+            .collect();
 
     let total_words = chapters
         .iter()
@@ -1234,10 +1304,9 @@ pub fn build_workspace(root: &Path, info: &story_studio_lib::ProjectInfo) -> Res
 /// 加载章节结构（Book → Chapter → Scene），计算每场景字数
 pub fn load_chapter_dtos(root: &Path) -> Result<Vec<ChapterDto>, String> {
     let paths = story_project_format::ProjectPaths::new(root);
-    let structure = story_project_format::StructureFile::from_toml_str(
-        &read_file(&paths.structure_toml())?,
-    )
-    .map_err(|e| format!("structure.toml 解析失败: {e}"))?;
+    let structure =
+        story_project_format::StructureFile::from_toml_str(&read_file(&paths.structure_toml())?)
+            .map_err(|e| format!("structure.toml 解析失败: {e}"))?;
 
     let mut chapters = Vec::new();
     for ch_id in &structure.book.chapters {

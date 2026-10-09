@@ -20,11 +20,22 @@ pub struct EntityFile {
     /// Symbol（可改，可空）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
-    /// Display Name（正文与 UI 展示用）
+    /// Display Name（正文与 UI 展示用；真名遮蔽中时存正文使用的代称）
     pub display_name: String,
     /// 别名列表
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// 真名遮蔽：角色真名尚未在正文揭露时的预定真名（仅 Character 有意义）。
+    ///
+    /// Some(..) 表示遮蔽中——display_name 存正文当前使用的代称（如「中年男人」），
+    /// 真名只存于此字段：不进锚定词表、不进场景速查，防止写作模型把 POV
+    /// 角色尚未得知的真名当已知称呼写进正文。正文正式揭露后调用
+    /// reveal_character_name：display_name 换为真名、代称转入 aliases、此字段清空。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_name: Option<String>,
+    /// 真名揭露记录（reveal 时的位置说明，如「第 7 章 sc_07_02」，仅展示用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_revealed_in: Option<String>,
 
     /// 角色档案（仅 Character）
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,6 +186,13 @@ impl EntityFile {
         Ok(toml::to_string_pretty(self)?)
     }
 
+    /// 真名是否遮蔽中（仅角色有意义，其他类型恒为 false）
+    pub fn is_name_concealed(&self) -> bool {
+        self.secret_name
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+    }
+
     /// 创建 Character Entity
     pub fn new_character(id: impl Into<String>, display_name: impl Into<String>) -> Self {
         Self {
@@ -182,6 +200,8 @@ impl EntityFile {
             symbol: None,
             display_name: display_name.into(),
             aliases: Vec::new(),
+            secret_name: None,
+            name_revealed_in: None,
             profile: Some(ProfileSection::default()),
             geography: None,
             item: None,
@@ -197,6 +217,8 @@ impl EntityFile {
             symbol: None,
             display_name: display_name.into(),
             aliases: Vec::new(),
+            secret_name: None,
+            name_revealed_in: None,
             profile: None,
             geography: Some(GeographySection::default()),
             item: None,
@@ -212,6 +234,8 @@ impl EntityFile {
             symbol: None,
             display_name: display_name.into(),
             aliases: Vec::new(),
+            secret_name: None,
+            name_revealed_in: None,
             profile: None,
             geography: None,
             item: Some(ItemSection::default()),
@@ -227,6 +251,8 @@ impl EntityFile {
             symbol: None,
             display_name: display_name.into(),
             aliases: Vec::new(),
+            secret_name: None,
+            name_revealed_in: None,
             profile: None,
             geography: None,
             item: None,
@@ -401,6 +427,41 @@ location = "l_3F2B1C"
         assert!(entity.profile.is_none());
         assert!(entity.geography.is_none());
         assert!(entity.item.is_none());
+    }
+
+    #[test]
+    fn concealed_name_roundtrip() {
+        // 真名遮蔽中：display_name 存代称，预定真名存 secret_name
+        let toml_str = r#"
+id = "c_0007"
+display_name = "中年男人"
+secret_name = "沈孤鸿"
+
+[profile]
+appearance = "灰袍，鬓角花白"
+"#;
+        let entity = EntityFile::from_toml_str(toml_str).unwrap();
+        assert!(entity.is_name_concealed());
+        assert_eq!(entity.display_name, "中年男人");
+        assert_eq!(entity.secret_name.as_deref(), Some("沈孤鸿"));
+        assert!(entity.name_revealed_in.is_none());
+
+        // Roundtrip：遮蔽字段不丢失；未设置时不序列化（旧项目文件兼容）
+        let serialized = entity.to_toml_string().unwrap();
+        let reparsed = EntityFile::from_toml_str(&serialized).unwrap();
+        assert!(reparsed.is_name_concealed());
+        assert_eq!(reparsed.secret_name.as_deref(), Some("沈孤鸿"));
+
+        let revealed = EntityFile::from_toml_str(
+            r#"
+id = "c_0007"
+display_name = "沈孤鸿"
+aliases = ["中年男人"]
+name_revealed_in = "第 7 章"
+"#,
+        )
+        .unwrap();
+        assert!(!revealed.is_name_concealed());
     }
 
     #[test]

@@ -132,6 +132,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(ProfileCheckTool::new(ctx.clone())));
     registry.register(Box::new(DeleteEntityTool::new(ctx.clone())));
     registry.register(Box::new(MergeEntitiesTool::new(ctx.clone())));
+    registry.register(Box::new(RevealCharacterNameTool::new(ctx.clone())));
     registry.register(Box::new(GetStoryRecapTool::new(ctx.clone())));
     registry.register(Box::new(GetRelationsTool::new(ctx.clone())));
     registry.register(Box::new(QueryAssertionsTool::new(ctx.clone())));
@@ -336,7 +337,8 @@ pub fn agent_chat_streaming(
         Ok(trace) => crate::ai_ledger::record(
             dir,
             "妙笔对话",
-            &provider_id, &provider_model,
+            &provider_id,
+            &provider_model,
             trace.total_tokens as u64,
             started.elapsed().as_millis() as u64,
             true,
@@ -345,7 +347,8 @@ pub fn agent_chat_streaming(
         Err(e) => crate::ai_ledger::record(
             dir,
             "妙笔对话",
-            &provider_id, &provider_model,
+            &provider_id,
+            &provider_model,
             0,
             started.elapsed().as_millis() as u64,
             false,

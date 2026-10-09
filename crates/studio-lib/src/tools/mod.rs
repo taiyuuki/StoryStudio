@@ -212,9 +212,10 @@ pub(super) fn get_json_array_opt(
 
 pub(super) fn get_u32_opt(args: &serde_json::Value, key: &str) -> Option<u32> {
     match args.get(key) {
-        Some(v) => v.as_u64().map(|n| n as u32).or_else(|| {
-            v.as_str().and_then(|s| s.trim().parse::<u32>().ok())
-        }),
+        Some(v) => v
+            .as_u64()
+            .map(|n| n as u32)
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse::<u32>().ok())),
         None => None,
     }
 }
@@ -312,6 +313,8 @@ pub(super) fn format_brief(text: &str, max_len: usize) -> String {
 
 /// 实体档案摘要：名称（ID，职业，种族/类型…）——只拼非空字段，
 /// 用于写前把档案要点推到创作者眼前。
+/// 真名遮蔽中的角色只标状态不露真名：摘要会进入写入回执等常规上下文，
+/// 真名只应出现在 get_entity_detail / search_entities 等主动核查场景。
 pub(super) fn entity_profile_brief(id: &str, e: &story_project_format::EntityFile) -> String {
     let mut parts: Vec<String> = vec![id.to_string()];
     if let Some(p) = &e.profile {
@@ -327,17 +330,16 @@ pub(super) fn entity_profile_brief(id: &str, e: &story_project_format::EntityFil
             parts.push(k.clone());
         }
     }
+    if e.is_name_concealed() {
+        parts.push("真名未揭露，正文只能用代称".to_string());
+    }
     format!("{}（{}）", e.display_name, parts.join("，"))
 }
 
 /// 扫描正文提及的实体（display_name / aliases 出现即命中），
 /// 返回档案摘要列表（最多 max 条）——与 LocationIndex 隐式匹配同思路，
 /// 但不依赖完整 parse，写入回执场景够用。
-pub(super) fn mentioned_entity_briefs(
-    paths: &ProjectPaths,
-    text: &str,
-    max: usize,
-) -> Vec<String> {
+pub(super) fn mentioned_entity_briefs(paths: &ProjectPaths, text: &str, max: usize) -> Vec<String> {
     let mut briefs = Vec::new();
     for dir in [
         paths.characters_dir(),
@@ -519,7 +521,10 @@ mod tests {
             get_str_array_opt(&serde_json::json!({"xs": ""}), "xs").unwrap(),
             None
         );
-        assert_eq!(get_str_array_opt(&serde_json::json!({}), "xs").unwrap(), None);
+        assert_eq!(
+            get_str_array_opt(&serde_json::json!({}), "xs").unwrap(),
+            None
+        );
         // 数组元素非字符串 → 报错
         assert!(get_str_array_opt(&serde_json::json!({"xs": ["a", 1]}), "xs").is_err());
         // 其他类型 → 报错
@@ -529,12 +534,24 @@ mod tests {
     #[test]
     fn get_index_accepts_number_and_string_forms() {
         // JSON 数字（schema 声明的 integer 形态）
-        assert_eq!(get_index(&serde_json::json!({"index": 2}), "index").unwrap(), 2);
+        assert_eq!(
+            get_index(&serde_json::json!({"index": 2}), "index").unwrap(),
+            2
+        );
         // 整数值浮点
-        assert_eq!(get_index(&serde_json::json!({"index": 2.0}), "index").unwrap(), 2);
+        assert_eq!(
+            get_index(&serde_json::json!({"index": 2.0}), "index").unwrap(),
+            2
+        );
         // 字符串数字（模型偶尔无视 schema 的形态）
-        assert_eq!(get_index(&serde_json::json!({"index": "3"}), "index").unwrap(), 3);
-        assert_eq!(get_index(&serde_json::json!({"index": " 3 "}), "index").unwrap(), 3);
+        assert_eq!(
+            get_index(&serde_json::json!({"index": "3"}), "index").unwrap(),
+            3
+        );
+        assert_eq!(
+            get_index(&serde_json::json!({"index": " 3 "}), "index").unwrap(),
+            3
+        );
         // 非整数浮点 / 0 / 负数 / 非数字 / 缺失
         assert!(get_index(&serde_json::json!({"index": 1.5}), "index").is_err());
         assert!(get_index(&serde_json::json!({"index": 0}), "index").is_err());
@@ -550,7 +567,10 @@ mod tests {
         story_project_format::init::init_project(tmp.path(), "parse-cache-test").unwrap();
         let dir = tmp.path();
 
-        let ch = crate::mutations::create_chapter(&crate::tools::ToolContext::new(dir.to_path_buf()).paths(), "第一章");
+        let ch = crate::mutations::create_chapter(
+            &crate::tools::ToolContext::new(dir.to_path_buf()).paths(),
+            "第一章",
+        );
         let _ = ch;
 
         let ctx = ToolContext::new(dir.to_path_buf());
@@ -572,7 +592,11 @@ mod tests {
         let third = ctx.parse().unwrap();
         assert!(!Arc::ptr_eq(&first, &third));
         assert!(
-            third.ir.document.get_fragment(&story_ir::StableId::new_unchecked(&fid)).is_some(),
+            third
+                .ir
+                .document
+                .get_fragment(&story_ir::StableId::new_unchecked(&fid))
+                .is_some(),
             "磁盘新增片段应被增量解析看到"
         );
 
@@ -582,7 +606,8 @@ mod tests {
         assert!(Arc::ptr_eq(&third, &fourth), "ctx.clone() 应共享缓存");
 
         // threads.toml 变化（增量机制不追踪）→ 强制全量，能读到新线索
-        crate::mutations::create_thread(&paths, "新线索", "描述", "main", None, None, None).unwrap();
+        crate::mutations::create_thread(&paths, "新线索", "描述", "main", None, None, None)
+            .unwrap();
         let fifth = ctx.parse().unwrap();
         assert!(
             fifth.threads.all().count() >= 1,

@@ -14,13 +14,17 @@ use super::{format_brief, get_str, get_str_array_opt, get_str_opt, object_schema
 /// 告警，正文提及被丢弃）→ 返回警告与改错建议。跨类型同名（如「星辰学院」
 /// 既是地点也是机构）是合法的「双面实体」，Linking 会各记一条提及 → 只给
 /// 一句说明，不打警告。
+///
+/// `secret_name`：真名遮蔽建档时的预定真名。它与既有实体撞名时多半说明
+/// 「这个人其实已经建过档」，提示复用/合并而不是另建遮蔽角色。
 fn duplicate_name_warning(
     paths: &story_project_format::ProjectPaths,
     kind: EntityKind,
     new_id: &str,
     name: &str,
+    secret_name: Option<&str>,
 ) -> String {
-    let same_names = |dir: &std::path::Path| -> Vec<String> {
+    let same_names = |dir: &std::path::Path, name: &str| -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
@@ -42,7 +46,7 @@ fn duplicate_name_warning(
             .collect()
     };
 
-    let same_kind = same_names(&kind.dir(paths));
+    let same_kind = same_names(&kind.dir(paths), name);
     if !same_kind.is_empty() {
         return format!(
             " ⚠ 注意：同类型已存在同名实体 {}，正文自动出场识别将无法区分（duplicate_display_name 告警，提及被丢弃）。\
@@ -51,12 +55,29 @@ fn duplicate_name_warning(
         );
     }
 
+    if let Some(secret) = secret_name {
+        let dup = same_names(&kind.dir(paths), secret);
+        if !dup.is_empty() {
+            return format!(
+                " ⚠ 注意：预定真名「{secret}」与既有实体 {} 同名——若为同一人，\
+                不应另建遮蔽角色：请删除本实体，直接复用既有档案\
+                （或日后 merge_entities 归并）。",
+                dup.join(", ")
+            );
+        }
+    }
+
     // 跨类型同名：合法的双面实体，说明一句即可
-    for other in [EntityKind::Character, EntityKind::Location, EntityKind::Item, EntityKind::Organization] {
+    for other in [
+        EntityKind::Character,
+        EntityKind::Location,
+        EntityKind::Item,
+        EntityKind::Organization,
+    ] {
         if other == kind {
             continue;
         }
-        let ids = same_names(&other.dir(paths));
+        let ids = same_names(&other.dir(paths), name);
         if !ids.is_empty() {
             return format!(
                 "（同名{}实体 {} 已存在：按「双面实体」处理，正文提及会同时计入两者。）",
@@ -85,10 +106,33 @@ impl Tool for CreateCharacterTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "create_character".into(),
-            description: "创建新角色。生成角色 ID 并写入 entities/characters/ 目录。".into(),
+            description: "创建新角色。生成角色 ID 并写入 entities/characters/ 目录。\
+            角色出场但真名尚未在正文揭露时（POV 只见到「中年男人」「银发女人」\
+            这类称呼），必须传 placeholder：name 存预定真名（建档用，正文禁用），\
+            placeholder 存正文当前使用的代称；正文正式揭露真名的当章调用\
+            reveal_character_name 完成切换。"
+                .into(),
             parameters: object_schema(vec![
-                ("name", "string", "角色名称", true),
-                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
+                (
+                    "name",
+                    "string",
+                    "角色名称（传 placeholder 时为预定真名，仅建档用）",
+                    true,
+                ),
+                (
+                    "placeholder",
+                    "string",
+                    "正文当前使用的代称（如：中年男人、银发女人）。\
+                    提供即表示真名尚未在正文揭露：叙述与对话只能用此代称，\
+                    禁止写真名；真名由系统遮蔽，揭露时用 reveal_character_name",
+                    false,
+                ),
+                (
+                    "aliases",
+                    "array",
+                    "别名列表（原生数组或逗号分隔字符串）",
+                    false,
+                ),
                 ("gender", "string", "性别", false),
                 ("age", "string", "年龄描述", false),
                 ("role", "string", "在故事中的角色", false),
@@ -107,6 +151,7 @@ impl Tool for CreateCharacterTool {
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let name = get_str(arguments, "name")?;
+        let placeholder = get_str_opt(arguments, "placeholder");
         let paths = self.ctx.paths();
         let new_id = crate::mutations::create_entity(&paths, EntityKind::Character, &name)
             .map_err(|e| e.to_string())?;
@@ -117,7 +162,8 @@ impl Tool for CreateCharacterTool {
         let background = get_str_opt(arguments, "background");
         let personality = get_str_opt(arguments, "personality");
         let habits = get_str_opt(arguments, "habits");
-        if gender.is_some()
+        if placeholder.is_some()
+            || gender.is_some()
             || appearance.is_some()
             || personality.is_some()
             || background.is_some()
@@ -130,6 +176,11 @@ impl Tool for CreateCharacterTool {
                 std::fs::read_to_string(&entity_path).map_err(|e| format!("读取失败: {e}"))?;
             let mut entity =
                 EntityFile::from_toml_str(&content).map_err(|e| format!("解析失败: {e}"))?;
+            if let Some(ph) = &placeholder {
+                // 真名遮蔽建档：display_name 落代称，预定真名藏进 secret_name
+                entity.secret_name = Some(name.clone());
+                entity.display_name = ph.clone();
+            }
             if let Some(v) = get_str_array_opt(arguments, "aliases")? {
                 entity.aliases = v;
             }
@@ -158,8 +209,25 @@ impl Tool for CreateCharacterTool {
             std::fs::write(&entity_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
         }
 
-        let warning = duplicate_name_warning(&paths, EntityKind::Character, &new_id, &name);
-        Ok(format!("角色已创建: id={new_id}, name={name}{warning}"))
+        let display = placeholder.as_deref().unwrap_or(name.as_str());
+        let conceal_note = if placeholder.is_some() {
+            format!(
+                "（真名遮蔽中：正文只能以「{display}」称呼，禁止写真名；\
+                正式揭露的当章调用 reveal_character_name 切换）"
+            )
+        } else {
+            String::new()
+        };
+        let warning = duplicate_name_warning(
+            &paths,
+            EntityKind::Character,
+            &new_id,
+            display,
+            placeholder.is_some().then(|| name.as_str()),
+        );
+        Ok(format!(
+            "角色已创建: id={new_id}, name={display}{conceal_note}{warning}"
+        ))
     }
 }
 
@@ -251,7 +319,7 @@ impl Tool for CreateLocationTool {
             std::fs::write(&entity_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
         }
 
-        let warning = duplicate_name_warning(&paths, EntityKind::Location, &new_id, &name);
+        let warning = duplicate_name_warning(&paths, EntityKind::Location, &new_id, &name, None);
         Ok(format!("地点已创建: id={new_id}, name={name}{warning}"))
     }
 }
@@ -276,7 +344,12 @@ impl Tool for CreateItemTool {
             description: "创建新道具/物品。生成道具 ID 并写入 entities/items/ 目录。".into(),
             parameters: object_schema(vec![
                 ("name", "string", "道具名称（如：寒霜剑）", true),
-                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
+                (
+                    "aliases",
+                    "array",
+                    "别名列表（原生数组或逗号分隔字符串）",
+                    false,
+                ),
                 (
                     "item_kind",
                     "string",
@@ -341,7 +414,7 @@ impl Tool for CreateItemTool {
             std::fs::write(&entity_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
         }
 
-        let warning = duplicate_name_warning(&paths, EntityKind::Item, &new_id, &name);
+        let warning = duplicate_name_warning(&paths, EntityKind::Item, &new_id, &name, None);
         Ok(format!("道具已创建: id={new_id}, name={name}{warning}"))
     }
 }
@@ -368,7 +441,12 @@ impl Tool for CreateOrganizationTool {
                 .into(),
             parameters: object_schema(vec![
                 ("name", "string", "组织名称（如：天机阁）", true),
-                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
+                (
+                    "aliases",
+                    "array",
+                    "别名列表（原生数组或逗号分隔字符串）",
+                    false,
+                ),
                 (
                     "org_kind",
                     "string",
@@ -434,7 +512,8 @@ impl Tool for CreateOrganizationTool {
             std::fs::write(&entity_path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
         }
 
-        let warning = duplicate_name_warning(&paths, EntityKind::Organization, &new_id, &name);
+        let warning =
+            duplicate_name_warning(&paths, EntityKind::Organization, &new_id, &name, None);
         Ok(format!("组织已创建: id={new_id}, name={name}{warning}"))
     }
 }
@@ -540,19 +619,31 @@ impl Tool for SearchEntitiesTool {
                 let aliases_lc: Vec<String> =
                     entity.aliases.iter().map(|a| a.to_lowercase()).collect();
                 let symbol_lc = entity.symbol.as_deref().map(|s| s.to_lowercase());
+                let secret_lc = entity.secret_name.as_deref().map(|s| s.to_lowercase());
 
-                // 匹配 名称 / 别名 / 符号（match_all 时跳过过滤）
+                // 匹配 名称 / 别名 / 符号 / 遮蔽中的预定真名（match_all 时跳过过滤）。
+                // 真名也要能搜到：否则按真名查重会漏掉遮蔽角色，导致重复建档
                 let matched = match_all
                     || display_lc.contains(&query)
                     || aliases_lc.iter().any(|a| a.contains(&query))
-                    || symbol_lc.as_deref().is_some_and(|s| s.contains(&query));
+                    || symbol_lc.as_deref().is_some_and(|s| s.contains(&query))
+                    || secret_lc.as_deref().is_some_and(|s| s.contains(&query));
 
                 if !matched {
                     continue;
                 }
 
-                // 输出: ID [type] 名称 (aliases) [+ symbol]
+                // 输出: ID [type] 名称 (aliases) [+ symbol] [+ 遮蔽标注]
                 let mut line = format!("{} [{}] {}", entity.id, type_name, entity.display_name);
+                if let Some(secret) = entity
+                    .secret_name
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    line.push_str(&format!(
+                        " ⟨真名未揭露：{secret}，正文禁用；揭露用 reveal_character_name⟩"
+                    ));
+                }
                 if !entity.aliases.is_empty() {
                     line.push_str(&format!(" (aliases: {})", entity.aliases.join(", ")));
                 }
@@ -657,6 +748,20 @@ impl Tool for GetEntityDetailTool {
             // —— 完整字段来自原始 TOML ——
             out.push_str(&format!("  ID: {}\n", ef.id));
             out.push_str(&format!("  名称: {}\n", ef.display_name));
+            if let Some(secret) = ef.secret_name.as_deref().filter(|s| !s.trim().is_empty()) {
+                out.push_str(&format!(
+                    "  预定真名: {secret}（尚未在正文揭露——揭露前叙述与对话只能用「{}」称呼，\
+                    禁止写真名；正文正式揭露后调用 reveal_character_name）\n",
+                    ef.display_name
+                ));
+            }
+            if let Some(at) = ef
+                .name_revealed_in
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                out.push_str(&format!("  真名揭露于: {at}\n"));
+            }
             if let Some(ref sym) = ef.symbol {
                 out.push_str(&format!("  符号: {sym}\n"));
             }
@@ -703,7 +808,11 @@ impl Tool for GetEntityDetailTool {
                 .get_fragment(&StableId::new_unchecked(fid))
                 .map(|f| format_brief(&f.text, 60))
                 .unwrap_or_default();
-            let times = if *count > 1 { format!(" ×{count}") } else { String::new() };
+            let times = if *count > 1 {
+                format!(" ×{count}")
+            } else {
+                String::new()
+            };
             appearances.push(format!("  - {fid}{times}: \"{brief}\""));
         }
         out.push_str(&format!("\n  出场({} 个片段):\n", grouped.len()));
@@ -783,7 +892,8 @@ impl Tool for ProfileCheckTool {
             （职务/身份/隶属/存亡/所在地/亲缘/时间线）与出场片段摘要对照，报告出入处\
             （如档案写「退休副局长」、正文里却以现职身份下令）。\
             档案过时也可能是有意的伏笔设计——报告只帮作者看见出入。\
-            整章交付前可对主要角色各跑一遍。".into(),
+            整章交付前可对主要角色各跑一遍。"
+                .into(),
             parameters: object_schema(vec![(
                 "entity_id",
                 "string",
@@ -809,8 +919,8 @@ impl Tool for ProfileCheckTool {
         if !entity_path.exists() {
             return Err(format!("实体 '{entity_id}' 不存在"));
         }
-        let content = std::fs::read_to_string(&entity_path)
-            .map_err(|e| format!("读取实体文件失败: {e}"))?;
+        let content =
+            std::fs::read_to_string(&entity_path).map_err(|e| format!("读取实体文件失败: {e}"))?;
         let entity =
             EntityFile::from_toml_str(&content).map_err(|e| format!("解析实体失败: {e}"))?;
 
@@ -833,11 +943,18 @@ impl Tool for ProfileCheckTool {
                 .get_fragment(&StableId::new_unchecked(fid))
                 .map(|f| format_brief(&f.text, 60))
                 .unwrap_or_default();
-            let times = if *count > 1 { format!(" ×{count}") } else { String::new() };
+            let times = if *count > 1 {
+                format!(" ×{count}")
+            } else {
+                String::new()
+            };
             evidence.push_str(&format!("- {fid}{times}: {brief}\n"));
         }
         if grouped.len() > APPEARANCE_CAP {
-            evidence.push_str(&format!("（其余 {} 个片段略）\n", grouped.len() - APPEARANCE_CAP));
+            evidence.push_str(&format!(
+                "（其余 {} 个片段略）\n",
+                grouped.len() - APPEARANCE_CAP
+            ));
         }
 
         // 档案字段摘要（事实性字段拼进 prompt）
@@ -880,7 +997,10 @@ impl Tool for ProfileCheckTool {
         if let Some(i) = &entity.item {
             section(
                 "道具",
-                vec![("kind", i.kind.as_ref()), ("description", i.description.as_ref())],
+                vec![
+                    ("kind", i.kind.as_ref()),
+                    ("description", i.description.as_ref()),
+                ],
             );
         }
         if let Some(o) = &entity.org {
@@ -911,7 +1031,11 @@ impl Tool for ProfileCheckTool {
             .map_err(|e| format!("一致性核对调用失败: {e}"))?;
 
         let report = parse_profile_check_response(&response.text);
-        Ok(format_profile_check(&entity_id, &entity.display_name, &report))
+        Ok(format_profile_check(
+            &entity_id,
+            &entity.display_name,
+            &report,
+        ))
     }
 }
 
@@ -924,7 +1048,13 @@ fn parse_profile_check_response(raw: &str) -> ProfileCheckLlm {
             .trim_start_matches("```")
             .trim_start_matches("json")
             .trim();
-        v.push(stripped.strip_suffix("```").unwrap_or(stripped).trim().to_string());
+        v.push(
+            stripped
+                .strip_suffix("```")
+                .unwrap_or(stripped)
+                .trim()
+                .to_string(),
+        );
         if let (Some(s), Some(e)) = (cleaned.find('{'), cleaned.rfind('}')) {
             if e > s {
                 v.push(cleaned[s..=e].to_string());
@@ -1162,7 +1292,8 @@ impl Tool for MergeEntitiesTool {
             （两者须同类型）。典型场景：匿名占位实体（如「九一真凶」）在真名揭晓后\
             并入正式角色档案。from 的档案名与别名转入目标的别名，其余档案字段不合并。\
             重定向范围：片段锚点、关系边（合并产生的自环删除）、断言、场景 POV、\
-            章节脉络出场表、线索观察者、outline 角色弧线、未锚定指代归拢目标。".into(),
+            章节脉络出场表、线索观察者、outline 角色弧线、未锚定指代归拢目标。"
+                .into(),
             parameters: object_schema(vec![
                 (
                     "from_entity_id",
@@ -1170,12 +1301,7 @@ impl Tool for MergeEntitiesTool {
                     "被合并的实体 ID（如匿名占位实体）",
                     true,
                 ),
-                (
-                    "into_entity_id",
-                    "string",
-                    "保留的目标实体 ID",
-                    true,
-                ),
+                ("into_entity_id", "string", "保留的目标实体 ID", true),
             ]),
         }
     }
@@ -1184,9 +1310,107 @@ impl Tool for MergeEntitiesTool {
         let from_id = get_str(arguments, "from_entity_id")?;
         let into_id = get_str(arguments, "into_entity_id")?;
         let paths = self.ctx.paths();
-        let report =
-            crate::mutations::merge_entities(&paths, &from_id, &into_id).map_err(|e| e.to_string())?;
+        let report = crate::mutations::merge_entities(&paths, &from_id, &into_id)
+            .map_err(|e| e.to_string())?;
         Ok(report.summary(&from_id, &into_id))
+    }
+}
+
+// ============================================================================
+// reveal_character_name
+// ============================================================================
+
+pub struct RevealCharacterNameTool {
+    ctx: ToolContext,
+}
+impl RevealCharacterNameTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for RevealCharacterNameTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "reveal_character_name".into(),
+            description: "揭露角色真名：把真名遮蔽中的角色（create_character 传了 placeholder \
+            代称的）切换为真名展示。display_name 换为真名、原代称转入别名继续锚定，\
+            此后正文与场景速查都用真名。正文正式写出该角色真名的当章必须调用，\
+            拖延不调会导致后续章节继续被迫使用代称。"
+                .into(),
+            parameters: object_schema(vec![
+                ("entity_id", "string", "角色实体 ID", true),
+                (
+                    "name",
+                    "string",
+                    "揭露的真名（缺省用建档时的预定真名；匿名占位实体转入真名时必填）",
+                    false,
+                ),
+                (
+                    "revealed_in",
+                    "string",
+                    "揭露位置说明（如：第 7 章 / sc_07_02），仅记录展示用",
+                    false,
+                ),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let entity_id = get_str(arguments, "entity_id")?;
+        let new_name = get_str_opt(arguments, "name");
+        let revealed_in = get_str_opt(arguments, "revealed_in");
+        let paths = self.ctx.paths();
+
+        let path = paths
+            .file_for_id(&entity_id)
+            .filter(|p| p.exists())
+            .ok_or_else(|| format!("实体 '{entity_id}' 不存在"))?;
+        let content = std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
+        let mut entity =
+            EntityFile::from_toml_str(&content).map_err(|e| format!("解析失败: {e}"))?;
+        if entity.profile.is_none() {
+            return Err(format!("'{entity_id}' 不是角色实体，无真名可揭露"));
+        }
+
+        // 真名来源：显式参数 > 建档时的预定真名
+        let true_name = match new_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| entity.secret_name.clone())
+        {
+            Some(n) => n,
+            None => {
+                return Err(format!(
+                    "角色 '{entity_id}' 没有遮蔽中的真名（secret_name 未设置），\
+                    且未传 name 参数——若要改名请用 update_entity"
+                ))
+            }
+        };
+        let placeholder = entity.display_name.clone();
+
+        entity.display_name = true_name.clone();
+        entity.secret_name = None;
+        entity.name_revealed_in = Some(revealed_in.unwrap_or_else(|| "已揭露".to_string()));
+        // 原代称转入别名：揭露前的正文指代继续可锚定
+        if !placeholder.is_empty()
+            && placeholder != true_name
+            && !entity.aliases.iter().any(|a| a == &placeholder)
+        {
+            entity.aliases.insert(0, placeholder.clone());
+        }
+
+        let toml_content = entity
+            .to_toml_string()
+            .map_err(|e| format!("序列化失败: {e}"))?;
+        std::fs::write(&path, toml_content).map_err(|e| format!("写入失败: {e}"))?;
+
+        Ok(format!(
+            "真名已揭露: {entity_id} 「{placeholder}」→「{true_name}」\
+            （原代称已转入别名；此后正文与场景速查使用真名）"
+        ))
     }
 }
 
@@ -1483,7 +1707,13 @@ fn collect_chapter_characters(
     let mut lines = Vec::with_capacity(ids.len());
     for cid in &ids {
         let resolved = semantic.get(&StableId::new_unchecked(cid));
+        let concealed = resolved.is_some_and(|n| n.name_concealed());
         let entry = match resolved {
+            Some(node) if concealed => {
+                // 遮蔽角色：只给代称，真名与 symbol 都不出现——
+                // 模型一旦在清单里看到真名，下笔就会当已知称呼使用
+                format!("{}（{cid}）", node.display_name())
+            }
             Some(node) => {
                 let name = node.display_name();
                 match node.symbol() {
@@ -1496,10 +1726,16 @@ fn collect_chapter_characters(
         // 词表速查：外貌/习惯一行带过（自由文本压平、截断控 token）
         let codex = appearance_habits_brief(&ctx.paths(), cid);
         let codex_part = codex.map(|c| format!("｜{c}")).unwrap_or_default();
-        let marked = if pov_id == Some(cid.as_str()) {
-            format!("    - {entry} [POV]{codex_part}")
+        // 遮蔽禁令紧跟在称呼后面，写作时最显眼
+        let mask_part = if concealed {
+            " [真名未揭露：叙述与对话只能用此代称，禁止写出真名]"
         } else {
-            format!("    - {entry}{codex_part}")
+            ""
+        };
+        let marked = if pov_id == Some(cid.as_str()) {
+            format!("    - {entry} [POV]{mask_part}{codex_part}")
+        } else {
+            format!("    - {entry}{mask_part}{codex_part}")
         };
         lines.push(marked);
     }
@@ -1508,7 +1744,10 @@ fn collect_chapter_characters(
 
 /// 角色档案的外貌/习惯速查行（如「外貌: 灰白长袍｜习惯: 口头禅…」）。
 /// 多行自由文本压平为单行并截断；无外貌也无习惯时返回 None。
-fn appearance_habits_brief(paths: &story_project_format::ProjectPaths, cid: &str) -> Option<String> {
+fn appearance_habits_brief(
+    paths: &story_project_format::ProjectPaths,
+    cid: &str,
+) -> Option<String> {
     let path = paths.file_for_id(cid)?;
     let content = std::fs::read_to_string(path).ok()?;
     let entity = story_project_format::EntityFile::from_toml_str(&content).ok()?;
@@ -1519,7 +1758,11 @@ fn appearance_habits_brief(paths: &story_project_format::ProjectPaths, cid: &str
         truncate_chars(&collapsed, 50)
     };
     let mut parts = Vec::new();
-    if let Some(a) = profile.appearance.as_deref().filter(|a| !a.trim().is_empty()) {
+    if let Some(a) = profile
+        .appearance
+        .as_deref()
+        .filter(|a| !a.trim().is_empty())
+    {
         parts.push(format!("外貌: {}", flat(a)));
     }
     if let Some(h) = profile.habits.as_deref().filter(|h| !h.trim().is_empty()) {
@@ -2063,6 +2306,107 @@ status = "writing"
         );
     }
 
+    /// 端到端：placeholder 建档遮蔽 → 场景清单只露代称 → 搜索可按真名查到 →
+    /// reveal 揭露后代称转别名、清单用真名。
+    #[test]
+    fn concealed_name_end_to_end() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+
+        // 1. 带代称建档：真名遮蔽
+        let create = CreateCharacterTool::new(ctx.clone());
+        let created = create
+            .execute(&serde_json::json!({
+                "name": "沈孤鸿",
+                "placeholder": "中年男人",
+                "appearance": "灰袍，鬓角花白"
+            }))
+            .unwrap();
+        assert!(created.contains("真名遮蔽中"), "got: {created}");
+        let entity_path = dir.join("entities/characters/c_0001.toml");
+        let content = std::fs::read_to_string(&entity_path).unwrap();
+        let entity = EntityFile::from_toml_str(&content).unwrap();
+        assert_eq!(entity.display_name, "中年男人");
+        assert_eq!(entity.secret_name.as_deref(), Some("沈孤鸿"));
+        assert!(entity.is_name_concealed());
+
+        // 2. 场景清单：只露代称 + 禁令，真名与 symbol 不出现
+        std::fs::write(
+            dir.join("structure.toml"),
+            r#"[book]
+id = "b_root"
+title = "测试小说"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01"]
+
+[scene.sc_01_01]
+title = "开场"
+pov = "c_0002"
+"#,
+        )
+        .unwrap();
+        write_minimal_character(dir, "c_0002", "林风");
+        std::fs::write(
+            dir.join("chapters.toml"),
+            "[[chapters]]\nchapter_id = \"ch_01\"\ntitle = \"第一章\"\ncharacters = [\"c_0002\", \"c_0001\"]\nstatus = \"writing\"\n",
+        )
+        .unwrap();
+        let scene_ctx = GetSceneContextTool::new(ctx.clone())
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+        assert!(scene_ctx.contains("中年男人（c_0001）"), "got: {scene_ctx}");
+        assert!(scene_ctx.contains("真名未揭露"), "got: {scene_ctx}");
+        assert!(
+            !scene_ctx.contains("沈孤鸿"),
+            "真名不得出现在场景清单: {scene_ctx}"
+        );
+        // 外貌速查照常提供（描写一致性靠它）
+        assert!(scene_ctx.contains("灰袍"), "got: {scene_ctx}");
+
+        // 3. 搜索：按预定真名也能查到（防重复建档），带遮蔽标注
+        let search = SearchEntitiesTool::new(ctx.clone());
+        let found = search
+            .execute(&serde_json::json!({ "query": "沈孤鸿" }))
+            .unwrap();
+        assert!(found.contains("c_0001"), "got: {found}");
+        assert!(found.contains("中年男人"), "got: {found}");
+        assert!(found.contains("真名未揭露"), "got: {found}");
+
+        // 4. 档案详情：可见预定真名 + 禁令提示
+        let detail = GetEntityDetailTool::new(ctx.clone())
+            .execute(&serde_json::json!({ "entity_id": "c_0001" }))
+            .unwrap();
+        assert!(detail.contains("预定真名: 沈孤鸿"), "got: {detail}");
+        assert!(detail.contains("reveal_character_name"), "got: {detail}");
+
+        // 5. 揭露：display_name 换真名、代称转别名、遮蔽清空
+        let reveal = RevealCharacterNameTool::new(ctx.clone());
+        let revealed = reveal
+            .execute(&serde_json::json!({
+                "entity_id": "c_0001",
+                "revealed_in": "第 7 章"
+            }))
+            .unwrap();
+        assert!(revealed.contains("沈孤鸿"), "got: {revealed}");
+        let content = std::fs::read_to_string(&entity_path).unwrap();
+        let entity = EntityFile::from_toml_str(&content).unwrap();
+        assert_eq!(entity.display_name, "沈孤鸿");
+        assert!(!entity.is_name_concealed());
+        assert!(entity.aliases.contains(&"中年男人".to_string()));
+        assert_eq!(entity.name_revealed_in.as_deref(), Some("第 7 章"));
+
+        // 6. 揭露后场景清单用真名
+        let scene_ctx = GetSceneContextTool::new(ctx)
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
+        assert!(scene_ctx.contains("沈孤鸿"), "got: {scene_ctx}");
+        assert!(!scene_ctx.contains("真名未揭露"), "got: {scene_ctx}");
+    }
+
     /// 本场景片段锚定的角色（未列入脉络预设名单）也应并入「本章涉及角色」。
     #[test]
     fn get_scene_context_includes_scene_anchored_characters() {
@@ -2071,7 +2415,7 @@ status = "writing"
 
         write_minimal_character(dir, "c_0001", "林风"); // POV
         write_minimal_character(dir, "c_0005", "洛青"); // 锚定出场、不在预设名单
-        // 地点锚点不应混入角色清单
+                                                        // 地点锚点不应混入角色清单
         std::fs::write(
             dir.join("entities/locations/l_0002.toml"),
             "id = \"l_0002\"\ndisplay_name = \"青云城\"\naliases = []\n",
@@ -2115,7 +2459,9 @@ fragments = ["f_0001"]
         assert!(result.contains("洛青"), "锚定的角色应并入清单: {result}");
         // 地点锚点不进角色清单（清单行以 "- " 开头；正文预览里出现不算）
         assert!(
-            !result.lines().any(|l| l.starts_with("    - ") && l.contains("青云城")),
+            !result
+                .lines()
+                .any(|l| l.starts_with("    - ") && l.contains("青云城")),
             "地点锚点不应混入清单: {result}"
         );
     }
@@ -2215,7 +2561,10 @@ status = "writing"
         assert!(result.contains("目标: 引出主线冲突"), "got: {result}");
         assert!(result.contains("1. 雨夜遇袭"), "got: {result}");
         assert!(result.contains("2. 获得信物"), "got: {result}");
-        assert!(result.contains("章末钩子: 信物上刻着陌生的家徽"), "got: {result}");
+        assert!(
+            result.contains("章末钩子: 信物上刻着陌生的家徽"),
+            "got: {result}"
+        );
     }
 
     #[test]
@@ -2274,7 +2623,10 @@ state_timeline = [
 
         assert!(result.contains("本章线索"), "got: {result}");
         // 线索标题 + ID + 派生状态（planted_at 已设 → planted）
-        assert!(result.contains("信物之谜（t_001·planted）"), "got: {result}");
+        assert!(
+            result.contains("信物之谜（t_001·planted）"),
+            "got: {result}"
+        );
         // reader 取时间线末项（known@sc_01_02），不是首项 suspected
         assert!(result.contains("读者:知晓(sc_01_02)"), "got: {result}");
         assert!(
@@ -2282,9 +2634,15 @@ state_timeline = [
             "应取最新认知而非首项, got: {result}"
         );
         // 角色观察者按 ID 渲染
-        assert!(result.contains("角色 c_0001:未知(sc_01_01)"), "got: {result}");
+        assert!(
+            result.contains("角色 c_0001:未知(sc_01_01)"),
+            "got: {result}"
+        );
         // chapters.toml 里引用了不存在的线索：标注而非报错
-        assert!(result.contains("t_404（threads.toml 中不存在）"), "got: {result}");
+        assert!(
+            result.contains("t_404（threads.toml 中不存在）"),
+            "got: {result}"
+        );
     }
 
     /// 回归：update_chapter_outline 用原生数组形态写 threads 后，
@@ -2353,12 +2711,22 @@ state_timeline = [
                 "aliases": ["小七", "七爷"],
             }))
             .unwrap();
-        let id = res.split("id=").nth(1).unwrap().split(',').next().unwrap().to_string();
+        let id = res
+            .split("id=")
+            .nth(1)
+            .unwrap()
+            .split(',')
+            .next()
+            .unwrap()
+            .to_string();
         let path = story_project_format::ProjectPaths::new(tmp.path())
             .characters_dir()
             .join(format!("{id}.toml"));
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("小七") && content.contains("七爷"), "{content}");
+        assert!(
+            content.contains("小七") && content.contains("七爷"),
+            "{content}"
+        );
 
         // 逗号串形态保持可用
         let res = CreateCharacterTool::new(ctx)
@@ -2464,9 +2832,7 @@ status = "writing"
         assert!(!res.contains("⚠"), "首个实体不应告警: {res}");
 
         let org = CreateOrganizationTool::new(ctx.clone());
-        let res = org
-            .execute(&serde_json::json!({"name": "山影城"}))
-            .unwrap();
+        let res = org.execute(&serde_json::json!({"name": "山影城"})).unwrap();
         assert!(
             !res.contains("⚠") && res.contains("双面实体"),
             "跨类型同名应说明双面实体而非告警: {res}"
@@ -2474,9 +2840,7 @@ status = "writing"
 
         // 同名角色与地点、组织都不同类型 → 同样是双面实体说明
         let ch = CreateCharacterTool::new(ctx.clone());
-        let res = ch
-            .execute(&serde_json::json!({"name": "山影城"}))
-            .unwrap();
+        let res = ch.execute(&serde_json::json!({"name": "山影城"})).unwrap();
         assert!(!res.contains("⚠"), "跨类型同名角色不应告警: {res}");
 
         // 再建第二个同名地点 → 同类型撞名，真冲突，应告警
@@ -2497,25 +2861,29 @@ status = "writing"
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
         let create = CreateCharacterTool::new(ctx.clone());
-        let res = create.execute(&serde_json::json!({"name": "林七"})).unwrap();
-        let id = res.split("id=").nth(1).unwrap().split(',').next().unwrap().to_string();
+        let res = create
+            .execute(&serde_json::json!({"name": "林七"}))
+            .unwrap();
+        let id = res
+            .split("id=")
+            .nth(1)
+            .unwrap()
+            .split(',')
+            .next()
+            .unwrap()
+            .to_string();
 
         // 建章节/场景并写入提及该角色的片段（无显式锚点，靠隐式匹配）
         let paths = story_project_format::ProjectPaths::new(tmp.path());
         let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
         let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
-        crate::mutations::create_fragment(
-            &paths,
-            &sc,
-            "林七推开门，屋里没人。林七又喊了一声。",
-        )
-        .unwrap();
+        crate::mutations::create_fragment(&paths, &sc, "林七推开门，屋里没人。林七又喊了一声。")
+            .unwrap();
 
         let detail = GetEntityDetailTool::new(ctx.clone());
-        let out = detail.execute(&serde_json::json!({"entity_id": id})).unwrap();
-        assert!(
-            out.contains("出场(1 个片段)"),
-            "隐式提及应计入出场: {out}"
-        );
+        let out = detail
+            .execute(&serde_json::json!({"entity_id": id}))
+            .unwrap();
+        assert!(out.contains("出场(1 个片段)"), "隐式提及应计入出场: {out}");
     }
 }

@@ -69,6 +69,11 @@ impl SemanticNode {
         }
     }
 
+    /// 真名是否遮蔽中（仅角色；display_name 为代称，不参与确定性锚定）
+    pub fn name_concealed(&self) -> bool {
+        matches!(self, SemanticNode::Character(n) if n.name_concealed)
+    }
+
     /// 实体类型字符串（用于错误消息）
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -106,6 +111,10 @@ pub struct CharacterNode {
     pub display_name: String,
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// 真名遮蔽中：display_name 是正文代称（如「中年男人」），预定真名
+    /// 不进 IR——遮蔽角色不参与确定性锚定，防止泛称误锚与真名外泄
+    #[serde(default)]
+    pub name_concealed: bool,
     #[serde(default)]
     pub attributes: EntityAttributes,
 }
