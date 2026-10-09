@@ -9,7 +9,8 @@ use std::path::Path;
 
 use story_ai_runtime::{Tool, ToolDef};
 use story_project_format::worldview_file::{
-    ConceptDef, ConceptsFile, SystemDef, SystemsFile, WorldviewSectionFile,
+    ConceptDef, ConceptsFile, SystemDef, SystemsFile, TimelineFile,
+    WorldviewSectionFile,
 };
 use story_project_format::EntityFile;
 
@@ -33,7 +34,8 @@ impl Tool for GetWorldviewTool {
         ToolDef {
             name: "get_worldview".into(),
             description: "读取世界观设定，可用 section 过滤：concepts=基础概念（worldview/concepts.toml）、\
-            systems=体系设定（worldview/systems.toml）、locations=地理（entities/locations/）、\
+            systems=体系设定（worldview/systems.toml）、timeline=纪元历法（worldview/timeline.toml，\
+            填写场景 story_time 历法标签前先看这一节）、locations=地理（entities/locations/）、\
             organizations=势力（entities/organizations/）。\
             长篇后期地点/势力较多时建议按需过滤（单个地点/势力也可用 search_entities 检索、\
             get_entity_detail 查详情），避免全量输出过长被截断。"
@@ -41,7 +43,7 @@ impl Tool for GetWorldviewTool {
             parameters: object_schema(vec![(
                 "section",
                 "string",
-                "要读取的分节：concepts / systems / locations / organizations，\
+                "要读取的分节：concepts / systems / timeline / locations / organizations，\
                 逗号分隔可多选（如 \"concepts,systems\"）。省略 = 全部",
                 false,
             )]),
@@ -66,6 +68,12 @@ impl Tool for GetWorldviewTool {
         if want("systems") {
             let systems: SystemsFile = load_section(&paths.worldview_systems_toml())?;
             render_systems(&systems, &mut result);
+        }
+
+        // 纪元历法（story_time 历法标签的比较依据）
+        if want("timeline") {
+            let timeline: TimelineFile = load_section(&paths.worldview_timeline_toml())?;
+            render_timeline(&timeline, &mut result);
         }
 
         // 地理（Location 实体；父地点 ID 解析为名称展示）
@@ -112,12 +120,13 @@ fn parse_worldview_sections(raw: Option<String>) -> Result<Option<HashSet<String
         let canonical = match part.to_ascii_lowercase().as_str() {
             "concepts" | "concept" => "concepts",
             "systems" | "system" => "systems",
+            "timeline" | "timelines" | "eras" | "calendar" => "timeline",
             "locations" | "location" | "geo" | "geography" => "locations",
             "organizations" | "organization" | "orgs" | "factions" => "organizations",
             "all" => return Ok(None),
             other => {
                 return Err(format!(
-                    "未知 section: {other}（支持: concepts / systems / locations / organizations，\
+                    "未知 section: {other}（支持: concepts / systems / timeline / locations / organizations，\
                     逗号分隔多选；省略 = 全部）"
                 ))
             }
@@ -128,6 +137,16 @@ fn parse_worldview_sections(raw: Option<String>) -> Result<Option<HashSet<String
         return Ok(None);
     }
     Ok(Some(set))
+}
+
+fn render_timeline(timeline: &TimelineFile, result: &mut String) {
+    if !timeline.eras.is_empty() {
+        result.push_str("## 纪元历法\n");
+        result.push_str(&format!("纪元（早→晚）：{}\n", timeline.eras.join(" → ")));
+        result.push_str(
+            "场景 story_time 的历法标签（如 灵历3217年）按此纪元顺序比较；\n未收录的标签仅作展示、不参与时序比较。\n",
+        );
+    }
 }
 
 fn render_concepts(concepts: &ConceptsFile, result: &mut String) {
@@ -681,6 +700,42 @@ mod tests {
             "批量整体失败时不应落盘任何条目"
         );
     }
+
+    /// timeline 分节：纪元历法随全量返回，也可单选过滤。
+    #[test]
+    fn get_worldview_includes_timeline_eras() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("worldview")).unwrap();
+        std::fs::write(
+            dir.join("worldview/timeline.toml"),
+            "eras = [\"创世\", \"灵历\", \"开元\"]",
+        )
+        .unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = GetWorldviewTool::new(ctx.clone());
+
+        // 全量包含 timeline
+        let out = tool.execute(&serde_json::json!({})).unwrap();
+        assert!(out.contains("纪元历法"), "{out}");
+        assert!(out.contains("创世 → 灵历 → 开元"), "{out}");
+        assert!(out.contains("story_time"), "应说明历法标签用途: {out}");
+
+        // 单选 timeline 只返回该节
+        let out = tool
+            .execute(&serde_json::json!({"section": "timeline"}))
+            .unwrap();
+        assert!(out.contains("纪元历法"), "{out}");
+        assert!(!out.contains("基础概念"), "{out}");
+
+        // 别名 eras 亦可
+        let out = tool
+            .execute(&serde_json::json!({"section": "eras"}))
+            .unwrap();
+        assert!(out.contains("纪元历法"), "{out}");
+    }
+
 
     /// section 过滤：单选 / 逗号多选 / 单数别名 / 未知值报错 / 省略全量。
     #[test]
