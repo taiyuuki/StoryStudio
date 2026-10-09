@@ -634,13 +634,18 @@ pub fn models_endpoint(provider_name: &str, api_url: Option<&str>, api_url_full:
 /// Gemini 模型列表端点：`{base}/v1beta/models`
 ///
 /// api_url 为完整方法 URL（…/v1beta/models/{model}:generateContent）时截回
-/// `/models` 段；为 base 时剥掉已有 `/v1beta` 尾巴再拼，避免双段。
+/// `/models` 段；已指向集合端点（…/models）时直接用；
+/// 为 base 时剥掉已有 `/v1beta` 尾巴再拼，避免双段。
 fn gemini_models_endpoint(api_url: Option<&str>) -> String {
     let base = match api_url.map(str::trim).filter(|u| !u.is_empty()) {
         Some(u) => {
             let b = u.trim_end_matches('/').to_string();
             if let Some(pos) = b.rfind("/models/") {
                 return format!("{}/models", &b[..pos]);
+            }
+            // 已是模型集合端点：原样使用
+            if b.ends_with("/models") {
+                return b;
             }
             b.strip_suffix("/v1beta")
                 .map(str::to_string)
@@ -1716,6 +1721,41 @@ mod models_tests {
         assert_eq!(
             models_endpoint("openai", Some("https://api.deepseek.com/"), false),
             "https://api.deepseek.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn models_endpoint_gemini_forms() {
+        // 默认官方端点
+        assert_eq!(
+            models_endpoint("gemini", None, false),
+            "https://generativelanguage.googleapis.com/v1beta/models"
+        );
+        // base：补 /v1beta/models
+        assert_eq!(
+            models_endpoint("gemini", Some("http://127.0.0.1:8045"), false),
+            "http://127.0.0.1:8045/v1beta/models"
+        );
+        // base 已带 /v1beta：剥掉再拼，不双段
+        assert_eq!(
+            models_endpoint("gemini", Some("http://127.0.0.1:8045/v1beta"), false),
+            "http://127.0.0.1:8045/v1beta/models"
+        );
+        // 已是集合端点（常见误填）：直接用，不再拼第二段
+        for full in [true, false] {
+            assert_eq!(
+                models_endpoint("gemini", Some("http://127.0.0.1:8045/v1beta/models"), full),
+                "http://127.0.0.1:8045/v1beta/models"
+            );
+        }
+        // 完整方法 URL：截回集合段
+        assert_eq!(
+            models_endpoint(
+                "gemini",
+                Some("http://127.0.0.1:8045/v1beta/models/gemini-2.5-pro:generateContent"),
+                true
+            ),
+            "http://127.0.0.1:8045/v1beta/models"
         );
     }
 }

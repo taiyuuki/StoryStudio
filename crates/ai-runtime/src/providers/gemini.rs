@@ -214,23 +214,34 @@ struct GeminiAdapter {
 impl GeminiAdapter {
     /// 构建指定方法的完整 URL：`{base}/v1beta/models/{model}:{method}`
     fn method_url(&self, method: &str) -> String {
-        if let Some(ref url) = self.api_url {
-            let base = url.trim_end_matches('/');
-            if self.api_url_full {
-                return base.to_string();
-            }
-            // 用户已给完整方法路径则直通（含 :generateContent / :streamGenerateContent）
-            if base.ends_with(":generateContent") || base.ends_with(":streamGenerateContent") {
-                return base.to_string();
-            }
-            // base 已带 /v1beta 先剥掉，避免拼出 /v1beta/v1beta 双段
-            let base = base
-                .strip_suffix("/v1beta")
-                .or_else(|| base.strip_suffix("/v1"))
-                .unwrap_or(base);
-            return format!("{base}/v1beta/models/{}:{method}", self.model);
+        let url = match self.api_url.as_deref() {
+            Some(url) => url.trim_end_matches('/'),
+            None => return format!("{DEFAULT_BASE}/v1beta/models/{}:{method}", self.model),
+        };
+
+        // 用户已给完整方法路径则直通（含 :generateContent / :streamGenerateContent）
+        if url.ends_with(":generateContent") || url.ends_with(":streamGenerateContent") {
+            return url.to_string();
         }
-        format!("{DEFAULT_BASE}/v1beta/models/{}:{method}", self.model)
+
+        // 模型集合端点（…/v1beta/models）：是列表 URL 而非可 POST 的方法端点，
+        // 原样使用会 405 —— 完整 URL 模式也不例外，统一补 /{model}:{method}
+        //（版本段保持用户原样，/v1beta、/v1 均可）
+        if url.ends_with("/models") {
+            return format!("{url}/{}:{method}", self.model);
+        }
+
+        // 完整 URL 模式的其它任意端点：原样使用（非标准路径的代理）
+        if self.api_url_full {
+            return url.to_string();
+        }
+
+        // base 模式：剥掉已有 /v1beta（或 /v1）尾巴再拼，避免双段
+        let base = url
+            .strip_suffix("/v1beta")
+            .or_else(|| url.strip_suffix("/v1"))
+            .unwrap_or(url);
+        format!("{base}/v1beta/models/{}:{method}", self.model)
     }
 }
 
@@ -332,17 +343,14 @@ impl ProviderAdapter for GeminiAdapter {
     /// 流式走独立方法路径 + alt=sse（Gemini 不用 body 里的 stream 字段，
     /// 且未知字段会被 400 拒绝，见 stream_flag）
     fn stream_endpoint(&self) -> String {
-        if self.api_url_full || self.api_url.is_some() {
-            // method_url 已处理自定义 URL 三种形态；把 generateContent 方法换掉
-            let url = self.method_url("generateContent");
-            if let Some(s) = url.strip_suffix(":generateContent") {
-                return format!("{s}:streamGenerateContent?alt=sse");
-            }
-            // 用户给的 URL 不以 :generateContent 结尾（完整 URL 模式的直通形态）
-            let joiner = if url.contains('?') { '&' } else { '?' };
-            return format!("{url}{joiner}alt=sse");
+        // method_url 已归一化全部自定义 URL 形态；把 generateContent 方法换掉
+        let url = self.method_url("generateContent");
+        if let Some(s) = url.strip_suffix(":generateContent") {
+            return format!("{s}:streamGenerateContent?alt=sse");
         }
-        self.method_url("streamGenerateContent") + "?alt=sse"
+        // 用户给的 URL 不以 :generateContent 结尾（完整 URL 模式的任意端点直通）
+        let joiner = if url.contains('?') { '&' } else { '?' };
+        format!("{url}{joiner}alt=sse")
     }
 
     /// Gemini 靠 URL 区分流式，请求体不接受 stream 字段（未知字段 400）
@@ -721,6 +729,56 @@ mod tests {
         assert_eq!(
             a.stream_endpoint(),
             "https://gemini-proxy.example.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn endpoint_models_collection_url_appends_method() {
+        // 回归：完整 URL 模式填了模型集合端点 …/v1beta/models（列表 URL）——
+        // 原样 POST 会 405，应自动补 /{model}:{method}；版本段保持用户原样
+        for full in [true, false] {
+            let a = GeminiAdapter {
+                model: "gemini-2.5-pro".to_string(),
+                api_url: Some("http://127.0.0.1:8045/v1beta/models".to_string()),
+                api_url_full: full,
+                ..Default::default()
+            };
+            assert_eq!(
+                a.endpoint(),
+                "http://127.0.0.1:8045/v1beta/models/gemini-2.5-pro:generateContent",
+                "api_url_full={full} 时集合端点都应补方法路径"
+            );
+            assert_eq!(
+                a.stream_endpoint(),
+                "http://127.0.0.1:8045/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+            );
+        }
+        // 不带版本段的集合端点同样容错
+        let a = GeminiAdapter {
+            model: "gemini-2.5-pro".to_string(),
+            api_url: Some("http://127.0.0.1:8045/models/".to_string()),
+            api_url_full: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            a.endpoint(),
+            "http://127.0.0.1:8045/models/gemini-2.5-pro:generateContent"
+        );
+    }
+
+    #[test]
+    fn endpoint_full_url_mode_arbitrary_verbatim() {
+        // 完整 URL 模式的任意非标准端点仍原样直通（仅流式追加 alt=sse）
+        let a = GeminiAdapter {
+            model: "gemini-2.5-pro".to_string(),
+            api_url: Some("https://my-proxy.example.com/api/chat?token=x".to_string()),
+            api_url_full: true,
+            ..Default::default()
+        };
+        assert_eq!(a.endpoint(), "https://my-proxy.example.com/api/chat?token=x");
+        assert_eq!(
+            a.stream_endpoint(),
+            "https://my-proxy.example.com/api/chat?token=x&alt=sse"
         );
     }
 
