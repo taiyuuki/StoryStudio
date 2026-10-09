@@ -384,6 +384,8 @@ pub fn create_thread(
     load_thread(&root, &id)
 }
 
+// 参数形状由 Tauri IPC 前端调用约定决定
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn update_thread(
     root: String,
@@ -1264,7 +1266,7 @@ pub async fn ai_book_concepts(
 ) -> R<Vec<lib::BookConcept>> {
     let task = tauri::async_runtime::spawn_blocking(move || {
         let provider = active_provider(lib::purpose::DESIGN)?;
-        lib::ai_book_concepts(&options, std::sync::Arc::from(provider)).map_err(e)
+        lib::ai_book_concepts(&options, provider).map_err(e)
     });
     one_call_timeout(task).await
 }
@@ -1287,7 +1289,7 @@ pub async fn ai_book_world(
 ) -> R<lib::WorldDraft> {
     let task = tauri::async_runtime::spawn_blocking(move || {
         let provider = active_provider(lib::purpose::DESIGN)?;
-        lib::ai_book_world(&concept, &options, std::sync::Arc::from(provider)).map_err(e)
+        lib::ai_book_world(&concept, &options, provider).map_err(e)
     });
     one_call_timeout(task).await
 }
@@ -1306,7 +1308,7 @@ pub async fn ai_book_outline_batch(
 ) -> R<lib::OutlineBatchDraft> {
     let task = tauri::async_runtime::spawn_blocking(move || {
         let provider = active_provider(lib::purpose::DESIGN)?;
-        lib::ai_book_outline_batch(Path::new(&root), count, std::sync::Arc::from(provider))
+        lib::ai_book_outline_batch(Path::new(&root), count, provider)
             .map_err(e)
     });
     one_call_timeout(task).await

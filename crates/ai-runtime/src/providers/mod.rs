@@ -459,7 +459,6 @@ pub trait ProviderAdapter: Send + Sync {
 // HttpClient — 共享 HTTP 客户端
 // ============================================================================
 
-/// 执行同步 HTTP 请求的客户端（ureq，无 tokio 依赖）
 // ============================================================================
 // 模型列表 — GET /models（OpenAI 兼容与 Anthropic 通用）
 // ============================================================================
@@ -656,6 +655,7 @@ fn gemini_models_endpoint(api_url: Option<&str>) -> String {
     format!("{base}/v1beta/models")
 }
 
+/// 执行同步 HTTP 请求的客户端（ureq，无 tokio 依赖）
 pub struct HttpClient;
 
 impl std::fmt::Debug for HttpClient {

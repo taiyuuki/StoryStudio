@@ -595,9 +595,9 @@ impl Tool for ListUnresolvedRefsTool {
 
 /// 片段 ID → (章节 ID, 卷号)。章节 ID 来自结构树，卷号经 chapters.toml 的
 /// chapter_id → volume_order 映射（未回填 chapter_id 的章节卷号为 None）。
-fn build_fragment_locations(
-    ctx: &ToolContext,
-) -> Result<HashMap<String, (Option<String>, Option<u32>)>, String> {
+type FragmentLocations = HashMap<String, (Option<String>, Option<u32>)>;
+
+fn build_fragment_locations(ctx: &ToolContext) -> Result<FragmentLocations, String> {
     let parse = ctx.parse()?;
     let doc = &parse.ir.document;
     let vol_of: HashMap<String, u32> = crate::mutations::load_chapters_file(&ctx.paths())

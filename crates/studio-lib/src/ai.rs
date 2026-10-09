@@ -584,6 +584,7 @@ pub fn complete_fragment_streaming(
 /// 1. 服务端拒收关闭参数（OpenAI 兼容路径的 minimal 被 400）；
 /// 2. Anthropic 兼容路径不发思考参数、服务端默认思考，把小配额吃光，
 ///    返回成功但正文为空。
+///
 /// 出现任一信号时，以 Auto（不发任何思考参数，跟随服务端）重建
 /// Provider、放大配额重试**一次**；取消不重试。两次尝试都如实记账。
 pub fn complete_with_fallback(

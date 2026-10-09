@@ -1382,7 +1382,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 fn write_toml<T: serde::Serialize>(
     paths: &ProjectPaths,
     op: &str,
-    path: &std::path::PathBuf,
+    path: &std::path::Path,
     value: &T,
 ) -> Result<(), StudioError> {
     let content = toml::to_string(value)

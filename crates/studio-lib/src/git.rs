@@ -409,7 +409,7 @@ pub fn git_diff_summary(
             continue;
         };
         // rename 被禁用后不出现双路径形态；保险起见取最后一个字段
-        let path = parts.last().unwrap_or(path);
+        let path = parts.next_back().unwrap_or(path);
         let (added, deleted) = nums.get(path).copied().unwrap_or((0, 0));
         files.push(GitDiffFileDto {
             path: path.to_string(),

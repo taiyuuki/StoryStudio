@@ -262,9 +262,9 @@ mod tests {
     fn reset_removes_override_and_tolerates_missing() {
         let dir = tempfile::tempdir().unwrap();
         save(dir.path(), "write_chapter", "自定义整章").unwrap();
-        assert_eq!(reset(dir.path(), "write_chapter").unwrap(), true);
+        assert!(reset(dir.path(), "write_chapter").unwrap());
         assert_eq!(resolve(&WRITE_CHAPTER, Some(dir.path())), WRITE_CHAPTER.builtin);
-        assert_eq!(reset(dir.path(), "write_chapter").unwrap(), false);
+        assert!(!reset(dir.path(), "write_chapter").unwrap());
     }
 
     #[test]

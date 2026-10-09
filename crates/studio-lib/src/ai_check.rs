@@ -318,7 +318,7 @@ fn attribute_quote(chunk: &[usize], bodies: &[(String, String)], quote: &str) ->
             let mut best: Option<(usize, usize)> = None;
             for &i in chunk {
                 let score = lcs_substring_len(&nq, &normalize_ws(&bodies[i].1));
-                if score * 10 >= nq_len * 6 && best.map_or(true, |(_, b)| score > b) {
+                if score * 10 >= nq_len * 6 && best.is_none_or(|(_, b)| score > b) {
                     best = Some((i, score));
                 }
             }

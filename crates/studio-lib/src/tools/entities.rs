@@ -223,7 +223,7 @@ impl Tool for CreateCharacterTool {
             EntityKind::Character,
             &new_id,
             display,
-            placeholder.is_some().then(|| name.as_str()),
+            placeholder.is_some().then_some(name.as_str()),
         );
         Ok(format!(
             "角色已创建: id={new_id}, name={display}{conceal_note}{warning}"

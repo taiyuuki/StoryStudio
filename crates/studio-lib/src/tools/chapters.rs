@@ -248,7 +248,6 @@ impl Tool for GetChapterOutlineTool {
                             pending_shown <= MAX_PENDING_SHOWN
                         }
                 })
-                .map(|(i, c)| (i, c))
                 .collect()
         } else {
             file.chapters
@@ -257,7 +256,6 @@ impl Tool for GetChapterOutlineTool {
                 .filter(|(_, c)| volume_filter.is_none_or(|vo| c.volume_order == vo))
                 .filter(|(_, c)| status_filter.as_ref().is_none_or(|s| &c.status == s))
                 .filter(|(_, c)| include_completed || c.status != "completed")
-                .map(|(i, c)| (i, c))
                 .collect()
         };
 

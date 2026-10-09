@@ -63,6 +63,8 @@ fn ledger_path(root: &Path) -> std::path::PathBuf {
 }
 
 /// 追加一条调用记录（best-effort）
+// 调用记账的字段各自独立，收成结构体会让全部调用点变啰嗦
+#[allow(clippy::too_many_arguments)]
 pub fn record(
     root: &Path,
     scene: &str,

@@ -131,10 +131,10 @@ impl Tool for GetStructureTool {
             let mut result = format!("章节: {ch_title} ({ch_id})\n");
             for sc_id in doc.children_of(&sid) {
                 let sc_title = doc
-                    .get_scene(&sc_id)
+                    .get_scene(sc_id)
                     .and_then(|s| s.title.as_deref())
                     .unwrap_or("无标题");
-                let frag_count = doc.children_of(&sc_id).len();
+                let frag_count = doc.children_of(sc_id).len();
                 result.push_str(&format!(
                     "  场景: {sc_title} ({sc_id}) [{frag_count} 片段]\n"
                 ));

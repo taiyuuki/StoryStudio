@@ -186,7 +186,7 @@ fn grade_unused_thread_diagnostics(paths: &ProjectPaths, diagnostics: &mut Diagn
 
     let threads = read_toml_if_exists::<ThreadsFile>(&paths.threads_toml()).unwrap_or_default();
     // 卷号语义依赖统一卷结构（outline.toml 为唯一真相源），走迁移读取
-    let chapters = crate::mutations::load_chapters_file(&paths).unwrap_or_default();
+    let chapters = crate::mutations::load_chapters_file(paths).unwrap_or_default();
 
     // 封卷卷号：已动笔的最大卷号 - 1（该卷之前的全部封卷）；
     // 只立了规划章的更大卷不算——作者可能回到前卷继续补章

@@ -1942,6 +1942,8 @@ pub fn load_unresolved_refs(paths: &ProjectPaths) -> Result<Vec<UnresolvedRefDef
 ///   profile 一步带入性别/职业/外貌/背景/性格/习性，免去再 update_entity。
 ///
 /// 返回给调用方的回执摘要。
+// 单条便捷包装：与复数版参数一一对应，收成结构体会造成两套形态
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_unresolved_ref(
     paths: &ProjectPaths,
     fragment_id: &str,

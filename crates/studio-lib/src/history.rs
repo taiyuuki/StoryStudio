@@ -5,6 +5,7 @@
 //! - 与上一版正文完全一致（仅锚点/frontmatter 变化）→ 跳过
 //! - 距上一版不足 5 分钟且正文字数变化不足 200 → 跳过
 //! - 删除片段 / 恢复版本前 → 无条件强制快照当前内容
+//!
 //! 每个片段保留最近 [`KEEP_VERSIONS`] 版，超出按时间淘汰。
 //!
 //! 快照是完整的片段文件内容（含 frontmatter），存于
@@ -90,7 +91,7 @@ pub fn list_versions(
             bytes: content.len() as u64,
         });
     }
-    versions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    versions.sort_by_key(|v| std::cmp::Reverse(v.timestamp));
     Ok(versions)
 }
 
@@ -294,7 +295,7 @@ pub fn line_diff(old: &str, new: &str) -> Vec<DiffLine> {
     let (mut i, mut j) = (0usize, 0usize);
     let (mut old_ln, mut new_ln) = (1u32, 1u32);
     while i < n && j < m {
-        let idx = i * (m + 1) + j;
+        let _idx = i * (m + 1) + j;
         if a[i] == b[j] {
             ops.push(DiffLine { kind: "same".into(), old_ln: Some(old_ln), new_ln: Some(new_ln), text: a[i].to_string(), count: 1 });
             i += 1; j += 1; old_ln += 1; new_ln += 1;
@@ -352,9 +353,7 @@ fn collapse_same(ops: &[DiffLine]) -> Vec<DiffLine> {
         // 先标记变更行，再向两侧扩上下文
         for (i, op) in ops.iter().enumerate() {
             if op.kind != "same" {
-                for k in i.saturating_sub(CONTEXT)..(i + CONTEXT + 1).min(ops.len()) {
-                    keep[k] = true;
-                }
+                keep[i.saturating_sub(CONTEXT)..(i + CONTEXT + 1).min(ops.len())].fill(true);
             }
         }
         keep
@@ -458,7 +457,7 @@ fn prune(paths: &ProjectPaths, dir: &PathBuf) {
     if snaps.len() <= KEEP_VERSIONS {
         return;
     }
-    snaps.sort_by(|a, b| b.0.cmp(&a.0)); // 新 → 旧
+    snaps.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts)); // 新 → 旧
     for (_, path) in snaps.iter().skip(KEEP_VERSIONS) {
         let bytes = std::fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
         if std::fs::remove_file(path).is_ok() {
