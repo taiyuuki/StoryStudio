@@ -932,8 +932,9 @@ impl Tool for ProfileCheckTool {
         ToolDef {
             name: "profile_check".into(),
             description: "核对实体档案与正文描写的一致性（软提示，非错误）：把档案的事实性字段\
-            （职务/身份/隶属/存亡/所在地/亲缘/时间线）与出场片段摘要对照，报告出入处\
-            （如档案写「退休副局长」、正文里却以现职身份下令）。\
+            （职务/身份/隶属/存亡/所在地/亲缘/时间线）与该实体的 active 断言、\
+            出场片段摘要三方对照，报告出入处（如档案写「退休副局长」、正文里却以\
+            现职身份下令；断言记「假死」、正文却办葬礼被识破）。\
             档案过时也可能是有意的伏笔设计——报告只帮作者看见出入。\
             整章交付前可对主要角色各跑一遍。"
                 .into(),
@@ -1058,8 +1059,40 @@ impl Tool for ProfileCheckTool {
             );
         }
 
+        // 该实体的 active 断言（动态事实层）：并入核对基准——
+        // 只比档案会漏掉「断言 vs 正文」方向的出入
+        let assertions_text =
+            std::fs::read_to_string(paths.knowledge_dir().join("assertions.toml"))
+                .ok()
+                .and_then(|c| story_project_format::AssertionsFile::from_toml_str(&c).ok())
+                .map(|f| {
+                    let lines: Vec<String> = f
+                        .assertions
+                        .iter()
+                        .filter(|a| {
+                            a.subject == entity_id
+                                && (a.status.is_empty() || a.status == "active")
+                        })
+                        .map(|a| {
+                            format!(
+                                "- {}.{} = {}",
+                                a.id,
+                                a.predicate,
+                                object_display(&a.object)
+                            )
+                        })
+                        .collect();
+                    lines.join("\n")
+                })
+                .unwrap_or_default();
+        let assertions_block = if assertions_text.is_empty() {
+            String::new()
+        } else {
+            format!("\n当前有效断言（active，上帝视角事实）：\n{assertions_text}\n")
+        };
+
         let user = format!(
-            "实体档案（{entity_id}）：\n{profile_text}\n出场片段摘要（阅读序）：\n{evidence}"
+            "实体档案（{entity_id}）：\n{profile_text}{assertions_block}\n出场片段摘要（阅读序）：\n{evidence}"
         );
 
         let request = story_ai_runtime::provider::GenerateRequest {
