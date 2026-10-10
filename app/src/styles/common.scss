@@ -17,6 +17,12 @@ body,
   overflow: hidden;
 }
 
+// 应用顶栏高度（AppTitleBar）；全屏覆盖层需让出这一层，
+// 避免与窗口按钮（mac 红绿灯 / win 右侧控件）重叠
+:root {
+  --titlebar-h: 44px;
+}
+
 body {
   font-family:
     'Noto Serif SC',

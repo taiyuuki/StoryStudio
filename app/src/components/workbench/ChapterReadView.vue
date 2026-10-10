@@ -105,7 +105,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 <style scoped lang="scss">
 .read-overlay {
   position: fixed;
-  inset: 0;
+  // 让出应用顶栏（AppTitleBar，含 mac 红绿灯 / win 窗口控件），
+  // 顶栏保持可见可交互，「回到编辑」不与窗口按钮重叠
+  top: var(--titlebar-h);
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 120;
   display: flex;
   flex-direction: column;

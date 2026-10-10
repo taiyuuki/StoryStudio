@@ -93,7 +93,7 @@ async function close() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 44px;
+  height: var(--titlebar-h);
   padding: 0 12px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--divider);
