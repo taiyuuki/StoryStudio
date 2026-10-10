@@ -1102,6 +1102,12 @@ pub fn scene_of_fragment(root: String, fragment_id: String) -> R<String> {
     lib::scene_of_fragment(&paths(&root), &fragment_id).map_err(e)
 }
 
+/// 全书正文关键词检索（按阅读顺序返回命中片段与上下文摘录，对齐 AI 的 search_text 工具）
+#[tauri::command]
+pub fn search_text(root: String, query: String) -> R<Vec<lib::search::SearchHit>> {
+    lib::search::search_text(Path::new(&root), &query, 200).map_err(e)
+}
+
 // ── Git 版本档案 ─────────────────────────────────────────
 
 /// 仓库状态检测（git 可用性 / 已初始化 / 嵌套 / 未存档变更）

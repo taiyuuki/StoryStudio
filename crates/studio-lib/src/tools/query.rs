@@ -1137,7 +1137,7 @@ impl Tool for SearchTextTool {
 }
 
 /// 构造带上下文窗的摘录，用【】标记命中片段
-fn build_excerpt(
+pub(crate) fn build_excerpt(
     text: &str,
     hit_byte_idx: usize,
     query_len: usize,

@@ -5,6 +5,7 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import StructureTree from '@/components/workbench/StructureTree.vue'
 import SceneEditor from '@/components/workbench/SceneEditor.vue'
 import RightDock from '@/components/workbench/RightDock.vue'
+import SearchDialog from '@/components/workbench/SearchDialog.vue'
 
 const store = useWorkspaceStore()
 const router = useRouter()
@@ -28,6 +29,8 @@ onMounted(() => {
       <SceneEditor class="wb-editor" />
       <RightDock class="wb-dock" />
     </div>
+    <!-- 全文检索（左栏入口 + Cmd/Ctrl+F），全局挂载保证无场景打开时也可检索 -->
+    <SearchDialog />
   </div>
   <div v-else class="ink-bg-container wb-loading">
     <i class="fa-solid fa-circle-notch fa-spin" />

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { api } from '@/api/backend'
 import type { BookMetaDto, ChapterDto, SceneDto } from '@/api/backend'
@@ -8,6 +9,7 @@ import { normalizeBookMeta } from '@/constants/bookMeta'
 import BookMetaForm from '@/components/BookMetaForm.vue'
 
 const store = useWorkspaceStore()
+const ui = useUiStore()
 
 const query = ref('')
 const collapsed = ref<Set<string>>(new Set())
@@ -166,6 +168,13 @@ function sceneTitle(s: SceneDto): string {
         <i class="fa-solid fa-magnifying-glass" />
         <input v-model="query" placeholder="搜索章节 / 场景" />
       </div>
+      <button
+        class="ink-icon-btn"
+        title="全文检索正文（⌘F / Ctrl+F）"
+        @click="ui.searchOpen = true"
+      >
+        <i class="fa-solid fa-file-magnifying-glass" />
+      </button>
       <button class="ink-icon-btn" title="书籍信息（题材 / 主线 / 体量……）" @click="openMeta">
         <i class="fa-solid fa-circle-info" />
       </button>

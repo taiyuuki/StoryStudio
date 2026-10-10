@@ -328,6 +328,16 @@ export interface AnchorApplyResultDto {
   unresolved: [string, string][]
 }
 
+/** 全文检索单条命中：摘录中命中段以【】标记（高亮渲染与跳转定位复用） */
+export interface SearchHitDto {
+  fragmentId: string
+  sceneId: string
+  chapterTitle: string
+  sceneTitle: string
+  excerpt: string
+  occurrences: number
+}
+
 export interface FragmentDto {
   id: string
   text: string
@@ -1259,6 +1269,10 @@ export const api = {
   /** 定位片段所属场景（审校报告精确跳转用） */
   sceneOfFragment(root: string, fragmentId: string) {
     return call<string>('scene_of_fragment', { root, fragmentId })
+  },
+  /** 全书正文关键词检索（按阅读顺序返回命中片段与上下文摘录） */
+  searchText(root: string, query: string) {
+    return call<SearchHitDto[]>('search_text', { root, query })
   },
   /** Agent 对话：步骤经回调实时推送 */
   agentChat(

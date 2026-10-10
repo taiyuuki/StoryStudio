@@ -44,6 +44,8 @@ export const useUiStore = defineStore(
     const dockWidth = ref(DOCK_WIDTH_DEFAULT)
     /** 编辑器 AI 幽灵补全（Tab 采纳 / Esc 关闭） */
     const aiGhost = ref(true)
+    /** 全文检索对话框（StructureTree 入口 + Cmd/Ctrl+F） */
+    const searchOpen = ref(false)
     
 
     function applyTheme() {
@@ -103,6 +105,7 @@ export const useUiStore = defineStore(
       activePanel,
       dockWidth,
       aiGhost,
+      searchOpen,
       toggleTheme,
       rememberProject,
       forgetProject,

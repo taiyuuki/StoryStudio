@@ -178,6 +178,7 @@ pub fn run() {
             commands::ai_check,
             commands::ai_anchor_fragment,
             commands::scene_of_fragment,
+            commands::search_text,
             commands::git_status,
             commands::git_init,
             commands::git_commit,

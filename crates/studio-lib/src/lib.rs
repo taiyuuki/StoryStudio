@@ -25,6 +25,7 @@ pub mod timeline;
 pub mod mutations;
 pub mod project;
 pub mod prompt_custom;
+pub mod search;
 mod prompts;
 pub mod tools;
 pub mod workflow;

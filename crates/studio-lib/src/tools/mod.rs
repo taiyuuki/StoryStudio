@@ -518,7 +518,7 @@ pub use chapters::*;
 mod worldview;
 pub use worldview::*;
 
-mod query;
+pub(crate) mod query;
 pub use query::*;
 
 mod prepare;
