@@ -87,10 +87,111 @@ const saveLabel = computed(() => {
 
 const anchors = computed(() =>
   (props.fragment.anchors ?? []).map((a) => ({
+    entity: a.entity,
     name: store.entityName(a.entity),
     role: a.role,
   })),
 )
+
+// ── 锚点手动编辑（对齐 AI 的 set/remove_fragment_anchor 工具）──
+
+const ROLE_OPTIONS = [
+  { value: 'appears', label: '出场' },
+  { value: 'mentioned', label: '提及' },
+  { value: 'referenced', label: '指代' },
+] as const
+
+const KIND_LABELS: Record<string, string> = {
+  character: '角色',
+  location: '地点',
+  item: '道具',
+  organization: '组织',
+}
+
+function roleLabel(role: string): string {
+  return ROLE_OPTIONS.find((o) => o.value === role)?.label ?? role
+}
+
+/** 展开中的编辑/添加表单：编辑时为实体 ID，添加时 adding 为真 */
+const editingEntity = ref<string | null>(null)
+const adding = ref(false)
+const addEntityId = ref('')
+const addRole = ref<string>('appears')
+const anchorBusy = ref(false)
+
+const editingAnchor = computed(() =>
+  (props.fragment.anchors ?? []).find((a) => a.entity === editingEntity.value),
+)
+
+/** 可锚实体 = 全部实体 − 已锚定的（避免重复添加，role 更新走编辑行） */
+const addableEntities = computed(() => {
+  const anchored = new Set((props.fragment.anchors ?? []).map((a) => a.entity))
+  return (store.ws?.entities ?? []).filter((e) => !anchored.has(e.id))
+})
+
+function openEdit(entity: string) {
+  editingEntity.value = entity
+  adding.value = false
+}
+
+function startAdd() {
+  adding.value = true
+  editingEntity.value = null
+  addEntityId.value = ''
+  addRole.value = 'appears'
+}
+
+function closeAnchorForm() {
+  editingEntity.value = null
+  adding.value = false
+}
+
+async function setAnchorRole(entity: string, role: string) {
+  if (anchorBusy.value) return
+  anchorBusy.value = true
+  try {
+    await store.setFragmentAnchor(props.fragment.id, entity, role)
+  } finally {
+    anchorBusy.value = false
+  }
+}
+
+async function addAnchor() {
+  if (!addEntityId.value || anchorBusy.value) return
+  anchorBusy.value = true
+  try {
+    await store.setFragmentAnchor(props.fragment.id, addEntityId.value, addRole.value)
+    // 表单保持展开，便于连续锚定多个实体
+    addEntityId.value = ''
+  } finally {
+    anchorBusy.value = false
+  }
+}
+
+async function removeAnchor(entity: string) {
+  if (anchorBusy.value) return
+  anchorBusy.value = true
+  try {
+    await store.removeFragmentAnchor(props.fragment.id, entity)
+    closeAnchorForm()
+  } finally {
+    anchorBusy.value = false
+  }
+}
+
+// AI 锚定本段：先冲刷未落盘编辑（理解锚定读磁盘内容），再按新正文补锚
+const aiAnchoring = ref(false)
+
+async function anchorFragment() {
+  if (aiAnchoring.value) return
+  aiAnchoring.value = true
+  try {
+    await store.saveFragment(props.fragment.id, doc.value)
+    await store.aiAnchorFragment(props.fragment.id)
+  } finally {
+    aiAnchoring.value = false
+  }
+}
 
 const historyOpen = ref(false)
 
@@ -134,6 +235,9 @@ async function moveDown() {
         <button title="历史版本" @click="historyOpen = true">
           <i class="fa-solid fa-clock-rotate-left" />
         </button>
+        <button title="AI 锚定本段（按当前正文自动补锚，保留手动锚点）" :disabled="aiAnchoring" @click="anchorFragment">
+          <i class="fa-solid fa-anchor" :class="{ 'fa-spin': aiAnchoring }" />
+        </button>
         <button title="AI 审校本段（结果送妙笔改进）" @click="checkFragment">
           <i class="fa-solid fa-magnifying-glass" />
         </button>
@@ -146,13 +250,87 @@ async function moveDown() {
     <div ref="container" class="frag-editor" />
 
     <div v-if="anchors.length" class="frag-anchors">
-      <span v-for="(a, i) in anchors" :key="i" class="anchor-chip" :title="`${a.name} 在本段出场`">
+      <button
+        v-for="a in anchors"
+        :key="a.entity"
+        class="anchor-chip"
+        :class="{ 'is-editing': editingEntity === a.entity }"
+        :title="`${a.name} · ${roleLabel(a.role)}（点击编辑锚点）`"
+        @click="openEdit(a.entity)"
+      >
         <i class="fa-solid fa-link" />
         {{ a.name }}
-      </span>
+        <span class="anchor-role">{{ roleLabel(a.role) }}</span>
+      </button>
+    </div>
+
+    <!-- 锚点编辑 / 添加（改稿后手动对齐出场记录） -->
+    <div v-if="editingAnchor || adding" class="anchor-form">
+      <template v-if="editingAnchor">
+        <span class="anchor-form-title">
+          <i class="fa-solid fa-link" />
+          {{ store.entityName(editingAnchor.entity) }}
+        </span>
+        <div class="anchor-roles">
+          <button
+            v-for="r in ROLE_OPTIONS"
+            :key="r.value"
+            :class="{ 'is-active': editingAnchor.role === r.value }"
+            :disabled="anchorBusy"
+            @click="setAnchorRole(editingAnchor.entity, r.value)"
+          >
+            {{ r.label }}
+          </button>
+        </div>
+        <button
+          class="ink-btn ink-btn--sm anchor-remove"
+          :disabled="anchorBusy"
+          @click="removeAnchor(editingAnchor.entity)"
+        >
+          <i class="fa-regular fa-trash-can" /> 移除锚点
+        </button>
+        <button class="ink-btn ink-btn--sm" @click="closeAnchorForm">收起</button>
+      </template>
+      <template v-else>
+        <ElSelect
+          v-model="addEntityId"
+          filterable
+          placeholder="选择实体（角色 / 地点 / 道具 / 组织）"
+          size="small"
+          class="anchor-select"
+        >
+          <ElOption
+            v-for="e in addableEntities"
+            :key="e.id"
+            :label="`${e.displayName}（${KIND_LABELS[e.kind] ?? e.kind}）`"
+            :value="e.id"
+          />
+        </ElSelect>
+        <div class="anchor-roles">
+          <button
+            v-for="r in ROLE_OPTIONS"
+            :key="r.value"
+            :class="{ 'is-active': addRole === r.value }"
+            @click="addRole = r.value"
+          >
+            {{ r.label }}
+          </button>
+        </div>
+        <button
+          class="ink-btn ink-btn--sm ink-btn--primary"
+          :disabled="!addEntityId || anchorBusy"
+          @click="addAnchor"
+        >
+          锚定
+        </button>
+        <button class="ink-btn ink-btn--sm" @click="closeAnchorForm">收起</button>
+      </template>
     </div>
 
     <div class="frag-foot">
+      <button class="frag-anchor-add" title="手动锚定实体出场" @click="startAdd">
+        <i class="fa-solid fa-plus" /> 锚点
+      </button>
       <span
         class="frag-save"
         :class="`state-${saveState}`"
@@ -297,13 +475,127 @@ async function moveDown() {
   align-items: center;
   gap: 5px;
   padding: 2px 8px;
+  border: 1px solid transparent;
   border-radius: 4px;
   background: var(--ink-accent-soft);
   color: var(--ink-accent);
   font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s;
 
   i {
     font-size: 9px;
+  }
+
+  &:hover,
+  &.is-editing {
+    border-color: var(--ink-accent);
+  }
+}
+
+.anchor-role {
+  font-size: 10px;
+  opacity: 0.72;
+}
+
+// ── 锚点编辑 / 添加表单 ─────────────────────────────────
+.anchor-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 4px 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--ui-border);
+  background: var(--ink-accent-soft);
+  font-size: 12px;
+}
+
+.anchor-form-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-accent);
+  font-weight: 600;
+
+  i {
+    font-size: 10px;
+  }
+}
+
+.anchor-roles {
+  display: inline-flex;
+  border: 1px solid var(--ui-border);
+  border-radius: 7px;
+  overflow: hidden;
+
+  button {
+    padding: 4px 10px;
+    border: none;
+    background: var(--input-bg);
+    color: var(--ink-muted);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+
+    & + button {
+      border-left: 1px solid var(--ui-border);
+    }
+
+    &:hover:not(:disabled) {
+      color: var(--ink-main);
+    }
+
+    &.is-active {
+      background: var(--ink-accent);
+      color: #fff;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+}
+
+.anchor-select {
+  width: 230px;
+}
+
+.anchor-remove {
+  color: var(--state-danger);
+
+  &:hover:not(:disabled) {
+    border-color: var(--state-danger);
+  }
+}
+
+.frag-anchor-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-disabled);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s;
+
+  .frag-block:hover & {
+    opacity: 1;
+  }
+
+  &:hover {
+    background: var(--divider);
+    color: var(--ink-main);
   }
 }
 

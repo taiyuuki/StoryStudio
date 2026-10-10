@@ -263,6 +263,61 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  // ── 片段锚点（手动编辑，对齐 AI 的 set/remove_fragment_anchor 工具）──
+  // 只回写 f.anchors（不替换整个 fragment），避免 f.text 变化把编辑器里
+  // 未保存的正文整体替换回去（文字闪回，见 saveFragment 的同款注释）
+
+  async function setFragmentAnchor(
+    fragmentId: string,
+    entityId: string,
+    role: string,
+  ): Promise<void> {
+    if (!root.value) return
+    try {
+      const anchors = await api.setFragmentAnchor(root.value, fragmentId, entityId, role)
+      const f = scene.value?.fragments.find((x) => x.id === fragmentId)
+      if (f) f.anchors = anchors
+      scheduleCompile()
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+    }
+  }
+
+  async function removeFragmentAnchor(fragmentId: string, entityId: string): Promise<void> {
+    if (!root.value) return
+    try {
+      const anchors = await api.removeFragmentAnchor(root.value, fragmentId, entityId)
+      const f = scene.value?.fragments.find((x) => x.id === fragmentId)
+      if (f) f.anchors = anchors
+      scheduleCompile()
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+    }
+  }
+
+  /** AI 理解锚定本段（按当前落盘正文做指代消解补锚，保留手动锚点） */
+  async function aiAnchorFragment(fragmentId: string): Promise<boolean> {
+    if (!root.value) return false
+    try {
+      const r = await api.aiAnchorFragment(root.value, fragmentId)
+      const f = scene.value?.fragments.find((x) => x.id === fragmentId)
+      if (f) f.anchors = r.anchors
+      // 台账（anchoring.toml）可能新增待处置指代，右栏待审面板的角标跟新
+      void refresh()
+      scheduleCompile()
+      const pending = r.unresolved.length
+        ? `；${r.unresolved.length} 条待处置指代已列入「锚定待审」面板`
+        : ''
+      ElMessage.success(
+        r.applied > 0 ? `AI 已锚定 ${r.applied} 处出场${pending}` : `本段无需补锚${pending}`,
+      )
+      return true
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+      return false
+    }
+  }
+
   // ── 章节 ────────────────────────────────────────────────
   async function createChapter(title: string): Promise<ChapterDto | null> {
     if (!root.value) return null
@@ -763,6 +818,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     insertFragment,
     removeFragment,
     moveFragment,
+    setFragmentAnchor,
+    removeFragmentAnchor,
+    aiAnchorFragment,
     createChapter,
     renameChapter,
     deleteChapter,

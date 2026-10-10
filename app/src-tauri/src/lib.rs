@@ -112,6 +112,9 @@ pub fn run() {
             commands::write_fragment,
             commands::delete_fragment,
             commands::move_fragment,
+            // 片段锚点（手动编辑）
+            commands::set_fragment_anchor,
+            commands::remove_fragment_anchor,
             // 片段版本历史
             commands::fragment_versions,
             commands::fragment_version_read,
@@ -172,6 +175,7 @@ pub fn run() {
             commands::ai_complete_fragment,
             commands::ai_complete_cancel,
             commands::ai_check,
+            commands::ai_anchor_fragment,
             commands::scene_of_fragment,
             commands::git_status,
             commands::git_init,

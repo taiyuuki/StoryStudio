@@ -612,7 +612,7 @@ impl Tool for AiCheckPovTool {
             .trim_end_matches("```")
             .trim();
         let parsed: serde_json::Value = serde_json::from_str(json_text)
-            .map_err(|e| format!("视角检测报告解析失败: {e}\n原始输出开头: {}", &raw.chars().take(200).collect::<String>()))?;
+            .map_err(|e| format!("视角检测报告解析失败: {e}\n原始输出开头: {}", raw.chars().take(200).collect::<String>()))?;
 
         let leaks = parsed
             .get("leaks")

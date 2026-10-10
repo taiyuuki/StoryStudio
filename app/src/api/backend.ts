@@ -321,6 +321,13 @@ export interface AnchorDto {
   role: string
 }
 
+/** AI 锚定单片段的回执：本次并入数 + 落盘后的权威锚点集 + 仍待处置的指代（[原文, 提示]） */
+export interface AnchorApplyResultDto {
+  applied: number
+  anchors: AnchorDto[]
+  unresolved: [string, string][]
+}
+
 export interface FragmentDto {
   id: string
   text: string
@@ -911,6 +918,14 @@ export const api = {
   moveFragment(root: string, sceneId: string, fragmentId: string, newIndex: number) {
     return call<void>('move_fragment', { root, sceneId, fragmentId, newIndex })
   },
+  /** 为片段设置/更新锚点（同实体更新 role）；返回落盘后的权威锚点集 */
+  setFragmentAnchor(root: string, fragmentId: string, entityId: string, role: string) {
+    return call<AnchorDto[]>('set_fragment_anchor', { root, fragmentId, entityId, role })
+  },
+  /** 移除片段上某实体的锚点；返回落盘后的权威锚点集 */
+  removeFragmentAnchor(root: string, fragmentId: string, entityId: string) {
+    return call<AnchorDto[]>('remove_fragment_anchor', { root, fragmentId, entityId })
+  },
   fragmentVersions(root: string, fragmentId: string) {
     return call<FragmentVersionDto[]>('fragment_versions', { root, fragmentId })
   },
@@ -1232,6 +1247,10 @@ export const api = {
   /** AI 味检测（单片段 / 整场景 / 整章），结果结构化回传 */
   aiCheck(root: string, scope: 'fragment' | 'scene' | 'chapter', id: string) {
     return call<AiCheckResultDto>('ai_check', { root, scope, id })
+  },
+  /** AI 理解锚定单片段（指代消解补锚，合并语义保留手动锚点） */
+  aiAnchorFragment(root: string, fragmentId: string) {
+    return call<AnchorApplyResultDto>('ai_anchor_fragment', { root, fragmentId })
   },
   /** 定位片段所属场景（审校报告精确跳转用） */
   sceneOfFragment(root: string, fragmentId: string) {

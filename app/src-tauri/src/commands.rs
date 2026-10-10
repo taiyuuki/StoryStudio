@@ -209,6 +209,37 @@ pub fn move_fragment(root: String, scene_id: String, fragment_id: String, new_in
     mutations::move_fragment(&paths(&root), &scene_id, &fragment_id, new_index).map_err(e)
 }
 
+// ── 片段锚点（手动编辑：对齐 AI 的 set/remove_fragment_anchor 工具）──
+
+/// 读回落盘后的权威锚点集（只回 anchors，不碰 text——避免前端误替换
+/// 编辑器中未保存的正文）
+fn read_fragment_anchors(root: &str, fragment_id: &str) -> R<Vec<AnchorDto>> {
+    Ok(to_fragment_dto(&load_fragment_file(Path::new(root), fragment_id)?).anchors)
+}
+
+/// 为片段设置/更新显式锚点（同一实体重复设置会更新 role）
+#[tauri::command]
+pub fn set_fragment_anchor(
+    root: String,
+    fragment_id: String,
+    entity_id: String,
+    role: String,
+) -> R<Vec<AnchorDto>> {
+    mutations::set_fragment_anchor(&paths(&root), &fragment_id, &entity_id, &role).map_err(e)?;
+    read_fragment_anchors(&root, &fragment_id)
+}
+
+/// 移除片段上某实体的显式锚点
+#[tauri::command]
+pub fn remove_fragment_anchor(
+    root: String,
+    fragment_id: String,
+    entity_id: String,
+) -> R<Vec<AnchorDto>> {
+    mutations::remove_fragment_anchor(&paths(&root), &fragment_id, &entity_id).map_err(e)?;
+    read_fragment_anchors(&root, &fragment_id)
+}
+
 // ── 片段版本历史 ─────────────────────────────────────────
 
 /// 列出片段的本地版本（节流快照，存 .novelstudio/history/）
@@ -1012,6 +1043,40 @@ pub async fn ai_check(root: String, scope: String, id: String) -> R<AiCheckResul
     match tokio::time::timeout(std::time::Duration::from_secs(300), task).await {
         Ok(res) => res.map_err(|err| format!("任务执行失败: {err}"))?,
         Err(_) => Err("AI 检测长时间没有响应，请稍后重试".to_string()),
+    }
+}
+
+/// AI 锚定单片段的回执：落盘后的权威锚点集 + 仍待处置的指代
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnchorApplyDto {
+    /// 本次 LLM 判定并入的锚点数（不含既有的手动锚点）
+    pub applied: usize,
+    pub anchors: Vec<AnchorDto>,
+    /// (指代原文, 模型提示)，已汇入 anchoring.toml 台账（右栏锚定待审面板）
+    pub unresolved: Vec<(String, String)>,
+}
+
+/// AI 理解锚定单片段（指代消解补锚，合并语义：保留已有手动锚点）
+///
+/// 前端手动触发（改稿后按新正文一键补锚）；复用妙笔 agent 的模型档案。
+#[tauri::command]
+pub async fn ai_anchor_fragment(root: String, fragment_id: String) -> R<AnchorApplyDto> {
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let provider = active_provider(lib::purpose::AGENT)?;
+        let ctx = lib::tools::ToolContext::new(std::path::PathBuf::from(&root));
+        let outcome = lib::tools::anchor_fragment_merge(&ctx, &provider, &fragment_id)?;
+        let anchors = read_fragment_anchors(&root, &fragment_id)?;
+        Ok(AnchorApplyDto {
+            applied: outcome.anchored.len(),
+            anchors,
+            unresolved: outcome.unresolved,
+        })
+    });
+
+    match tokio::time::timeout(std::time::Duration::from_secs(300), task).await {
+        Ok(res) => res.map_err(|err| format!("任务执行失败: {err}"))?,
+        Err(_) => Err("AI 锚定长时间没有响应，请稍后重试".to_string()),
     }
 }
 

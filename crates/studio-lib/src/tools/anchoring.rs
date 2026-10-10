@@ -339,6 +339,53 @@ pub fn anchor_and_apply(
     Ok(outcome)
 }
 
+/// 单片段理解锚定（合并语义）：编排与 [`anchor_and_apply`] 相同，但落盘用
+/// `set_fragment_anchors` 合并——已有显式锚点（手动登记 / 手动修正的 role）
+/// 保留，只追加或按 LLM 最新判定更新 role。
+///
+/// 供前端「AI 锚定本段」手动触发：用户改稿后按新正文补锚，不应清掉自己
+/// 刚修好的锚点；误锚的清理走手动删除。AI 批量路径（anchor_fragments 工具）
+/// 维持权威集替换语义——导入书稿建档场景下旧锚点本就是机器产物。
+pub fn anchor_fragment_merge(
+    ctx: &ToolContext,
+    provider: &Arc<dyn AiProvider>,
+    fragment_id: &str,
+) -> Result<AnchorOutcome, String> {
+    let paths = ctx.paths();
+    let mut outcome = comprehension_anchor(ctx, provider, fragment_id)?;
+    let body = fragment_body(&paths, fragment_id)?;
+
+    // 台账同步（best-effort：失败不阻断锚定），与 anchor_and_apply 一致
+    let pending = crate::mutations::sync_unresolved_refs(&paths, fragment_id, &body, &outcome.unresolved)
+        .unwrap_or_default();
+    outcome.unresolved = pending;
+
+    // 已归拢目标的锚点并入（按实体去重，LLM 的 role 优先）
+    let mut pairs: Vec<(String, String)> = outcome
+        .anchored
+        .iter()
+        .map(|(id, role, _)| (id.clone(), role.clone()))
+        .collect();
+    for r in crate::mutations::load_unresolved_refs(&paths).unwrap_or_default() {
+        if r.fragment_id == fragment_id
+            && r.status == "resolved"
+            && body.contains(&r.quote)
+        {
+            if let Some(target) = &r.target {
+                if !pairs.iter().any(|(id, _)| id == target) {
+                    pairs.push((target.clone(), "referenced".to_string()));
+                }
+            }
+        }
+    }
+
+    if !pairs.is_empty() {
+        crate::mutations::set_fragment_anchors(&paths, fragment_id, &pairs)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(outcome)
+}
+
 /// 把锚定结果格式化为回执片段（无内容返回空串）
 pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) -> String {
     let _ = roster_paths;
@@ -827,6 +874,47 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].quote, "穿灰袍的女人");
         assert!(refs[0].is_pending());
+    }
+
+    /// anchor_fragment_merge（前端「AI 锚定本段」）：合并语义——
+    /// 已有的手动锚点保留，LLM 判定只追加/更新，不清空重写
+    #[test]
+    fn anchor_fragment_merge_preserves_manual_anchors() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        // 两个角色：c_0001 由 LLM 指代锚定补锚；c_0002 是用户手动登记的锚点
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"洛恩·巴克尔\"\naliases = [\"洛恩\"]\n\n[profile]\noccupation = \"佣兵\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0002.toml"),
+            "id = \"c_0002\"\ndisplay_name = \"艾达\"\n",
+        )
+        .unwrap();
+
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc, "那名佣兵靠在门边，一言不发。").unwrap();
+
+        // 用户手动锚定 c_0002（如删改稿后手动修正的出场记录）
+        crate::mutations::set_fragment_anchor(&paths, &fid, "c_0002", "appears").unwrap();
+
+        let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
+            response: "{\"anchors\": [{\"entity\": \"c_0001\", \"role\": \"referenced\", \"quote\": \"那名佣兵\"}], \"unresolved\": []}".to_string(),
+        });
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let outcome = anchor_fragment_merge(&ctx, &provider, &fid).unwrap();
+        assert_eq!(outcome.anchored.len(), 1);
+
+        // 手动锚点与 AI 补锚并存（replace 语义会丢掉 c_0002）
+        let content = std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+        assert!(content.contains("entity: c_0001"), "{content}");
+        assert!(content.contains("entity: c_0002"), "{content}");
     }
 
     /// refs 每项被模型序列化成字符串时应宽松解析回对象，
