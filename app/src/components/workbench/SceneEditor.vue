@@ -95,6 +95,15 @@ async function saveSummary() {
 
         <div class="tool-right">
           <button
+            class="ink-btn ink-btn--sm"
+            title="整章连读：连续阅读本章全部场景（Esc 回到编辑）"
+            @click="ui.chapterRead = scene.chapterId"
+          >
+            <i class="fa-solid fa-book-open" />
+            阅读
+          </button>
+
+          <button
             class="ink-btn ink-btn--sm ai-ghost-toggle"
             :class="{ 'is-on': ui.aiGhost }"
             :title="

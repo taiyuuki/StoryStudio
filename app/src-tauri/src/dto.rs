@@ -406,6 +406,29 @@ pub struct AnchorDto {
 }
 
 // ============================================================================
+// 整章阅读
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterSceneTextDto {
+    pub scene_id: String,
+    pub title: Option<String>,
+    /// 该场景全部片段正文，空行连接
+    pub text: String,
+    pub word_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterReadDto {
+    pub chapter_id: String,
+    pub title: String,
+    pub scenes: Vec<ChapterSceneTextDto>,
+    pub word_count: u64,
+}
+
+// ============================================================================
 // Compile — 诊断
 // ============================================================================
 

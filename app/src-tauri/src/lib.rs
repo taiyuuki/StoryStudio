@@ -108,6 +108,7 @@ pub fn run() {
             commands::delete_scene,
             commands::update_scene,
             commands::get_scene,
+            commands::read_chapter,
             commands::insert_fragment,
             commands::write_fragment,
             commands::delete_fragment,

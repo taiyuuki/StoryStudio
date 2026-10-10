@@ -162,6 +162,49 @@ pub fn get_scene(root: String, scene_id: String) -> R<SceneDetailDto> {
     })
 }
 
+/// 整章连读：章内全部场景的正文合并（阅读视图用，只读）
+#[tauri::command]
+pub fn read_chapter(root: String, chapter_id: String) -> R<ChapterReadDto> {
+    let p = paths(&root);
+    let structure = story_project_format::StructureFile::from_toml_str(
+        &read_file(&p.structure_toml())?,
+    )
+    .map_err(|err| format!("structure.toml 解析失败: {err}"))?;
+
+    let ch = structure
+        .chapter
+        .get(&chapter_id)
+        .ok_or_else(|| format!("章节 '{chapter_id}' 不存在"))?;
+
+    let mut scenes = Vec::new();
+    let mut word_count = 0u64;
+    for sc_id in &ch.scenes {
+        let Some(sc) = structure.scene.get(sc_id) else { continue };
+        let mut texts: Vec<String> = Vec::new();
+        let mut scene_words = 0u64;
+        for fid in &sc.fragments {
+            if let Ok(ff) = load_fragment_file(std::path::Path::new(&root), fid) {
+                scene_words += count_words(&ff.text);
+                texts.push(ff.text);
+            }
+        }
+        word_count += scene_words;
+        scenes.push(ChapterSceneTextDto {
+            scene_id: sc_id.clone(),
+            title: sc.title.clone(),
+            text: texts.join("\n\n"),
+            word_count: scene_words,
+        });
+    }
+
+    Ok(ChapterReadDto {
+        chapter_id: chapter_id.clone(),
+        title: ch.title.clone(),
+        scenes,
+        word_count,
+    })
+}
+
 /// 在指定片段后插入新片段（场景末尾追加时 after_id 为 None）
 #[tauri::command]
 pub fn insert_fragment(root: String, scene_id: String, after_id: Option<String>, text: String) -> R<FragmentDto> {

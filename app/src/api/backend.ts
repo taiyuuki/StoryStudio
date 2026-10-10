@@ -338,6 +338,21 @@ export interface SearchHitDto {
   occurrences: number
 }
 
+/** 整章阅读的单场景正文（片段以空行连接） */
+export interface ChapterSceneTextDto {
+  sceneId: string
+  title: string | null
+  text: string
+  wordCount: number
+}
+
+export interface ChapterReadDto {
+  chapterId: string
+  title: string
+  scenes: ChapterSceneTextDto[]
+  wordCount: number
+}
+
 export interface FragmentDto {
   id: string
   text: string
@@ -915,6 +930,10 @@ export const api = {
   },
   getScene(root: string, sceneId: string) {
     return call<SceneDetailDto>('get_scene', { root, sceneId })
+  },
+  /** 整章连读：章内全部场景正文合并（阅读视图用，只读） */
+  readChapter(root: string, chapterId: string) {
+    return call<ChapterReadDto>('read_chapter', { root, chapterId })
   },
   insertFragment(root: string, sceneId: string, afterId: string | null, text: string) {
     return call<FragmentDto>('insert_fragment', { root, sceneId, afterId, text })

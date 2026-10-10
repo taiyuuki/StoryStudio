@@ -46,6 +46,8 @@ export const useUiStore = defineStore(
     const aiGhost = ref(true)
     /** 全文检索对话框（StructureTree 入口 + Cmd/Ctrl+F） */
     const searchOpen = ref(false)
+    /** 整章阅读视图（打开的章节 ID；null = 关闭） */
+    const chapterRead = ref<string | null>(null)
     
 
     function applyTheme() {
@@ -106,6 +108,7 @@ export const useUiStore = defineStore(
       dockWidth,
       aiGhost,
       searchOpen,
+      chapterRead,
       toggleTheme,
       rememberProject,
       forgetProject,
