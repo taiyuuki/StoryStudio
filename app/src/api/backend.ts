@@ -1056,6 +1056,10 @@ export const api = {
   deleteThread(root: string, threadId: string) {
     return call<void>('delete_thread', { root, threadId })
   },
+  /** 推进线索叙事状态（埋下/揭示/回收/放弃）；前三个需场景锚点，单向不可回退 */
+  advanceThread(root: string, threadId: string, status: string, sceneId: string | null) {
+    return call<ThreadDto>('advance_thread', { root, threadId, status, sceneId })
+  },
   /** 手动记录线索可见性；observer 为 reader/author/omniscient 或实体 ID（c_xx/o_xx） */
   setThreadKnowledge(
     root: string,

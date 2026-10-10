@@ -518,6 +518,22 @@ pub fn remove_thread_knowledge(
         .map(|_| ())
 }
 
+/// 推进线索叙事状态（伏笔记账，对齐 AI 的 advance_thread 工具）
+///
+/// status：planted(埋下)/revealed(揭示)/resolved(回收)/abandoned(放弃)；
+/// 前三者需 scene_id 锚点（场景或片段 ID）；单向不可回退。
+/// 揭示/回收时读者知情在后端自动补记。
+#[tauri::command]
+pub fn advance_thread(
+    root: String,
+    thread_id: String,
+    status: String,
+    scene_id: Option<String>,
+) -> R<ThreadDto> {
+    mutations::advance_thread(&paths(&root), &thread_id, &status, scene_id.as_deref()).map_err(e)?;
+    load_thread(&root, &thread_id)
+}
+
 // ============================================================================
 // 知识断言
 // ============================================================================

@@ -616,6 +616,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  /** 推进线索叙事状态（埋下/揭示/回收/放弃）；揭示/回收的读者知情后端自动补记 */
+  async function advanceThread(
+    threadId: string,
+    status: string,
+    sceneId?: string | null,
+  ): Promise<boolean> {
+    if (!root.value) return false
+    try {
+      const t = await api.advanceThread(root.value, threadId, status, sceneId ?? null)
+      const list = ws.value?.threads
+      if (list) {
+        const i = list.findIndex((x) => x.id === threadId)
+        if (i >= 0) list[i] = t
+      }
+      scheduleCompile()
+      return true
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+      return false
+    }
+  }
+
   /** 记录线索可见性（同观察者同场景覆盖）；成功后刷新线索数据 */
   async function setThreadKnowledge(
     threadId: string,
@@ -837,6 +859,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     updateRelation,
     createThread,
     updateThread,
+    advanceThread,
     deleteThread,
     setThreadKnowledge,
     removeThreadKnowledge,

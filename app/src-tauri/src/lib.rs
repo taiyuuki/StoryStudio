@@ -139,6 +139,7 @@ pub fn run() {
             // 叙事线索
             commands::create_thread,
             commands::update_thread,
+            commands::advance_thread,
             commands::delete_thread,
             commands::set_thread_knowledge,
             commands::remove_thread_knowledge,

@@ -71,6 +71,51 @@ function anchorScene(id: string | null): string {
   return scene?.title ?? id
 }
 
+// ── 状态推进（伏笔记账，对齐 AI 的 advance_thread 工具） ─────────
+
+const ADVANCE_LABELS: Record<string, string> = {
+  planted: '埋下',
+  revealed: '揭示',
+  resolved: '回收',
+  abandoned: '放弃',
+}
+
+/** 从当前状态出发的合法目标（后端 rank 单向推进；abandoned 为终态） */
+function advanceOptions(t: ThreadDto): string[] {
+  const cur = statusOf(t)
+  if (cur === 'planned') return ['planted', 'abandoned']
+  if (cur === 'planted') return ['revealed', 'resolved', 'abandoned']
+  if (cur === 'revealed') return ['resolved', 'abandoned']
+  if (cur === 'resolved') return ['abandoned']
+  return []
+}
+
+const advancing = ref<string | null>(null)
+const advForm = ref({ status: '', sceneId: '' })
+
+function startAdvance(t: ThreadDto) {
+  advancing.value = t.id
+  advForm.value = {
+    status: advanceOptions(t)[0] ?? '',
+    // 默认锚在当前编辑的场景
+    sceneId: store.scene?.id ?? sceneOptions.value[0]?.id ?? '',
+  }
+}
+
+async function submitAdvance(threadId: string) {
+  const f = advForm.value
+  if (f.status !== 'abandoned' && !f.sceneId) {
+    ElMessage.warning('请选择叙事锚点场景')
+    return
+  }
+  const ok = await store.advanceThread(
+    threadId,
+    f.status,
+    f.status === 'abandoned' ? null : f.sceneId,
+  )
+  if (ok) advancing.value = null
+}
+
 async function create() {
   const f = form.value
   if (!f.title.trim()) {
@@ -300,6 +345,14 @@ function removeKnowledge(t: ThreadDto, k: ThreadKnowledgeDto) {
             <i class="fa-regular fa-clock" /> {{ dueLabel(t) }}
           </span>
           <span style="flex: 1" />
+          <button
+            v-if="advanceOptions(t).length"
+            class="tc-act"
+            title="推进状态：标记埋设 / 揭示 / 回收 / 放弃（单向，不可回退）"
+            @click="startAdvance(t)"
+          >
+            <i class="fa-solid fa-forward-step" />
+          </button>
           <button class="tc-act" title="编辑" @click="startEdit(t)">
             <i class="fa-solid fa-pen" />
           </button>
@@ -317,6 +370,39 @@ function removeKnowledge(t: ThreadDto, k: ThreadKnowledgeDto) {
           <span v-if="anchorScene(t.resolvedAt)">
             <i class="fa-solid fa-check-double" /> 回收于「{{ anchorScene(t.resolvedAt) }}」
           </span>
+        </div>
+
+        <!-- 状态推进：伏笔记账 -->
+        <div v-if="advancing === t.id" class="tc-advance">
+          <div class="tp-create-row">
+            <select v-model="advForm.status" title="目标状态（单向推进，不可回退）">
+              <option v-for="s in advanceOptions(t)" :key="s" :value="s">
+                {{ ADVANCE_LABELS[s] }}
+              </option>
+            </select>
+            <select
+              v-if="advForm.status !== 'abandoned'"
+              v-model="advForm.sceneId"
+              title="叙事锚点：该状态发生的场景"
+            >
+              <option value="" disabled>选择场景…</option>
+              <option v-for="s in sceneOptions" :key="s.id" :value="s.id">{{ s.label }}</option>
+            </select>
+          </div>
+          <div class="tp-create-row">
+            <span v-if="advForm.status === 'abandoned'" class="ta-note">放弃后不再参与编译检查</span>
+            <span
+              v-else-if="advForm.status === 'revealed' || advForm.status === 'resolved'"
+              class="ta-note"
+            >
+              {{ advForm.status === 'resolved' ? '回收' : '揭示' }}后读者视角自动记为知晓
+            </span>
+            <span style="flex: 1" />
+            <button class="ink-btn ink-btn--sm ink-btn--primary" @click="submitAdvance(t.id)">
+              推进
+            </button>
+            <button class="ink-btn ink-btn--sm" @click="advancing = null">取消</button>
+          </div>
         </div>
 
         <!-- 可见性：观察者对该线索的知晓状态时间线 -->
@@ -616,6 +702,23 @@ textarea.ed-input {
     align-items: center;
     gap: 5px;
   }
+}
+
+// ── 状态推进表单 ──────────────────────────────────────
+.tc-advance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px dashed var(--ui-border);
+  background: var(--ink-accent-soft);
+}
+
+.ta-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-muted);
 }
 
 // ── 可见性 ────────────────────────────────────────────
