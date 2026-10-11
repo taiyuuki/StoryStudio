@@ -1,7 +1,7 @@
 //! ServerHandler 实现 — ToolRegistry 到 MCP 的适配层
 
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rmcp::model::{
@@ -115,11 +115,20 @@ static TOOL_GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
 /// 持闸执行工具：查询类（[`READ_ONLY_TOOLS`] 白名单）读锁，其余写锁。
 /// 未列入白名单的新工具默认按变更处理（安全默认）。
+///
+/// 两级闸门：进程内 [`TOOL_GATE`]（RwLock）+ 跨进程项目锁
+/// （std::fs::File 原生 `lock`/`lock_shared`，1.89+ 稳定；macOS 为 flock、
+/// Linux 为 OFD fcntl，均属 open file description——同进程独立打开的
+/// 描述符也互斥；`gate` 为锁文件路径。同一项目可能被多个进程同时服务
+/// ——App 内嵌 HTTP 与外部 stdio CLI 并存时，进程内锁管不到对方的
+/// ID 分配竞态）。每次调用独立打开锁文件、drop 自动释放、进程崩溃即
+/// 解锁；锁文件不可用时退化为仅进程内闸门（best-effort）。
 fn execute_gated(
     registry: &ToolRegistry,
     read_only: bool,
     name: &str,
     arguments: &serde_json::Value,
+    gate: Option<&Path>,
 ) -> Result<String, CallFailure> {
     if HIDDEN_TOOLS.contains(&name) {
         return Err(CallFailure::InvalidParams(format!(
@@ -131,6 +140,24 @@ fn execute_gated(
         return Err(CallFailure::InvalidParams(format!(
             "服务器以 --read-only 模式启动，{name} 会修改项目，不可用"
         )));
+    }
+    // 跨进程项目锁（读写语义与进程内闸门一致）；获取顺序恒为
+    // 进程内 → 跨进程，无死锁环。锁文件只作锁载体，永不写入（truncate(false)）
+    let flock = gate.and_then(|p| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(p)
+            .ok()
+    });
+    if let Some(f) = flock.as_ref() {
+        let is_read = READ_ONLY_TOOLS.contains(&name);
+        let res = if is_read { f.lock_shared() } else { f.lock() };
+        if let Err(e) = res {
+            eprintln!("[mcp] 项目锁获取失败（退化为仅进程内闸门）：{e}");
+        }
     }
     // 读共享 / 写排他（两种 guard 无公共类型，用 Option 对各持其一）。
     // 锁中毒（持锁工具 panic）时强制恢复而非拒服务：
@@ -157,6 +184,8 @@ pub(crate) struct StoryMcpServer {
     tools: Vec<Tool>,
     instructions: String,
     read_only: bool,
+    /// 跨进程项目锁文件路径（.novelstudio 不可写时为 None = 禁用）
+    gate_path: Option<PathBuf>,
 }
 
 impl StoryMcpServer {
@@ -179,11 +208,17 @@ impl StoryMcpServer {
         let registry = Arc::new(create_tool_registry(&dir, provider));
         let tools = build_tool_descriptors(registry.definitions(), options.read_only);
         let instructions = build_instructions(&dir, options.read_only);
+        // 跨进程项目锁：同一项目目录可能同时被本进程（App 内嵌 HTTP）与
+        // 其他进程（stdio CLI）服务，flock 兜底跨进程的 ID 分配竞态
+        let gate_path = std::fs::create_dir_all(dir.join(".novelstudio"))
+            .ok()
+            .map(|_| dir.join(".novelstudio").join("tool-gate.lock"));
         Ok(Self {
             registry,
             tools,
             instructions,
             read_only: options.read_only,
+            gate_path,
         })
     }
 
@@ -235,13 +270,18 @@ impl ServerHandler for StoryMcpServer {
         let arguments = serde_json::Value::Object(request.arguments.unwrap_or_default());
         let registry = self.registry.clone();
         let read_only = self.read_only;
+        let gate_path = self.gate_path.clone();
 
         // 工具全部是同步阻塞实现（LLM 工具含网络调用），放到阻塞线程池，
-        // 不占用 tokio worker。变更类工具经 TOOL_GATE 写锁串行（读共享），
-        // 并发调用的 ID 分配与流水线依赖因此安全
-        let outcome = tokio::task::spawn_blocking(move || execute_gated(&registry, read_only, &name, &arguments))
-            .await
-            .map_err(|e| McpError::internal_error(format!("工具执行线程异常：{e}"), None))?;
+        // 不占用 tokio worker。变更类工具经两级闸门（进程内 RwLock +
+        // 跨进程 flock）串行（读共享），并发调用的 ID 分配与流水线依赖
+        // 因此安全——包括 App 内嵌 HTTP 与外部 stdio CLI 同时服务同一
+        // 项目的场景
+        let outcome = tokio::task::spawn_blocking(move || {
+            execute_gated(&registry, read_only, &name, &arguments, gate_path.as_deref())
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("工具执行线程异常：{e}"), None))?;
 
         match outcome {
             Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into()),
@@ -290,6 +330,7 @@ mod tests {
             tools: Vec::new(),
             instructions: String::new(),
             read_only: false,
+            gate_path: None,
         });
         assert!(!versions.contains(&ProtocolVersion::V_2026_07_28));
         assert!(versions.contains(&ProtocolVersion::V_2025_11_25));
@@ -332,7 +373,8 @@ mod tests {
 
     /// 回归：rmcp 并发派发下，并发的 create_* 曾扫号互不可见、分到同一 ID、
     /// 写同一文件互相覆盖（多份"成功"回执只剩一份数据）。
-    /// 经 TOOL_GATE 写锁串行后，N 路并发创建应得到 N 个互不相同的 ID。
+    /// 经两级闸门（进程内 RwLock + 跨进程 flock）串行后，N 路并发创建
+    /// 应得到 N 个互不相同的 ID。
     #[test]
     fn execute_gated_serializes_concurrent_creates() {
         let tmp = tempfile::tempdir().unwrap();
@@ -341,17 +383,20 @@ mod tests {
             tmp.path(),
             Arc::new(StubProvider),
         ));
+        let gate = tmp.path().join(".novelstudio/tool-gate.lock");
 
         const N: usize = 6;
         let mut handles = Vec::new();
         for i in 0..N {
             let reg = registry.clone();
+            let gate = gate.clone();
             handles.push(std::thread::spawn(move || {
                 execute_gated(
                     &reg,
                     false,
                     "create_character",
                     &serde_json::json!({ "name": format!("并发{i}号"), "role": "probe" }),
+                    Some(&gate),
                 )
                 .unwrap()
             }));
@@ -388,8 +433,43 @@ mod tests {
             true,
             "create_character",
             &serde_json::json!({ "name": "只读探针" }),
+            Some(&gate),
         )
         .unwrap_err();
         assert!(matches!(err, CallFailure::InvalidParams(_)));
+    }
+
+    /// 跨进程项目锁语义：锁属 open file description——同进程两次独立
+    /// 打开也互斥；读共享、写排他；释放后可重取。
+    #[test]
+    fn project_flock_excludes_and_shares() {
+        let open = |path: &Path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+                .unwrap()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gate.lock");
+
+        let w1 = open(&path);
+        w1.lock().unwrap();
+        let w2 = open(&path);
+        assert!(w2.try_lock().is_err(), "独立打开的描述符应互斥");
+        drop(w1);
+        w2.lock().unwrap(); // 释放后可获取
+
+        // 读共享：须先释放写锁，否则共享获取会阻塞（写排他语义）
+        w2.unlock().unwrap();
+        let r1 = open(&path);
+        r1.lock_shared().unwrap();
+        let r2 = open(&path);
+        r2.lock_shared().unwrap(); // 读共享：两把并存
+        let w3 = open(&path);
+        assert!(w3.try_lock().is_err(), "读持有期间写应被拒");
+        drop((r1, r2, w3, w2));
     }
 }
