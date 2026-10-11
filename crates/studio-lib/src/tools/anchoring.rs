@@ -118,11 +118,77 @@ fn build_roster(paths: &ProjectPaths, focus: &std::collections::HashSet<String>)
 }
 
 /// 理解锚定结果
+#[derive(Default)]
 pub struct AnchorOutcome {
     /// 已落锚：(实体 ID, 角色, 指代原文)
     pub anchored: Vec<(String, String, String)>,
     /// 名册外的指代：(原文, 模型给的提示)
     pub unresolved: Vec<(String, String)>,
+}
+
+/// 写入类工具的锚定时限。LLM 慢（含重试退避）时先行返回回执，锚定转后台完成。
+///
+/// MCP 客户端普遍有 30 秒左右的调用时限，超时即向调用方报错——而服务端
+/// 仍会执行完；调用方误以为失败而重试会造成正文重复追加等假失败危害。
+/// 锚定只是写入回执的增强信息（正文已先行落盘），不值得把整个写工具
+/// 拖过时限。
+pub const ANCHOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// 带时限锚定的执行结果
+pub enum AnchorRun {
+    /// 时限内完成（锚点已落盘，结果用于回执）
+    Done(AnchorOutcome),
+    /// 超过时限：锚定移入后台线程继续（含台账与锚点落盘），完成后自动生效
+    Deferred,
+}
+
+/// [`anchor_and_apply`] 的带时限版本，供写入类工具（write/append/split）使用。
+///
+/// 无 provider 时直接返回空结果（与调用方原有语义一致）。超时后工作线程
+/// detach 继续跑完落盘——调用方回执应提示「已保存、勿重试、稍后查看」。
+pub fn anchor_and_apply_bounded(
+    ctx: &ToolContext,
+    fragment_id: &str,
+) -> Result<AnchorRun, String> {
+    anchor_and_apply_with_budget(ctx, fragment_id, ANCHOR_BUDGET)
+}
+
+/// 可指定时限的实现（测试用小预算触发 Deferred 路径）
+pub(crate) fn anchor_and_apply_with_budget(
+    ctx: &ToolContext,
+    fragment_id: &str,
+    budget: std::time::Duration,
+) -> Result<AnchorRun, String> {
+    let Some(provider) = ctx.provider.clone() else {
+        return Ok(AnchorRun::Done(AnchorOutcome::default()));
+    };
+    let fid = fragment_id.to_string();
+    let worker_ctx = ctx.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::Builder::new()
+        .name("story-anchor-bounded".into())
+        .spawn(move || {
+            let res = anchor_and_apply(&worker_ctx, &provider, &fid);
+            // 接收端已放弃（超时先行返回）：锚点仍会落盘，仅回执不可见
+            let err_note = res.as_ref().err().cloned();
+            if tx.send(res).is_err() {
+                match err_note {
+                    Some(e) => eprintln!("[tool] 后台锚定失败（调用方已先行返回）: {e}"),
+                    None => eprintln!("[tool] 后台锚定已完成（调用方已先行返回）: {fid}"),
+                }
+            }
+        })
+        .map_err(|e| format!("创建锚定线程失败：{e}"))?;
+    match rx.recv_timeout(budget) {
+        Ok(res) => res.map(AnchorRun::Done),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            drop(worker); // detach：后台继续完成台账与锚点落盘
+            Ok(AnchorRun::Deferred)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(
+            "锚定线程异常退出（正文不受影响，可稍后用 anchor_fragments 补锚）".to_string(),
+        ),
+    }
 }
 
 /// 读取片段正文（剥 frontmatter）
@@ -1484,6 +1550,95 @@ status = "ignored"
         // 范围内无记录
         let out = tool.execute(&serde_json::json!({"volume": 3})).unwrap();
         assert!(out.contains("该范围内没有"), "{out}");
+    }
+
+    // —— 带时限锚定（写入工具防 MCP 客户端超时假失败）——
+
+    /// 可控延迟的 provider：模拟慢 LLM
+    #[derive(Debug)]
+    struct SlowAnchorProvider {
+        delay_ms: u64,
+    }
+    impl AiProvider for SlowAnchorProvider {
+        fn id(&self) -> &str {
+            "mock-slow-anchor"
+        }
+        fn generate(&self, _request: &GenerateRequest) -> Result<GenerateResponse, AiError> {
+            std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+            Ok(GenerateResponse {
+                text: "{\"anchors\": [], \"unresolved\": []}".to_string(),
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                },
+                stop_reason: StopReason::EndTurn,
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    /// 建一章一场景一片段，返回片段 ID。
+    /// 含一个角色档案：名册为空时 comprehension_anchor 会提前返回（不调 LLM），
+    /// 时限路径的测试必须让 LLM 真正被调用。
+    fn budget_fixture(dir: &std::path::Path) -> String {
+        let paths = ProjectPaths::new(dir);
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"洛恩\"\n",
+        )
+        .unwrap();
+        let ch = crate::mutations::create_chapter(&paths, "章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        crate::mutations::create_fragment(&paths, &sc, "他推门进来，把伞收在了门边。").unwrap()
+    }
+
+    #[test]
+    fn bounded_anchor_returns_done_when_fast() {
+        let tmp = setup_test_project();
+        let fid = budget_fixture(tmp.path());
+        let ctx = ToolContext::with_provider(
+            tmp.path().to_path_buf(),
+            Arc::new(MockAnchorProvider {
+                response: "{\"anchors\": [], \"unresolved\": []}".to_string(),
+            }),
+        );
+        let run =
+            anchor_and_apply_with_budget(&ctx, &fid, std::time::Duration::from_secs(5)).unwrap();
+        assert!(matches!(run, AnchorRun::Done(_)), "快 provider 应正常完成");
+    }
+
+    #[test]
+    fn bounded_anchor_defers_when_slow() {
+        let tmp = setup_test_project();
+        let fid = budget_fixture(tmp.path());
+        let ctx = ToolContext::with_provider(
+            tmp.path().to_path_buf(),
+            Arc::new(SlowAnchorProvider { delay_ms: 800 }),
+        );
+        let started = std::time::Instant::now();
+        let run =
+            anchor_and_apply_with_budget(&ctx, &fid, std::time::Duration::from_millis(50)).unwrap();
+        assert!(matches!(run, AnchorRun::Deferred), "慢 provider 应转入后台");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "应按时限先行返回，而不是等慢 provider 跑完"
+        );
+        // 等后台线程完成落盘，避免临时目录在其持有文件句柄时被清理
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn bounded_anchor_without_provider_is_noop() {
+        let tmp = setup_test_project();
+        let fid = budget_fixture(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let run =
+            anchor_and_apply_with_budget(&ctx, &fid, std::time::Duration::from_secs(1)).unwrap();
+        assert!(
+            matches!(&run, AnchorRun::Done(o) if o.anchored.is_empty() && o.unresolved.is_empty()),
+            "无 provider 时空结果，与调用方原有语义一致"
+        );
     }
 }
 

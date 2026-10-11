@@ -1427,12 +1427,20 @@ impl Tool for WriteFragmentTextTool {
             刻意短片段（收尾/过渡/暗线视角）可传 short=true 声明，跳过此警示");
         }
         // 写入时理解锚定：LLM 指代消解，把"那人/佣兵"这类文字匹配认不到的
-        // 出场落为显式锚点（best-effort，失败不影响已完成的写入）
-        if let Some(provider) = self.ctx.provider.as_ref() {
-            match super::anchoring::anchor_and_apply(&self.ctx, provider, &fragment_id) {
-                Ok(o) => msg.push_str(&super::format_anchor_note(&o, &paths)),
-                Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
+        // 出场落为显式锚点（best-effort，失败不影响已完成的写入）。
+        // 带时限：LLM 慢时先行返回（正文已落盘），锚定转后台完成——
+        // 避免 MCP 客户端超时误判失败导致重试重复写入
+        match super::anchoring::anchor_and_apply_bounded(&self.ctx, &fragment_id) {
+            Ok(super::anchoring::AnchorRun::Done(o)) => {
+                msg.push_str(&super::format_anchor_note(&o, &paths))
             }
+            Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
+                "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（完成后自动生效）。\
+                 正文已保存——请勿因本提示重试本次写入。\
+                 稍后可用 read_fragment_text / list_unresolved_refs 查看锚定结果",
+                super::anchoring::ANCHOR_BUDGET.as_secs()
+            )),
+            Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
         }
 
         // 写前档案推送：把正文中出现的实体的档案要点附在回执里，
@@ -2172,12 +2180,19 @@ impl Tool for AppendFragmentTextTool {
                 lines.join("\n")
             }));
         }
-        // 追加改变了正文 → 对全文重跑理解锚定（幂等）
-        if let Some(provider) = self.ctx.provider.as_ref() {
-            match super::anchoring::anchor_and_apply(&self.ctx, provider, &fragment_id) {
-                Ok(o) => msg.push_str(&super::format_anchor_note(&o, &paths)),
-                Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
+        // 追加改变了正文 → 对全文重跑理解锚定（幂等，带时限：慢则转后台，
+        // 回执先行返回，防 MCP 客户端超时误判失败导致重复追加）
+        match super::anchoring::anchor_and_apply_bounded(&self.ctx, &fragment_id) {
+            Ok(super::anchoring::AnchorRun::Done(o)) => {
+                msg.push_str(&super::format_anchor_note(&o, &paths))
             }
+            Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
+                "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（完成后自动生效）。\
+                 正文已保存——请勿因本提示重试本次追加。\
+                 稍后可用 read_fragment_text / list_unresolved_refs 查看锚定结果",
+                super::anchoring::ANCHOR_BUDGET.as_secs()
+            )),
+            Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
         }
         // 覆盖前的旧文已留版本快照（节流），可回滚
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored) {
@@ -2650,12 +2665,19 @@ impl Tool for SplitFragmentTool {
         }
         // 后半段重跑理解锚定（best-effort，不影响拆分结果）：显式锚点全留在
         // 前半，后半的指代出场（代词/称谓）与 appears/mentioned 角色需要重新
-        // 识别——确定性文本匹配在解析层自动完成，这里补 LLM 理解层
-        if let Some(provider) = self.ctx.provider.as_ref() {
-            match super::anchoring::anchor_and_apply(&self.ctx, provider, &new_id) {
-                Ok(o) => msg.push_str(&super::format_anchor_note(&o, &paths)),
-                Err(e) => msg.push_str(&format!("\n（后半段指代锚定跳过：{e}）")),
+        // 识别——确定性文本匹配在解析层自动完成，这里补 LLM 理解层（带时限：
+        // 慢则转后台，回执先行返回，防 MCP 客户端超时误判失败）
+        match super::anchoring::anchor_and_apply_bounded(&self.ctx, &new_id) {
+            Ok(super::anchoring::AnchorRun::Done(o)) => {
+                msg.push_str(&super::format_anchor_note(&o, &paths))
             }
+            Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
+                "\n⏳ 后半段指代锚定超过 {} 秒时限，已转入后台继续（完成后自动生效）。\
+                 拆分已完成——请勿因本提示重试。\
+                 稍后可用 read_fragment_text / list_unresolved_refs 查看锚定结果",
+                super::anchoring::ANCHOR_BUDGET.as_secs()
+            )),
+            Err(e) => msg.push_str(&format!("\n（后半段指代锚定跳过：{e}）")),
         }
         Ok(msg)
     }
