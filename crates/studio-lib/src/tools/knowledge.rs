@@ -598,7 +598,7 @@ impl Tool for UpdateRelationTool {
         }
 
         let paths = self.ctx.paths();
-        crate::mutations::update_relation_valid(
+        let twin = crate::mutations::update_relation_valid(
             &paths,
             &relation_id,
             from.as_ref().map(|inner| inner.as_deref()),
@@ -618,6 +618,11 @@ impl Tool for UpdateRelationTool {
         }
         if let Some(None) = &until {
             msg.push_str("（终点已清除=直到故事结束）");
+        }
+        if let Some(twin) = twin {
+            msg.push_str(&format!(
+                "；对称孪生边 {twin} 已同步相同窗口（对称声明成对创建的边，单边改会造成语义破碎）"
+            ));
         }
         Ok(msg)
     }

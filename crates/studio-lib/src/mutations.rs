@@ -3648,12 +3648,18 @@ fn ensure_narrative_anchor_exists(paths: &ProjectPaths, id: &str) -> Result<(), 
 ///
 /// from/until 均为 Option<Option<&str>>：外层 None = 不修改该边界，
 /// Some(None) = 清除（改为无界），Some(Some(scene_id)) = 设置场景锚。
+/// 更新关系边的生效区间（时变窗口）。
+///
+/// 对称声明创建的成对边（如 rival_of + symmetric 自动生成的反向边）会被
+/// **自动同步**相同窗口——只改一边时 at_scene 过滤会得到「A 不再与 B
+/// 对峙、B 仍与 A 对峙」的破碎语义。返回同步到的孪生边 ID（无孪生为 None），
+/// 供回执说明。
 pub fn update_relation_valid(
     paths: &ProjectPaths,
     relation_id: &str,
     from: Option<Option<&str>>,
     until: Option<Option<&str>>,
-) -> Result<(), StudioError> {
+) -> Result<Option<String>, StudioError> {
     if from.is_none() && until.is_none() {
         return Err(StudioError::Config(
             "至少提供一个要修改的边界（valid_from_scene / valid_until_scene）".to_string(),
@@ -3688,9 +3694,31 @@ pub fn update_relation_valid(
         valid.until = bound.map(scene_def);
     }
     edge.valid = (valid.from.is_some() || valid.until.is_some()).then_some(valid);
+    let (rel_kind, edge_from, edge_to) = (edge.relation.clone(), edge.from.clone(), edge.to.clone());
+
+    // 对称孪生边同步（同类型、from/to 互换）：窗口是这一对边共同的事实
+    let twin_id = file
+        .relations
+        .iter()
+        .find(|r| {
+            r.id != relation_id && r.relation == rel_kind && r.from == edge_to && r.to == edge_from
+        })
+        .map(|r| r.id.clone());
+    if let Some(tid) = &twin_id {
+        if let Some(twin) = file.relations.iter_mut().find(|r| &r.id == tid) {
+            let mut valid = twin.valid.clone().unwrap_or_default();
+            if let Some(bound) = from {
+                valid.from = bound.map(scene_def);
+            }
+            if let Some(bound) = until {
+                valid.until = bound.map(scene_def);
+            }
+            twin.valid = (valid.from.is_some() || valid.until.is_some()).then_some(valid);
+        }
+    }
 
     file.save(&relations_path)?;
-    Ok(())
+    Ok(twin_id)
 }
 
 /// 查找关系边的对称孪生（同类型、from/to 互换的另一条边）。
@@ -4471,6 +4499,50 @@ mod tests {
         let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
         let edge = file.relations.iter().find(|r| r.id == id).unwrap();
         assert!(edge.valid.is_none(), "边界全清后 valid 应回到无窗口");
+    }
+
+    /// 回归：对称成对边只改一边时间窗，at_scene 过滤曾得到
+    /// 「A 不再与 B 对峙、B 仍与 A 对峙」的破碎语义——现在应自动同步孪生边。
+    #[test]
+    fn update_relation_valid_syncs_symmetric_twin() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc2 = create_scene(&paths, &ch, "场景二", None).unwrap();
+
+        let ids = add_relation_full(
+            &paths,
+            &[RelationInput {
+                symmetric: true,
+                ..RelationInput::simple("c_0001", "c_0002", "rival_of")
+            }],
+        )
+        .unwrap();
+        assert_eq!(ids.len(), 2, "对称声明应创建成对边");
+
+        // 只对正向边设窗口：返回孪生 ID，且两边都落盘相同窗口
+        let twin = update_relation_valid(&paths, &ids[0], None, Some(Some(&sc2))).unwrap();
+        assert_eq!(twin.as_deref(), Some(ids[1].as_str()), "应返回同步的孪生边 ID");
+        let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
+        for id in &ids {
+            let edge = file.relations.iter().find(|r| r.id == *id).unwrap();
+            let valid = edge.valid.as_ref().expect("孪生边也应带窗口");
+            assert_eq!(
+                valid.until.as_ref().unwrap().scene.as_deref(),
+                Some(sc2.as_str()),
+                "边 {id} 的终点应同步"
+            );
+            assert!(valid.from.is_none());
+        }
+
+        // 清除窗口同样同步（成对退回全时段）
+        let twin = update_relation_valid(&paths, &ids[1], None, Some(None)).unwrap();
+        assert_eq!(twin.as_deref(), Some(ids[0].as_str()), "反向清除也应同步");
+        let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
+        for id in &ids {
+            let edge = file.relations.iter().find(|r| r.id == *id).unwrap();
+            assert!(edge.valid.is_none(), "边 {id} 应同步清除窗口");
+        }
     }
 
     #[test]
