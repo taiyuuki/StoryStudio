@@ -123,6 +123,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     ws.value = null
     scene.value = null
     compileResult.value = null
+    // MCP 服务跟随「当前打开的项目」：关闭项目即停服务，
+    // 避免外部 Agent 仍能读写已关闭的书；偏好保留，重开项目自动恢复
+    void api.mcpServerStop().catch(() => {})
   }
 
   // ── 场景 / 片段 ────────────────────────────────────────
