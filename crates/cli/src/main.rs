@@ -306,6 +306,7 @@ fn cmd_mcp(
                     bind: bind_addr,
                     port,
                     token: None,
+                    session_path: None,
                 },
             )?;
             println!("MCP HTTP 服务已启动：{}", handle.url());
