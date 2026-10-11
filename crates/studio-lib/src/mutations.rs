@@ -3235,6 +3235,8 @@ pub struct RepairReport {
     pub outline_links_cleared: Vec<String>,
     /// 回填 revealed_at（已 resolved 但缺揭示锚）的线索（标题）
     pub threads_revealed_backfilled: Vec<String>,
+    /// 删除的孤儿证据条目（不再被任何断言引用的 ev_XXXX）
+    pub evidence_orphans_removed: Vec<String>,
 }
 
 /// 一次性数据修复（历史脏数据兜底）：
@@ -3339,6 +3341,26 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
         if !fixed_ids.is_empty() {
             file.save(&assertions_path)?;
             report.assertions_fixed = fixed_ids.len();
+        }
+
+        // —— 2.5 孤儿证据：不再被任何断言引用的登记条目（历史删除断言
+        //        未级联、手工编辑等留下的死数据）→ 删除 ——
+        let evidence_path = paths.knowledge_dir().join("evidence.toml");
+        if evidence_path.exists() {
+            let referenced: std::collections::HashSet<&String> =
+                file.assertions.iter().flat_map(|a| a.evidence.iter()).collect();
+            let mut evidence = EvidenceFile::load_or_default(&evidence_path)?;
+            let orphans: Vec<String> = evidence
+                .evidence
+                .iter()
+                .filter(|e| !referenced.contains(&e.id))
+                .map(|e| e.id.clone())
+                .collect();
+            if !orphans.is_empty() {
+                evidence.evidence.retain(|e| referenced.contains(&e.id));
+                evidence.save(&evidence_path)?;
+                report.evidence_orphans_removed = orphans;
+            }
         }
     }
 
@@ -3460,21 +3482,48 @@ pub fn remove_evidence(
 /// 删除单条断言（按 id）
 ///
 /// QuickFix 使用：删除孤儿断言 / 非法有效期断言。
-pub fn delete_assertion(paths: &ProjectPaths, assertion_id: &str) -> Result<(), StudioError> {
+/// 删除断言（含证据级联）。
+///
+/// 断言引用的证据条目（evidence.toml，按片段登记、可被多条断言共享）若在
+/// 删除后不再被任何断言引用，一并删除——否则会留下无主的孤儿证据（含
+/// 过时摘录），编译器不报、repair 不清、也没有工具能删。
+///
+/// 返回一并删除的证据条目 ID（仅被该断言独占引用的那些）。
+pub fn delete_assertion(
+    paths: &ProjectPaths,
+    assertion_id: &str,
+) -> Result<Vec<String>, StudioError> {
     let assertions_path = paths.knowledge_dir().join("assertions.toml");
 
-    let mut file: AssertionsFile = AssertionsFile::load_or_default(&assertions_path)?;
+    let mut file = AssertionsFile::load_or_default(&assertions_path)?;
 
-    let before = file.assertions.len();
-    file.assertions.retain(|a| a.id != assertion_id);
-    if file.assertions.len() == before {
+    let Some(idx) = file.assertions.iter().position(|a| a.id == assertion_id) else {
         return Err(StudioError::NotFound(format!(
             "断言 '{assertion_id}' 不存在"
         )));
-    }
-
+    };
+    let removed_evidence = file.assertions.remove(idx).evidence;
     file.save(&assertions_path)?;
-    Ok(())
+
+    // 级联：证据条目按片段登记、可共享（多条断言引同一 ev_XXXX），
+    // 只删独占引用的；仍被其他断言引用的保留
+    let still_used: std::collections::HashSet<&String> =
+        file.assertions.iter().flat_map(|a| a.evidence.iter()).collect();
+    let orphaned: Vec<String> = removed_evidence
+        .into_iter()
+        .filter(|ev| !still_used.contains(ev))
+        .collect();
+    if orphaned.is_empty() {
+        return Ok(Vec::new());
+    }
+    let evidence_path = paths.knowledge_dir().join("evidence.toml");
+    let mut evidence = EvidenceFile::load_or_default(&evidence_path)?;
+    let before = evidence.evidence.len();
+    evidence.evidence.retain(|e| !orphaned.contains(&e.id));
+    if evidence.evidence.len() != before {
+        evidence.save(&evidence_path)?;
+    }
+    Ok(orphaned)
 }
 
 /// 修改断言状态（active / superseded / contradicted）
@@ -5662,6 +5711,75 @@ mod tests {
         let file = AssertionsFile::load_or_default(&assertions_path).unwrap();
         assert_eq!(file.assertions.len(), 1);
         assert_eq!(file.assertions[0].id, id2);
+    }
+
+    /// 回归：删除断言应级联清理不再被引用的证据条目（曾留下孤儿 ev_XXXX，
+    /// 编译器不报、repair 不清、无工具可删）；被其他断言共享的证据保留。
+    #[test]
+    fn delete_assertion_cascades_orphan_evidence() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // 一个证据片段
+        let ch = create_chapter(&paths, "第一章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = create_fragment(&paths, &sc, "他坐在灯下数着铜币，一共九枚。").unwrap();
+        let ev = register_evidence(&paths, &fid).unwrap();
+
+        // 两条断言共享同一证据，第三条不带证据
+        let a1 = add_assertion(&paths, "c_0001", "status", "在逃", Some(&fid)).unwrap().id;
+        let a2 = add_assertion(&paths, "c_0001", "holds", "i_0001", Some(&fid)).unwrap().id;
+        let a3 = add_assertion(&paths, "c_0001", "alive", "true", None).unwrap().id;
+        let assertions = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
+        assert!(
+            assertions.assertions.iter().take(2).all(|a| a.evidence == vec![ev.clone()]),
+            "两条断言应共享同一证据条目（按片段登记复用）"
+        );
+
+        // 删第一条：证据仍被 a2 引用 → 不级联
+        let cascaded = delete_assertion(&paths, &a1).unwrap();
+        assert!(cascaded.is_empty(), "共享证据不应被级联删除");
+        let evidence = EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        assert!(evidence.evidence.iter().any(|e| e.id == ev), "共享证据应保留");
+
+        // 删 a2：证据不再被任何断言引用 → 级联删除
+        let cascaded = delete_assertion(&paths, &a2).unwrap();
+        assert_eq!(cascaded, vec![ev.clone()], "独占证据应一并删除");
+        let evidence = EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        assert!(evidence.evidence.is_empty(), "evidence.toml 不应留孤儿条目");
+
+        // 无证据断言删除返回空
+        assert!(delete_assertion(&paths, &a3).unwrap().is_empty());
+    }
+
+    /// repair_project 兜底：手工编辑等留下的孤儿证据（无断言引用）应被清理
+    #[test]
+    fn repair_project_removes_orphan_evidence() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch = create_chapter(&paths, "第一章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid = create_fragment(&paths, &sc, "他数着铜币，一共九枚。").unwrap();
+        let ev_used = register_evidence(&paths, &fid).unwrap();
+        add_assertion(&paths, "c_0001", "status", "在逃", Some(&fid)).unwrap();
+
+        // 手工塞一条无主证据
+        let evidence_path = paths.knowledge_dir().join("evidence.toml");
+        let mut evidence = EvidenceFile::load_or_default(&evidence_path).unwrap();
+        evidence.evidence.push(EvidenceDef {
+            id: "ev_0999".into(),
+            loc: fid.clone(),
+            quote: "过时摘录".into(),
+            source: "manual".into(),
+        });
+        evidence.save(&evidence_path).unwrap();
+
+        let report = repair_project(paths.root()).unwrap();
+        assert_eq!(report.evidence_orphans_removed, vec!["ev_0999".to_string()]);
+        let evidence = EvidenceFile::load_or_default(&evidence_path).unwrap();
+        assert!(evidence.evidence.iter().any(|e| e.id == ev_used), "被引用的证据保留");
+        assert!(!evidence.evidence.iter().any(|e| e.id == "ev_0999"), "孤儿证据清除");
     }
 
     #[test]

@@ -258,9 +258,16 @@ impl Tool for DeleteAssertionTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let assertion_id = get_str(arguments, "assertion_id")?;
         let paths = self.ctx.paths();
-        crate::mutations::delete_assertion(&paths, &assertion_id)
+        let cascaded = crate::mutations::delete_assertion(&paths, &assertion_id)
             .map_err(|e| e.to_string())?;
-        Ok(format!("断言 {assertion_id} 已彻底删除"))
+        let mut msg = format!("断言 {assertion_id} 已彻底删除");
+        if !cascaded.is_empty() {
+            msg.push_str(&format!(
+                "；不再被任何断言引用的证据条目已一并删除：{}",
+                cascaded.join("、")
+            ));
+        }
+        Ok(msg)
     }
 }
 

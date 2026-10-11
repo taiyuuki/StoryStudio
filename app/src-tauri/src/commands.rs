@@ -636,7 +636,9 @@ pub fn set_assertion_status(root: String, assertion_id: String, status: String) 
 
 #[tauri::command]
 pub fn delete_assertion(root: String, assertion_id: String) -> R<()> {
-    mutations::delete_assertion(&paths(&root), &assertion_id).map_err(e)
+    mutations::delete_assertion(&paths(&root), &assertion_id)
+        .map_err(e)
+        .map(|_| ())
 }
 
 fn load_thread(root: &str, thread_id: &str) -> R<ThreadDto> {

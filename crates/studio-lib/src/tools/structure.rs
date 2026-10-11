@@ -784,6 +784,7 @@ impl Tool for RepairProjectTool {
             && report.evidence_skipped == 0
             && report.outline_links_cleared.is_empty()
             && report.threads_revealed_backfilled.is_empty()
+            && report.evidence_orphans_removed.is_empty()
         {
             return Ok("检查完成：数据一致，无需修复。".to_string());
         }
@@ -806,6 +807,13 @@ impl Tool for RepairProjectTool {
             out.push_str(&format!(
                 "  {} 条证据指向不存在的片段，已保留待人工处理\n",
                 report.evidence_skipped
+            ));
+        }
+        if !report.evidence_orphans_removed.is_empty() {
+            out.push_str(&format!(
+                "  删除孤儿证据条目 {} 个（不再被任何断言引用）: {}\n",
+                report.evidence_orphans_removed.len(),
+                report.evidence_orphans_removed.join("、")
             ));
         }
         if !report.outline_links_cleared.is_empty() {
