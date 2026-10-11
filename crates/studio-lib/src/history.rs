@@ -19,6 +19,7 @@ use story_ir::count_words;
 
 use crate::error::StudioError;
 use crate::journal;
+use crate::mutations::SaveToml;
 
 /// 快照最小间隔（毫秒）
 const MIN_INTERVAL_MS: u64 = 5 * 60 * 1000;
@@ -121,14 +122,36 @@ pub fn read_version(
     )))
 }
 
+/// 恢复结果：正文 + 结构挂回情况（供回执向用户说明）
+#[derive(Debug, Clone)]
+pub struct RestoreOutcome {
+    /// 恢复后的正文（调用方用于本地同步 UI）
+    pub body: String,
+    /// 片段与 structure.toml 阅读序的关系（恢复已删除片段时是否挂回了原场景）
+    pub reattach: ReattachStatus,
+}
+
+/// 片段恢复后在阅读序中的状态
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReattachStatus {
+    /// 片段本就注册在某个场景的 fragments 列表（普通回滚，结构无需动）
+    AlreadyRegistered,
+    /// 片段此前被删除，已按删除记录挂回（场景 ID，0-based 插入位置）
+    Reattached { scene_id: String, position: usize },
+    /// 文件已恢复但无法自动挂回（原因见字段）——孤儿片段，需人工处置
+    Orphaned { reason: String },
+}
+
 /// 恢复指定版本：先强制快照当前内容（恢复本身可再撤销），再覆写文件。
 ///
-/// 返回恢复后的正文（调用方用于本地同步 UI）。
+/// 片段若已被删除（不在任何场景的 fragments 列表），会按删除时留下的
+/// tombstone 自动挂回原场景原位置——否则恢复出的只是孤儿文件，
+/// 阅读序、统计、回顾里都不会出现。
 pub fn restore_version(
     paths: &ProjectPaths,
     fragment_id: &str,
     timestamp: u64,
-) -> Result<String, StudioError> {
+) -> Result<RestoreOutcome, StudioError> {
     let content = read_version(paths, fragment_id, timestamp)?;
     let frag_path = paths
         .file_for_id(fragment_id)
@@ -139,7 +162,113 @@ pub fn restore_version(
         force_snapshot(paths, fragment_id);
     }
     journal::write_verified(paths.root(), "version_restore", &frag_path, &content)?;
-    Ok(crate::fragment::fragment_body(&content).to_string())
+
+    let reattach = ensure_structure_registration(paths, fragment_id);
+    Ok(RestoreOutcome {
+        body: crate::fragment::fragment_body(&content).to_string(),
+        reattach,
+    })
+}
+
+/// 确保恢复出的片段注册在 structure.toml 的阅读序中。
+///
+/// 正常回滚时片段本就挂在某场景下，直接返回；被删除过的片段凭
+/// tombstone 挂回原位置；无 tombstone 或原场景已消失时返回孤儿状态
+/// （文件已恢复，不视为失败——用户可手工迁移正文）。
+fn ensure_structure_registration(paths: &ProjectPaths, fragment_id: &str) -> ReattachStatus {
+    let structure_path = paths.structure_toml();
+    if !structure_path.exists() {
+        return ReattachStatus::Orphaned {
+            reason: "structure.toml 不存在".into(),
+        };
+    }
+    let Ok(mut structure) = crate::mutations::load_structure(paths) else {
+        return ReattachStatus::Orphaned {
+            reason: "structure.toml 解析失败".into(),
+        };
+    };
+    if structure
+        .scene
+        .values()
+        .any(|sc| sc.fragments.iter().any(|f| f == fragment_id))
+    {
+        return ReattachStatus::AlreadyRegistered;
+    }
+
+    let Some((scene_id, position)) = read_tombstone(paths, fragment_id) else {
+        return ReattachStatus::Orphaned {
+            reason: "无删除归属记录（deleted.toml 缺失，可能是旧版本删除的片段）".into(),
+        };
+    };
+    let Some(scene) = structure.scene.get_mut(&scene_id) else {
+        return ReattachStatus::Orphaned {
+            reason: format!("原场景 '{scene_id}' 已不存在"),
+        };
+    };
+    let pos = position.min(scene.fragments.len());
+    scene.fragments.insert(pos, fragment_id.to_string());
+    if structure.save(&structure_path).is_err() {
+        return ReattachStatus::Orphaned {
+            reason: "structure.toml 写入失败".into(),
+        };
+    }
+    clear_tombstone(paths, fragment_id);
+    ReattachStatus::Reattached {
+        scene_id,
+        position: pos,
+    }
+}
+
+// ============================================================================
+// 删除归属记录（tombstone）
+// ============================================================================
+//
+// 版本快照只含片段文件内容（id/anchors），不含场景归属；删除片段会同时
+// 移除 structure.toml 里的引用，恢复时无从得知该挂回哪里。删除前把
+// 场景 ID 与位置记进片段自己的历史目录，恢复成功后清除。
+//
+// 文件名不是 `<时间戳>.md` 形态，不参与版本列表与修剪。
+
+/// 记录片段删除前的归属（场景 ID + 0-based 位置），best-effort
+pub fn write_tombstone(paths: &ProjectPaths, fragment_id: &str, scene_id: &str, position: usize) {
+    let Ok(dir) = fragment_history_dir(paths, fragment_id) else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let content = format!(
+        "# 删除归属记录：restore_fragment_version 据此把片段挂回原位\nscene = {scene_id:?}\nposition = {position}\n"
+    );
+    let _ = std::fs::write(dir.join("deleted.toml"), content);
+}
+
+/// 读取删除归属记录
+fn read_tombstone(paths: &ProjectPaths, fragment_id: &str) -> Option<(String, usize)> {
+    let path = fragment_history_dir(paths, fragment_id).ok()?.join("deleted.toml");
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut scene_id = None;
+    let mut position = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("scene") {
+            if let Some(v) = v.trim_start().strip_prefix('=') {
+                scene_id = Some(v.trim().trim_matches('"').to_string());
+            }
+        } else if let Some(v) = line.strip_prefix("position") {
+            if let Some(v) = v.trim_start().strip_prefix('=') {
+                position = v.trim().parse::<usize>().ok();
+            }
+        }
+    }
+    Some((scene_id?, position?))
+}
+
+/// 清除删除归属记录（成功挂回后调用）
+fn clear_tombstone(paths: &ProjectPaths, fragment_id: &str) {
+    if let Ok(dir) = fragment_history_dir(paths, fragment_id) {
+        let _ = std::fs::remove_file(dir.join("deleted.toml"));
+    }
 }
 
 /// 覆写前的节流快照：内容变化满足阈值或距上一版超过间隔才落快照。
@@ -549,13 +678,15 @@ mod tests {
         let versions = list_versions(&paths, "f_0003").unwrap();
         assert_eq!(versions.len(), 1);
         let restored = restore_version(&paths, "f_0003", versions[0].timestamp).unwrap();
-        assert_eq!(restored, "旧版本内容");
+        assert_eq!(restored.body, "旧版本内容");
+        // 本 fixture 无 structure.toml：文件恢复成功但无处挂回（如实报告孤儿）
+        assert!(matches!(restored.reattach, ReattachStatus::Orphaned { .. }));
 
         // 恢复前强制留底了"新版本内容"，可再恢复回去
         let versions = list_versions(&paths, "f_0003").unwrap();
         assert_eq!(versions.len(), 2);
         let back = restore_version(&paths, "f_0003", versions[0].timestamp).unwrap();
-        assert_eq!(back, "新版本内容");
+        assert_eq!(back.body, "新版本内容");
     }
 
     #[test]

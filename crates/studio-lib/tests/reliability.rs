@@ -43,7 +43,7 @@ fn manual_save_chain_creates_journal_stats_and_history() {
 
     // 3. 恢复版本 → 内容回来，且恢复前留底
     let restored = history::restore_version(&paths, &fid, versions[0].timestamp).unwrap();
-    assert!(restored.contains("夜雨敲窗"));
+    assert!(restored.body.contains("夜雨敲窗"));
     assert_eq!(history::list_versions(&paths, &fid).unwrap().len(), 2);
 }
 

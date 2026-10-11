@@ -2280,7 +2280,8 @@ impl Tool for RestoreFragmentVersionTool {
             name: "restore_fragment_version".into(),
             description: "把片段正文回滚到指定版本（时间戳来自 list_fragment_versions）。\
             恢复前会强制留底当前内容——恢复错了可以再恢复回来，操作可逆。\
-            已删除的片段同样可恢复（文件会被重建）。"
+            已删除的片段同样可恢复：文件会被重建，并自动挂回原场景的原位置\
+            （原场景已被删除时除外，回执会说明）。"
                 .into(),
             parameters: object_schema(vec![
                 ("fragment_id", "string", "片段 ID（如 f_0001）", true),
@@ -2302,14 +2303,32 @@ impl Tool for RestoreFragmentVersionTool {
             .ok_or_else(|| "缺少或非法参数: timestamp（版本时间戳，见 list_fragment_versions）".to_string())?;
 
         let paths = self.ctx.paths();
-        let body = crate::history::restore_version(&paths, &fragment_id, timestamp)
-            .map_err(|e| e.to_string())?;
-        let words = crate::workflow::count_words(&body);
+        let outcome =
+            crate::history::restore_version(&paths, &fragment_id, timestamp)
+                .map_err(|e| e.to_string())?;
+        let words = crate::workflow::count_words(&outcome.body);
 
         let mut msg = format!(
             "片段 {fragment_id} 已回滚到版本 {timestamp}（{words} 字）；\
             恢复前已留底当前内容，可再恢复回来"
         );
+        match outcome.reattach {
+            crate::history::ReattachStatus::AlreadyRegistered => {}
+            crate::history::ReattachStatus::Reattached { scene_id, position } => {
+                msg.push_str(&format!(
+                    "\n🔧 该片段此前已被删除：文件已重建并挂回场景 {scene_id} 的第 {} 位（删除前原位置）",
+                    position + 1
+                ));
+            }
+            crate::history::ReattachStatus::Orphaned { reason } => {
+                msg.push_str(&format!(
+                    "\n⚠️ 该片段此前已被删除且无法自动挂回（{reason}）：\
+                     文件已恢复，但不在任何场景的阅读序中——\
+                     请用 read_fragment_text 取回内容，write_fragment_text 写入目标场景后\
+                     再删除此孤儿文件"
+                ));
+            }
+        }
         // 回滚也是正文改动：证据片段提示同样适用（best-effort）
         if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
             msg.push_str(&note);
@@ -3193,6 +3212,60 @@ fragments = []
 
         // 回滚本身也留了底（可再恢复回去）
         assert_eq!(crate::history::list_versions(&paths, "f_0001").unwrap().len(), 2);
+    }
+
+    /// 已删除片段从版本历史恢复时，必须重新挂回 structure.toml 的阅读序。
+    /// 曾只重建文件、不挂结构，导致恢复出的片段在阅读序/统计/回顾里消失。
+    #[test]
+    fn restore_tool_reattaches_deleted_fragment() {
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let dir = tmp.path();
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let ctx = ToolContext::new(dir.to_path_buf());
+
+        // 建两个片段，删除第二个
+        crate::mutations::create_fragment_anchored_source(
+            &paths,
+            "sc_01_01",
+            "第一段。",
+            &[],
+            crate::stats::WriteSource::Manual,
+        )
+        .unwrap();
+        crate::mutations::create_fragment_anchored_source(
+            &paths,
+            "sc_01_01",
+            "第二段。",
+            &[],
+            crate::stats::WriteSource::Manual,
+        )
+        .unwrap();
+        let delete = DeleteFragmentTool::new(ctx.clone());
+        delete
+            .execute(&serde_json::json!({"fragment_id": "f_0002"}))
+            .unwrap();
+        let structure = std::fs::read_to_string(dir.join("structure.toml")).unwrap();
+        assert!(!structure.contains("f_0002"), "删除后引用应移除: {structure}");
+
+        // 恢复：回执说明挂回，structure 重新含引用且顺序正确
+        let ts = crate::history::list_versions(&paths, "f_0002").unwrap()[0].timestamp;
+        let restore = RestoreFragmentVersionTool::new(ctx);
+        let msg = restore
+            .execute(&serde_json::json!({"fragment_id": "f_0002", "timestamp": ts}))
+            .unwrap();
+        assert!(msg.contains("已回滚"), "{msg}");
+        assert!(msg.contains("挂回场景 sc_01_01"), "应说明挂回原场景: {msg}");
+
+        let structure = std::fs::read_to_string(dir.join("structure.toml")).unwrap();
+        assert!(structure.contains("f_0002"), "恢复后应重新出现在阅读序: {structure}");
+        assert!(
+            structure.matches("f_0002").count() == 1,
+            "只挂回一次不重复: {structure}"
+        );
+        let f1_pos = structure.find("f_0001").unwrap();
+        let f2_pos = structure.find("f_0002").unwrap();
+        assert!(f1_pos < f2_pos, "应挂回删除前位置（f_0002 在 f_0001 后）");
     }
 
     #[test]

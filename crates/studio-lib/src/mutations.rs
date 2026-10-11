@@ -94,7 +94,7 @@ where
 }
 
 /// 写入 TOML 文件，先序列化再写入。
-trait SaveToml {
+pub(crate) trait SaveToml {
     fn save(&self, path: &Path) -> Result<(), StudioError>;
 }
 
@@ -2433,16 +2433,21 @@ pub fn delete_fragment(paths: &ProjectPaths, fragment_id: &str) -> Result<(), St
     std::fs::remove_file(&frag_path)?;
     crate::journal::record(paths.root(), "fragment_delete", &frag_path, 0, true, None);
 
-    // 从 scene.fragments 移除引用
+    // 从 scene.fragments 移除引用；移除前记录原场景与位置（tombstone），
+    // 供 restore_fragment_version 把恢复的片段挂回原位
     let structure_path = paths.structure_toml();
     if structure_path.exists() {
         let mut structure = load_structure(paths)?;
         let mut changed = false;
-        for scene in structure.scene.values_mut() {
-            let before = scene.fragments.len();
-            scene.fragments.retain(|f| f != fragment_id);
-            if scene.fragments.len() != before {
+        let mut recorded = false;
+        for (sc_id, scene) in structure.scene.iter_mut() {
+            if let Some(pos) = scene.fragments.iter().position(|f| f == fragment_id) {
+                scene.fragments.remove(pos);
                 changed = true;
+                if !recorded {
+                    crate::history::write_tombstone(paths, fragment_id, sc_id, pos);
+                    recorded = true;
+                }
             }
         }
         if changed {
@@ -4838,6 +4843,75 @@ mod tests {
         // 验证 structure 中已移除
         let structure = load_structure(&paths).unwrap();
         assert!(!structure.scene[&sc_id].fragments.contains(&frag_id));
+    }
+
+    #[test]
+    fn restore_deleted_fragment_reattaches_to_original_position() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch_id = create_chapter(&paths, "章").unwrap();
+        let sc_id = create_scene(&paths, &ch_id, "场景", None).unwrap();
+        let f1 = create_fragment(&paths, &sc_id, "第一段").unwrap();
+        let f2 = create_fragment(&paths, &sc_id, "第二段").unwrap();
+        let f3 = create_fragment(&paths, &sc_id, "第三段").unwrap();
+
+        // 删除中间片段：文件消失、引用移除、删除前强制留底 + tombstone
+        delete_fragment(&paths, &f2).unwrap();
+        let versions = crate::history::list_versions(&paths, &f2).unwrap();
+        assert!(!versions.is_empty(), "删除前应强制留底版本快照");
+
+        // 从版本历史恢复：文件重建，并挂回原场景原位置（bug 修复点：
+        // 此前只重建文件，structure.toml 不含引用，成为阅读序外的孤儿）
+        let outcome =
+            crate::history::restore_version(&paths, &f2, versions[0].timestamp).unwrap();
+        assert_eq!(outcome.body.trim(), "第二段");
+        assert_eq!(
+            outcome.reattach,
+            crate::history::ReattachStatus::Reattached {
+                scene_id: sc_id.clone(),
+                position: 1
+            }
+        );
+        assert!(paths.fragments_dir().join(format!("{f2}.md")).exists());
+        let structure = load_structure(&paths).unwrap();
+        assert_eq!(
+            structure.scene[&sc_id].fragments,
+            vec![f1.clone(), f2.clone(), f3.clone()],
+            "应按删除前位置挂回，保持叙事顺序"
+        );
+
+        // tombstone 已清除：再次恢复同版本属于普通回滚，不重复插入
+        let outcome =
+            crate::history::restore_version(&paths, &f2, versions[0].timestamp).unwrap();
+        assert_eq!(outcome.reattach, crate::history::ReattachStatus::AlreadyRegistered);
+        let structure = load_structure(&paths).unwrap();
+        assert_eq!(structure.scene[&sc_id].fragments.len(), 3);
+    }
+
+    #[test]
+    fn restore_deleted_fragment_orphaned_when_scene_gone() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch_id = create_chapter(&paths, "章").unwrap();
+        let sc_id = create_scene(&paths, &ch_id, "场景", None).unwrap();
+        let f1 = create_fragment(&paths, &sc_id, "正文").unwrap();
+
+        delete_fragment(&paths, &f1).unwrap();
+        delete_scene(&paths, &sc_id).unwrap(); // 原场景连同消失
+
+        let versions = crate::history::list_versions(&paths, &f1).unwrap();
+        let outcome = crate::history::restore_version(&paths, &f1, versions[0].timestamp).unwrap();
+        assert_eq!(outcome.body.trim(), "正文");
+        match outcome.reattach {
+            crate::history::ReattachStatus::Orphaned { reason } => {
+                assert!(reason.contains(&sc_id), "应说明原场景已不存在: {reason}");
+            }
+            other => panic!("原场景已删除时应为 Orphaned，实际 {other:?}"),
+        }
+        // 文件本身已恢复，不因挂不回去而失败
+        assert!(paths.fragments_dir().join(format!("{f1}.md")).exists());
     }
 
     #[test]
