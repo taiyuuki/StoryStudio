@@ -93,11 +93,63 @@ fn mcp_tool_from_def(def: ToolDef) -> Tool {
 }
 
 /// MCP 工具调用的失败分类
+#[derive(Debug)]
 enum CallFailure {
     /// 工具执行失败 — 以 isError 结果返回，让调用方模型看到并自行纠偏
     ToolError(String),
     /// 协议层参数错误 — 以 JSON-RPC error 返回
     InvalidParams(String),
+}
+
+/// 工具执行闸门：读共享、写排他（进程级全局——HTTP 模式每会话一个
+/// server 实例，闸门必须跨会话共享）。
+///
+/// rmcp 对每个请求并发派发，工具若并行执行会发生两类数据损坏：
+/// - 同连接流水线调用的乱序（改名跑在建档之前）；
+/// - ID 分配竞态：并发的 create_* 扫号互不可见，多个调用分到同一 ID、
+///   写同一文件互相覆盖，先写的数据静默丢失。
+///
+/// 变更类工具整体持写锁（扫描→分配→落盘因此原子），查询类共享读锁
+/// 不互相阻塞。中毒不扩散（工具 panic 后服务继续可用）。
+static TOOL_GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// 持闸执行工具：查询类（[`READ_ONLY_TOOLS`] 白名单）读锁，其余写锁。
+/// 未列入白名单的新工具默认按变更处理（安全默认）。
+fn execute_gated(
+    registry: &ToolRegistry,
+    read_only: bool,
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Result<String, CallFailure> {
+    if HIDDEN_TOOLS.contains(&name) {
+        return Err(CallFailure::InvalidParams(format!(
+            "工具 {name} 在 MCP 服务中不可用（依赖桌面端交互）"
+        )));
+    }
+    // 只读模式在调用层复核：即使客户端绕过 tools/list 直接调用
+    if read_only && !READ_ONLY_TOOLS.contains(&name) {
+        return Err(CallFailure::InvalidParams(format!(
+            "服务器以 --read-only 模式启动，{name} 会修改项目，不可用"
+        )));
+    }
+    // 读共享 / 写排他（两种 guard 无公共类型，用 Option 对各持其一）。
+    // 锁中毒（持锁工具 panic）时强制恢复而非拒服务：
+    // 临界区内没有需要守护的不变量（工具自己保证文件一致性）
+    let _read_guard = if READ_ONLY_TOOLS.contains(&name) {
+        Some(TOOL_GATE.read().unwrap_or_else(std::sync::PoisonError::into_inner))
+    } else {
+        None
+    };
+    let _write_guard = if _read_guard.is_none() {
+        Some(TOOL_GATE.write().unwrap_or_else(std::sync::PoisonError::into_inner))
+    } else {
+        None
+    };
+    match registry.execute(name, arguments) {
+        Some(Ok(text)) => Ok(clamp_tool_result(&text)),
+        Some(Err(e)) => Err(CallFailure::ToolError(e)),
+        None => Err(CallFailure::InvalidParams(format!("未知工具：{name}"))),
+    }
 }
 
 pub(crate) struct StoryMcpServer {
@@ -185,27 +237,11 @@ impl ServerHandler for StoryMcpServer {
         let read_only = self.read_only;
 
         // 工具全部是同步阻塞实现（LLM 工具含网络调用），放到阻塞线程池，
-        // 不占用 tokio worker
-        let outcome = tokio::task::spawn_blocking(move || -> Result<String, CallFailure> {
-            if HIDDEN_TOOLS.contains(&name.as_str()) {
-                return Err(CallFailure::InvalidParams(format!(
-                    "工具 {name} 在 MCP 服务中不可用（依赖桌面端交互）"
-                )));
-            }
-            // 只读模式在调用层复核：即使客户端绕过 tools/list 直接调用
-            if read_only && !READ_ONLY_TOOLS.contains(&name.as_str()) {
-                return Err(CallFailure::InvalidParams(format!(
-                    "服务器以 --read-only 模式启动，{name} 会修改项目，不可用"
-                )));
-            }
-            match registry.execute(&name, &arguments) {
-                Some(Ok(text)) => Ok(clamp_tool_result(&text)),
-                Some(Err(e)) => Err(CallFailure::ToolError(e)),
-                None => Err(CallFailure::InvalidParams(format!("未知工具：{name}"))),
-            }
-        })
-        .await
-        .map_err(|e| McpError::internal_error(format!("工具执行线程异常：{e}"), None))?;
+        // 不占用 tokio worker。变更类工具经 TOOL_GATE 写锁串行（读共享），
+        // 并发调用的 ID 分配与流水线依赖因此安全
+        let outcome = tokio::task::spawn_blocking(move || execute_gated(&registry, read_only, &name, &arguments))
+            .await
+            .map_err(|e| McpError::internal_error(format!("工具执行线程异常：{e}"), None))?;
 
         match outcome {
             Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into()),
@@ -257,5 +293,103 @@ mod tests {
         });
         assert!(!versions.contains(&ProtocolVersion::V_2026_07_28));
         assert!(versions.contains(&ProtocolVersion::V_2025_11_25));
+    }
+
+    /// 闸门语义：读锁共享、写锁排他
+    #[test]
+    fn tool_gate_shares_reads_and_exclusives_writes() {
+        let r1 = TOOL_GATE.read().unwrap();
+        let r2 = TOOL_GATE.read().unwrap(); // 读共享：两把读锁并存
+        drop((r1, r2));
+
+        let w = TOOL_GATE.write().unwrap();
+        assert!(
+            TOOL_GATE.try_read().is_err(),
+            "写锁持有期间读应被拒绝"
+        );
+        assert!(TOOL_GATE.try_write().is_err(), "写锁不可重入");
+        drop(w);
+        assert!(TOOL_GATE.try_read().is_ok(), "释放后应恢复");
+    }
+
+    /// 无副作用测试桩 provider（LLM 工具不会被本组测试触发）
+    #[derive(Debug)]
+    struct StubProvider;
+    impl story_ai_runtime::provider::AiProvider for StubProvider {
+        fn id(&self) -> &str {
+            "stub-mcp-test"
+        }
+        fn generate(
+            &self,
+            _request: &story_ai_runtime::provider::GenerateRequest,
+        ) -> Result<story_ai_runtime::provider::GenerateResponse, story_ai_runtime::provider::AiError>
+        {
+            Err(story_ai_runtime::provider::AiError::Unavailable(
+                "测试桩不可调用".into(),
+            ))
+        }
+    }
+
+    /// 回归：rmcp 并发派发下，并发的 create_* 曾扫号互不可见、分到同一 ID、
+    /// 写同一文件互相覆盖（多份"成功"回执只剩一份数据）。
+    /// 经 TOOL_GATE 写锁串行后，N 路并发创建应得到 N 个互不相同的 ID。
+    #[test]
+    fn execute_gated_serializes_concurrent_creates() {
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "gate-test").unwrap();
+        let registry = Arc::new(story_studio_lib::create_tool_registry(
+            tmp.path(),
+            Arc::new(StubProvider),
+        ));
+
+        const N: usize = 6;
+        let mut handles = Vec::new();
+        for i in 0..N {
+            let reg = registry.clone();
+            handles.push(std::thread::spawn(move || {
+                execute_gated(
+                    &reg,
+                    false,
+                    "create_character",
+                    &serde_json::json!({ "name": format!("并发{i}号"), "role": "probe" }),
+                )
+                .unwrap()
+            }));
+        }
+        let mut ids = Vec::new();
+        for h in handles {
+            let text = h.join().unwrap();
+            let id = text
+                .split("id=")
+                .nth(1)
+                .and_then(|s| s.split(',').next())
+                .unwrap()
+                .trim()
+                .to_string();
+            assert!(id.starts_with("c_"), "回执应含实体 ID: {text}");
+            ids.push(id);
+        }
+        let distinct: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(distinct.len(), N, "并发创建不应撞 ID: {ids:?}");
+
+        // 落盘文件数与 ID 数一致（无互相覆盖）
+        let files: Vec<_> = std::fs::read_dir(tmp.path().join("entities/characters"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name().to_string_lossy().starts_with("c_")
+            })
+            .collect();
+        assert_eq!(files.len(), N, "每个实体应有自己的文件: {files:?}");
+
+        // 只读模式下变更工具仍被拒（execute_gated 同时承担该复核）
+        let err = execute_gated(
+            &registry,
+            true,
+            "create_character",
+            &serde_json::json!({ "name": "只读探针" }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CallFailure::InvalidParams(_)));
     }
 }

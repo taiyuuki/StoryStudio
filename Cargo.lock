@@ -4044,6 +4044,7 @@ dependencies = [
  "rmcp",
  "serde_json",
  "story-ai-runtime",
+ "story-project-format",
  "story-studio-lib",
  "tempfile",
  "tokio",
