@@ -44,6 +44,15 @@ function emptyProfile(): AiProfileDto {
   }
 }
 
+// ── 顶部分栏 ────────────────────────────────────────────
+const TABS = [
+  { key: 'providers', label: 'AI 服务商', icon: 'fa-solid fa-layer-group' },
+  { key: 'purposes', label: '用途分配', icon: 'fa-solid fa-shuffle' },
+  { key: 'mcp', label: 'MCP 服务', icon: 'fa-solid fa-plug' },
+] as const
+type TabKey = (typeof TABS)[number]['key']
+const activeTab = ref<TabKey>('providers')
+
 // ── 服务商预设 ──────────────────────────────────────────
 const presets = ref<ProviderPresetDto[]>([])
 const CUSTOM_OPTIONS = [
@@ -71,6 +80,18 @@ const CUSTOM_ICON = 'fa-sliders'
 /** 卡片上只显示主名，去掉括号补充说明（「Kimi（月之暗面）」→「Kimi」） */
 function shortLabel(label: string): string {
   return label.replace(/（[^）]*）/g, '').trim()
+}
+
+/** 档案卡片用的服务商图标 */
+function iconOf(p: AiProfileDto): string {
+  return (p.preset && PRESET_ICONS[p.preset]) || CUSTOM_ICON
+}
+
+/** 档案卡片用的服务商一行字 */
+function providerLabel(p: AiProfileDto): string {
+  if (p.provider === 'gemini') return 'Gemini'
+  if (p.provider === 'anthropic') return 'Anthropic'
+  return p.apiMode === 'responses' ? 'OpenAI · Responses' : 'OpenAI · Chat'
 }
 
 const providerValue = computed(() => {
@@ -136,6 +157,11 @@ function edit(p: AiProfileDto) {
   extraHeadersText.value = p.extraHeaders ? JSON.stringify(p.extraHeaders, null, 2) : ''
 }
 
+/** 从编辑卡片返回档案列表（未保存的修改会被丢弃） */
+function closeEditor() {
+  editingId.value = null
+}
+
 function addProfile() {
   const p = emptyProfile()
   p.id = crypto.randomUUID()
@@ -166,16 +192,7 @@ async function removeProfile(id: string) {
     if (Object.keys(config.value.purposeProfiles).length === 0) config.value.purposeProfiles = null
   }
   await persist('已删除')
-  if (editingId.value === id) {
-    edit(config.value.profiles[0] ?? emptyProfileWithId())
-  }
-}
-
-function emptyProfileWithId(): AiProfileDto {
-  const p = emptyProfile()
-  p.id = crypto.randomUUID()
-  config.value.profiles.push(p)
-  return p
+  if (editingId.value === id) editingId.value = null
 }
 
 /** 复刻当前编辑的档案：以编辑中的内容为准（所见即所得），改名换 id 后立即可微调 */
@@ -211,8 +228,6 @@ async function duplicateProfile() {
 
 function pickActive(id: string) {
   config.value.activeProfile = id
-  const p = config.value.profiles.find((x) => x.id === id)
-  if (p) edit(p)
   void persist('已设为默认')
 }
 
@@ -270,13 +285,16 @@ function normMaxTokens(): number | null {
 /** 输出上限常用档位（token）；65536 覆盖思考模型的 reasoning 配额 */
 const MAX_TOKEN_PRESETS = [8192, 16384, 32768, 65536, 131072, 262144]
 
-async function persist(successMsg: string) {
+/** 持久化整个配置；返回是否成功（失败时编辑卡片不应退出） */
+async function persist(successMsg: string): Promise<boolean> {
   saving.value = true
   try {
     await api.setAiConfig(config.value)
     if (successMsg) ElMessage.success(successMsg)
+    return true
   } catch (err) {
     ElMessage.error((err as Error).message)
+    return false
   } finally {
     saving.value = false
   }
@@ -284,7 +302,7 @@ async function persist(successMsg: string) {
 
 async function saveProfile() {
   if (!draft.id) {
-    ElMessage.warning('先从左侧选择或新建一个档案')
+    ElMessage.warning('先从列表选择或新建一个档案')
     return
   }
   if (!draft.name.trim()) {
@@ -305,7 +323,8 @@ async function saveProfile() {
   const idx = config.value.profiles.findIndex((p) => p.id === draft.id)
   if (idx >= 0) config.value.profiles[idx] = JSON.parse(JSON.stringify(draft))
   if (!config.value.activeProfile) config.value.activeProfile = draft.id
-  await persist('已保存')
+  // 保存成功才返回列表，失败留在编辑卡片里
+  if (await persist('已保存')) editingId.value = null
 }
 
 // ── 模型拉取 ────────────────────────────────────────────
@@ -381,6 +400,11 @@ async function testProfile() {
 function testDotClass(p: AiProfileDto): string {
   if (!p.lastTest) return 'is-unknown'
   return p.lastTest.ok ? 'is-ok' : 'is-fail'
+}
+
+function testDotTitle(p: AiProfileDto): string {
+  if (!p.lastTest) return '尚未测试'
+  return `${p.lastTest.ok ? '测试通过' : '测试失败'} · ${timeAgo(p.lastTest.at)}`
 }
 
 function timeAgo(ts: number): string {
@@ -565,7 +589,6 @@ onMounted(async () => {
       config.value.activeProfile = p.id
     }
     if (!config.value.activeProfile) config.value.activeProfile = config.value.profiles[0].id
-    edit(config.value.profiles[0])
   } catch (err) {
     ElMessage.error((err as Error).message)
   }
@@ -596,156 +619,29 @@ function goBack() {
         <span>正在读取配置…</span>
       </div>
 
-      <div v-else class="sv-columns">
-        <!-- 左列：档案列表 + 用途分配 -->
-        <aside class="sv-side">
-          <div class="fusion-card sv-list-card">
+      <template v-else>
+        <!-- 分栏（编辑档案时让位给编辑卡片） -->
+        <nav v-if="!editingId" class="sv-tabs">
+          <button
+            v-for="t in TABS"
+            :key="t.key"
+            type="button"
+            :class="{ 'is-active': activeTab === t.key }"
+            @click="activeTab = t.key"
+          >
+            <i :class="t.icon" />
+            {{ t.label }}
+          </button>
+        </nav>
+
+        <!-- ── Tab：AI 服务商 ─────────────────────────────── -->
+        <section v-if="activeTab === 'providers'" class="sv-panel">
+          <!-- 编辑 / 新建档案：独立卡片视图，保存或返回后回到列表 -->
+          <div v-if="editingId" class="fusion-card sv-editor">
             <div class="card-head">
-              <i class="fa-solid fa-layer-group" />
-              <span>AI 档案</span>
-              <button class="ink-btn ink-btn--sm sv-add" @click="addProfile">
-                <i class="fa-solid fa-plus" />
-                添加
+              <button class="ink-icon-btn" title="返回档案列表" @click="closeEditor">
+                <i class="fa-solid fa-arrow-left" />
               </button>
-            </div>
-            <ul class="sv-list">
-              <li
-                v-for="p in config.profiles"
-                :key="p.id"
-                :class="{ 'is-editing': p.id === editingId, 'is-default': p.id === config.activeProfile }"
-                @click="edit(p)"
-              >
-                <span class="sv-dot" :class="testDotClass(p)" :title="p.lastTest ? `${p.lastTest.ok ? '测试通过' : '测试失败'} · ${timeAgo(p.lastTest.at)}` : '尚未测试'" />
-                <div class="sv-item-main">
-                  <span class="sv-item-name">{{ p.name }}</span>
-                  <span class="sv-item-sub num">
-                    {{ p.provider === 'gemini' ? 'Gemini' : p.provider === 'anthropic' ? 'Anthropic' : p.apiMode === 'responses' ? 'OpenAI · Responses' : 'OpenAI · Chat' }}
-                    <template v-if="p.model"> · {{ p.model }}</template>
-                  </span>
-                  <span v-if="purposesOf(p.id)" class="sv-item-purposes">{{ purposesOf(p.id) }}</span>
-                </div>
-                <i v-if="p.id === config.activeProfile" class="fa-solid fa-check" title="默认档案" />
-              </li>
-            </ul>
-          </div>
-
-          <!-- 用途分配 -->
-          <div class="fusion-card sv-purpose-card">
-            <div class="card-head">
-              <i class="fa-solid fa-shuffle" />
-              <span>用途分配</span>
-            </div>
-            <p class="sv-purpose-sub">
-              没单独指定的用途，都用默认档案<template v-if="activeProfileName">「{{ activeProfileName }}」</template>
-            </p>
-            <div class="sv-purpose-list">
-              <div v-for="pu in PURPOSES" :key="pu.key" class="sv-purpose-item">
-                <div class="sv-purpose-meta">
-                  <span class="sv-purpose-label">{{ pu.label }}</span>
-                  <span class="sv-purpose-hint">{{ pu.hint }}</span>
-                </div>
-                <select :value="purposeValue(pu.key)" @change="setPurpose(pu.key, ($event.target as HTMLSelectElement).value)">
-                  <option value="">跟随默认档案</option>
-                  <option v-for="p in config.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <!-- 妙笔对话：每轮工具调用上限 -->
-          <div class="fusion-card sv-agent-card">
-            <div class="card-head">
-              <i class="fa-solid fa-wand-magic-sparkles" />
-              <span>妙笔对话</span>
-            </div>
-            <div class="sv-agent-row">
-              <div class="sv-purpose-meta">
-                <span class="sv-purpose-label">每轮工具调用上限</span>
-                <span class="sv-purpose-hint">一轮对话里最多连续请求工具的次数</span>
-              </div>
-              <input
-                class="num sv-agent-input"
-                type="number"
-                min="1"
-                :max="AGENT_TURNS_MAX"
-                step="1"
-                :value="agentTurns"
-                @change="setAgentTurns(($event.target as HTMLInputElement).value, $event.target as HTMLInputElement)"
-              />
-            </div>
-            <p class="sv-purpose-sub">
-              默认 40。通读全书、批量改稿等长任务可调高（上限 200）；越高越费
-              token，中途纠偏也越难。改完对妙笔的下一轮对话生效。
-            </p>
-          </div>
-
-          <!-- MCP 服务：外部 Agent 接入 -->
-          <div class="fusion-card sv-mcp-card">
-            <div class="card-head">
-              <i class="fa-solid fa-plug" />
-              <span>MCP 服务</span>
-              <ElSwitch
-                class="sv-mcp-switch"
-                :model-value="mcpEnabled"
-                :loading="mcpBusy"
-                :disabled="!workspace.root && !mcpEnabled"
-                @update:model-value="mcpToggle($event as boolean)"
-              />
-            </div>
-            <p class="sv-purpose-sub">
-              把当前项目的创作工具集暴露给外部 Agent（ZCode / Claude 等）。
-              仅监听本机；服务跟随当前打开的项目自动切换，Token 持久化在
-              ~/.story-studio/mcp-token，换书、重启都不变——外部客户端配置一次长期有效。
-            </p>
-            <div class="sv-agent-row">
-              <div class="sv-purpose-meta">
-                <span class="sv-purpose-label">端口</span>
-                <span class="sv-purpose-hint">默认 {{ MCP_PORT_DEFAULT }}</span>
-              </div>
-              <input
-                class="num sv-agent-input"
-                type="number"
-                min="1"
-                max="65535"
-                step="1"
-                v-model.number="mcpPortInput"
-                @change="mcpApplySettings"
-              />
-            </div>
-            <div class="sv-agent-row">
-              <div class="sv-purpose-meta">
-                <span class="sv-purpose-label">只读模式</span>
-                <span class="sv-purpose-hint">仅暴露查询类工具，不改项目</span>
-              </div>
-              <ElSwitch
-                :model-value="mcpReadOnly"
-                @update:model-value="((mcpReadOnly = $event as boolean), mcpApplySettings())"
-              />
-            </div>
-            <template v-if="mcpEnabled && mcpStatus">
-              <div class="sv-mcp-status is-ok">
-                <i class="fa-solid fa-circle-check" />
-                <span>运行中 · {{ mcpStatus.toolCount }} 个工具</span>
-                <button class="ink-btn ink-btn--sm sv-mcp-copy" @click="mcpCopyConfig">
-                  <i class="fa-regular fa-copy" />
-                  复制接入配置
-                </button>
-              </div>
-              <button class="sv-mcp-url num" :title="`${mcpStatus.url}（点击复制接入配置）`" @click="mcpCopyConfig">
-                {{ mcpStatus.url }}
-              </button>
-            </template>
-            <p v-else-if="!workspace.root" class="sv-mcp-status is-off">
-              <i class="fa-regular fa-circle" />
-              <span>先打开一个项目，才能启动 MCP 服务</span>
-            </p>
-          </div>
-        </aside>
-
-        <!-- 右列：编辑 -->
-        <section class="fusion-card sv-editor">
-          <template v-if="editingId">
-            <div class="card-head">
               <i class="fa-solid fa-pen-nib" />
               <span>编辑档案</span>
               <button
@@ -981,7 +877,7 @@ function goBack() {
               </div>
             </div>
 
-            <!-- 保存（不退出）-->
+            <!-- 保存（保存成功后返回列表）-->
             <div class="sv-actions">
               <button
                 v-if="config.profiles.length > 1"
@@ -992,15 +888,182 @@ function goBack() {
                 删除此档案
               </button>
               <span class="sv-actions-flex" />
+              <button class="ink-btn" @click="closeEditor">取消</button>
               <button class="ink-btn ink-btn--primary" :disabled="saving || extraJsonInvalid" @click="saveProfile">
                 <i class="fa-solid fa-check" />
-                {{ saving ? '保存中…' : '保存此档案' }}
+                {{ saving ? '保存中…' : '保存档案' }}
               </button>
             </div>
-          </template>
-          <div v-else class="sv-empty">从左侧选择或添加一个档案</div>
+          </div>
+
+          <!-- 档案卡片列表（cc-switch 式：点卡片切换默认，卡片上编辑/删除） -->
+          <div v-else class="sv-grid">
+            <div
+              v-for="p in config.profiles"
+              :key="p.id"
+              class="fusion-card sv-card"
+              :class="{ 'is-default': p.id === config.activeProfile }"
+              :title="p.id === config.activeProfile ? '默认档案' : '点击设为默认档案'"
+              @click="pickActive(p.id)"
+            >
+              <div class="sv-card-top">
+                <span class="sv-card-icon" :class="{ 'is-img': iconOf(p).startsWith('/') }">
+                  <img v-if="iconOf(p).startsWith('/')" :src="iconOf(p)" alt="" />
+                  <i v-else class="fa-solid" :class="iconOf(p)" />
+                </span>
+                <div class="sv-card-name-wrap">
+                  <span class="sv-card-name">
+                    {{ p.name }}
+                    <span class="sv-dot" :class="testDotClass(p)" :title="testDotTitle(p)" />
+                  </span>
+                  <span class="sv-card-sub num">{{ providerLabel(p) }}<template v-if="p.model"> · {{ p.model }}</template></span>
+                </div>
+              </div>
+              <div class="sv-card-url num" :title="p.apiUrl || '官方默认地址'">
+                {{ p.apiUrl || '官方默认地址' }}
+              </div>
+              <div class="sv-card-foot">
+                <span v-if="purposesOf(p.id)" class="sv-card-purposes" :title="purposesOf(p.id)">{{ purposesOf(p.id) }}</span>
+                <span v-else class="sv-card-purposes" />
+                <span class="sv-card-acts">
+                  <button class="ink-icon-btn" title="编辑此档案" @click.stop="edit(p)">
+                    <i class="fa-regular fa-pen-to-square" />
+                  </button>
+                  <button
+                    v-if="config.profiles.length > 1"
+                    class="ink-icon-btn sv-card-del"
+                    title="删除此档案"
+                    @click.stop="removeProfile(p.id)"
+                  >
+                    <i class="fa-regular fa-trash-can" />
+                  </button>
+                </span>
+              </div>
+              <span v-if="p.id === config.activeProfile" class="sv-card-badge">默认</span>
+            </div>
+
+            <!-- 添加：虚线占位卡 -->
+            <button type="button" class="sv-card sv-card--add" @click="addProfile">
+              <i class="fa-solid fa-plus" />
+              <span>添加档案</span>
+            </button>
+          </div>
         </section>
-      </div>
+
+        <!-- ── Tab：用途分配 ─────────────────────────────── -->
+        <section v-else-if="activeTab === 'purposes'" class="sv-panel">
+          <div class="fusion-card sv-purpose-card">
+            <div class="card-head">
+              <i class="fa-solid fa-shuffle" />
+              <span>用途分配</span>
+            </div>
+            <p class="sv-purpose-sub">
+              没单独指定的用途，都用默认档案<template v-if="activeProfileName">「{{ activeProfileName }}」</template>（在「AI 服务商」里点卡片切换）
+            </p>
+            <div class="sv-purpose-list">
+              <div v-for="pu in PURPOSES" :key="pu.key" class="sv-purpose-item">
+                <span class="sv-purpose-label">{{ pu.label }}</span>
+                <span class="sv-purpose-hint" :title="pu.hint">{{ pu.hint }}</span>
+                <select :value="purposeValue(pu.key)" @change="setPurpose(pu.key, ($event.target as HTMLSelectElement).value)">
+                  <option value="">跟随默认档案</option>
+                  <option v-for="p in config.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- 妙笔对话：每轮工具调用上限 -->
+          <div class="fusion-card sv-agent-card">
+            <div class="card-head">
+              <i class="fa-solid fa-wand-magic-sparkles" />
+              <span>妙笔对话</span>
+            </div>
+            <div class="sv-opt-row">
+              <div class="sv-opt">
+                <span class="sv-opt-label">每轮工具调用上限</span>
+                <input
+                  class="num"
+                  type="number"
+                  min="1"
+                  :max="AGENT_TURNS_MAX"
+                  step="1"
+                  :value="agentTurns"
+                  @change="setAgentTurns(($event.target as HTMLInputElement).value, $event.target as HTMLInputElement)"
+                />
+              </div>
+              <span class="sv-card-note sv-opt-note">
+                一轮对话里最多连续请求工具的次数。默认 40；通读全书、批量改稿等长任务可调高（上限 200）。
+                越高越费 token，中途纠偏也越难；改完对妙笔的下一轮对话生效。
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── Tab：MCP 服务 ─────────────────────────────── -->
+        <section v-else class="sv-panel">
+          <div class="fusion-card sv-mcp-card">
+            <div class="card-head">
+              <i class="fa-solid fa-plug" />
+              <span>MCP 服务</span>
+              <ElSwitch
+                class="sv-mcp-switch"
+                :model-value="mcpEnabled"
+                :loading="mcpBusy"
+                :disabled="!workspace.root && !mcpEnabled"
+                @update:model-value="mcpToggle($event as boolean)"
+              />
+            </div>
+            <div class="sv-mcp-body">
+              <div class="sv-mcp-text">
+                <p class="sv-purpose-sub">
+                  把当前项目的创作工具集暴露给外部 Agent（ZCode / Claude 等）。
+                  仅监听本机；服务跟随当前打开的项目自动切换，Token 持久化在
+                  ~/.story-studio/mcp-token，换书、重启都不变——外部客户端配置一次长期有效。
+                </p>
+                <p class="sv-card-note">端口默认 {{ MCP_PORT_DEFAULT }}；只读模式仅暴露查询类工具，不会改动项目内容。</p>
+              </div>
+              <div class="sv-mcp-opts">
+                <div class="sv-opt">
+                  <span class="sv-opt-label">端口</span>
+                  <input
+                    class="num"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    step="1"
+                    v-model.number="mcpPortInput"
+                    @change="mcpApplySettings"
+                  />
+                </div>
+                <div class="sv-opt">
+                  <span class="sv-opt-label">只读模式</span>
+                  <ElSwitch
+                    :model-value="mcpReadOnly"
+                    @update:model-value="((mcpReadOnly = $event as boolean), mcpApplySettings())"
+                  />
+                </div>
+              </div>
+            </div>
+            <template v-if="mcpEnabled && mcpStatus">
+              <div class="sv-mcp-status is-ok">
+                <i class="fa-solid fa-circle-check" />
+                <span>运行中 · {{ mcpStatus.toolCount }} 个工具</span>
+                <button class="ink-btn ink-btn--sm sv-mcp-copy" @click="mcpCopyConfig">
+                  <i class="fa-regular fa-copy" />
+                  复制接入配置
+                </button>
+              </div>
+              <button class="sv-mcp-url num" :title="`${mcpStatus.url}（点击复制接入配置）`" @click="mcpCopyConfig">
+                {{ mcpStatus.url }}
+              </button>
+            </template>
+            <p v-else-if="!workspace.root" class="sv-mcp-status is-off">
+              <i class="fa-regular fa-circle" />
+              <span>先打开一个项目，才能启动 MCP 服务</span>
+            </p>
+          </div>
+        </section>
+      </template>
     </div>
   </div>
 </template>
@@ -1022,7 +1085,7 @@ function goBack() {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
 
   h1 {
@@ -1051,89 +1114,236 @@ function goBack() {
   }
 }
 
-.sv-columns {
-  display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 18px;
-  align-items: start;
-  animation: rise 0.5s 0.08s cubic-bezier(0.22, 1, 0.36, 1) both;
+// ── 顶部分栏 ────────────────────────────────────────────
+.sv-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--divider);
+  margin-bottom: 22px;
+  animation: rise 0.5s 0.05s cubic-bezier(0.22, 1, 0.36, 1) both;
+
+  button {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 16px 12px;
+    margin-bottom: -1px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    font-family: inherit;
+    font-size: 13.5px;
+    color: var(--ink-sec);
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+
+    i {
+      font-size: 12px;
+      opacity: 0.85;
+    }
+
+    &:hover {
+      color: var(--ink-main);
+    }
+
+    &.is-active {
+      color: var(--ink-accent);
+      border-bottom-color: var(--ink-accent);
+      font-weight: 600;
+
+      i {
+        opacity: 1;
+      }
+    }
+  }
 }
 
-.sv-side {
-  display: flex;
-  flex-direction: column;
+.sv-panel {
+  animation: rise 0.5s 0.1s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+// ── 档案卡片列表（cc-switch 式）──────────────────────────
+.sv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(292px, 1fr));
   gap: 14px;
 }
 
-.sv-list-card,
-.sv-purpose-card,
-.sv-agent-card,
-.sv-mcp-card,
-.sv-editor {
-  padding: 18px 20px;
+.sv-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px 12px;
+  cursor: pointer;
+  transition: box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.2s;
+
+  &:hover {
+    border-color: var(--ui-border-hover);
+  }
+
+  &.is-default {
+    border-color: var(--ink-accent);
+    background: color-mix(in srgb, var(--ink-accent-soft) 55%, var(--ui-glass-bg));
+  }
 }
 
-.card-head {
+.sv-card-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+// 品牌图标垫白底（暗色主题下深色 logo 也能看清）；图标字体用面层底
+.sv-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  flex-shrink: 0;
+
+  &.is-img {
+    background: #fff;
+    border: 1px solid var(--divider);
+
+    img {
+      width: 19px;
+      height: 19px;
+      object-fit: contain;
+    }
+  }
+
+  &:not(.is-img) {
+    background: var(--surface-2);
+    color: var(--ink-sec);
+    font-size: 13px;
+  }
+}
+
+.sv-card-name-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sv-card-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sv-card-sub {
+  font-size: 10.5px;
+  color: var(--ink-disabled);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sv-card-url {
+  font-size: 11px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.sv-card-foot {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13.5px;
-  color: var(--ink-main);
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--divider);
-  margin-bottom: 12px;
+  margin-top: auto;
+}
+
+.sv-card-purposes {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--ink-accent);
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sv-card-acts {
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.18s;
+
+  // 触屏 / 无悬停设备常显
+  @media (hover: none) {
+    opacity: 1;
+  }
+}
+
+.sv-card:hover .sv-card-acts,
+.sv-card:focus-within .sv-card-acts {
+  opacity: 1;
+}
+
+.sv-card-del:hover {
+  color: var(--state-danger);
+  background: color-mix(in srgb, var(--state-danger) 10%, transparent);
+}
+
+// 默认档案角标
+.sv-card-badge {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ink-accent);
+  color: #fff;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+
+// 添加占位卡
+.sv-card--add {
+  border: 1.5px dashed var(--ui-border);
+  background: transparent;
+  min-height: 118px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink-muted);
+  box-shadow: none;
 
   i {
+    font-size: 18px;
+  }
+
+  &:hover {
     color: var(--ink-accent);
-  }
-
-  span {
-    flex: 1;
+    border-color: var(--ink-accent);
+    background: var(--ink-accent-soft);
   }
 }
 
-.sv-add,
-.sv-head-btn {
-  padding: 3px 10px;
-  font-size: 11.5px;
-}
-
-// ── 档案列表 ────────────────────────────────────────────
-.sv-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-
-  li {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 9px 10px;
-    border-radius: 9px;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: all 0.15s;
-
-    &:hover {
-      background: var(--surface-2);
-    }
-
-    &.is-editing {
-      border-color: var(--ink-accent);
-      background: var(--ink-accent-soft);
-    }
-
-    > .fa-check {
-      color: var(--ink-accent);
-      font-size: 11px;
-    }
-  }
-}
-
+// ── 测试状态点 ──────────────────────────────────────────
 .sv-dot {
+  display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -1149,39 +1359,45 @@ function goBack() {
   }
 }
 
-.sv-item-main {
-  flex: 1;
-  min-width: 0;
+// ── 卡片头（各卡片通用）────────────────────────────────
+.card-head {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.sv-item-name {
-  font-size: 13px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
   color: var(--ink-main);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--divider);
+  margin-bottom: 12px;
+
+  > i {
+    color: var(--ink-accent);
+  }
+
+  > span {
+    flex: 1;
+  }
 }
 
-.sv-item-sub {
-  font-size: 10.5px;
-  color: var(--ink-disabled);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.sv-purpose-card,
+.sv-agent-card,
+.sv-mcp-card,
+.sv-editor {
+  padding: 18px 20px;
 }
 
-.sv-item-purposes {
-  font-size: 10px;
-  color: var(--ink-accent);
-  opacity: 0.75;
+.sv-head-btn {
+  padding: 3px 10px;
+  font-size: 11.5px;
 }
 
-// ── 用途分配 ────────────────────────────────────────────
+// ── 用途分配（整行式：名称 / 说明 / 下拉）───────────────
+.sv-purpose-card {
+  margin-bottom: 18px;
+}
+
 .sv-purpose-sub {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   font-size: 11.5px;
   line-height: 1.7;
   color: var(--ink-muted);
@@ -1190,26 +1406,32 @@ function goBack() {
 .sv-purpose-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
 .sv-purpose-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
+  padding: 12px 2px;
+  flex-wrap: wrap;
+
+  & + & {
+    border-top: 1px solid var(--divider);
+  }
 
   select {
-    width: 118px;
+    width: 230px;
     flex-shrink: 0;
-    height: 32px;
-    padding: 0 8px;
+    height: 34px;
+    padding: 0 10px;
     border-radius: 7px;
     border: 1px solid var(--ui-border);
     background: var(--input-bg);
     color: var(--ink-main);
     font-family: inherit;
-    font-size: 12px;
+    font-size: 12.5px;
     outline: none;
+    transition: border-color 0.2s;
 
     &:focus {
       border-color: var(--ink-accent);
@@ -1217,41 +1439,50 @@ function goBack() {
   }
 }
 
-.sv-purpose-meta {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
 .sv-purpose-label {
-  font-size: 12px;
+  flex: 0 0 108px;
+  font-size: 13px;
   color: var(--ink-main);
 }
 
 .sv-purpose-hint {
-  font-size: 10.5px;
+  flex: 1;
+  min-width: 160px;
+  font-size: 11.5px;
   color: var(--ink-disabled);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-// ── 妙笔对话上限卡片 ────────────────────────────────────
-.sv-agent-card .sv-purpose-sub {
-  margin: 0;
+// ── 设置项小面板（妙笔上限 / MCP 端口等通用行）──────────
+.sv-opt-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
-.sv-agent-row {
+.sv-opt {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--divider);
+  border-radius: 9px;
+  background: var(--surface-1);
 }
 
-.sv-agent-input {
-  width: 76px;
+.sv-opt-label {
+  font-size: 12.5px;
+  color: var(--ink-main);
+  white-space: nowrap;
+}
+
+// 数字输入沿用 .num 的无衬线字体，这里只管外形
+.sv-opt input {
+  width: 92px;
   flex-shrink: 0;
   height: 32px;
   padding: 0 8px;
@@ -1259,7 +1490,6 @@ function goBack() {
   border: 1px solid var(--ui-border);
   background: var(--input-bg);
   color: var(--ink-main);
-  font-family: inherit;
   text-align: center;
   outline: none;
   transition: border-color 0.2s;
@@ -1269,11 +1499,25 @@ function goBack() {
   }
 }
 
+// 设置项旁 / 下方的补充说明
+.sv-card-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--ink-muted);
+}
+
+.sv-opt-note {
+  flex: 1;
+  min-width: 200px;
+}
+
 // ── 编辑区 ──────────────────────────────────────────────
 .sv-form {
   display: flex;
   flex-direction: column;
   gap: 13px;
+  max-width: 820px;
 }
 
 .sv-note {
@@ -1354,7 +1598,7 @@ function goBack() {
   flex: 0 0 calc((100% - 20px) / 3);
 }
 
-// ── 服务商卡片网格 ────────────────────────────────────────
+// ── 服务商卡片网格（编辑表单内）─────────────────────────
 .pv-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(94px, 1fr));
@@ -1433,7 +1677,8 @@ function goBack() {
 }
 
 // ── 接口模式分段选择 ─────────────────────────────────────
-.sv-mode-field {  .sv-mode-seg {
+.sv-mode-field {
+  .sv-mode-seg {
     display: inline-flex;
     width: fit-content;
     border: 1px solid var(--ui-border);
@@ -1607,36 +1852,43 @@ function goBack() {
   color: var(--state-danger);
 }
 
-.sv-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 240px;
-  color: var(--ink-disabled);
-  font-size: 13px;
-}
-
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
+// ── MCP 服务 ────────────────────────────────────────────
 .sv-mcp-card {
   .sv-mcp-switch {
     margin-left: auto;
+  }
+
+  .sv-mcp-body {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+  }
+
+  .sv-mcp-text {
+    flex: 1;
+    min-width: 260px;
+
+    .sv-card-note {
+      margin-top: 4px;
+    }
+  }
+
+  .sv-mcp-opts {
+    flex: 0 0 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+
+    .sv-opt {
+      flex: 1;
+    }
   }
 
   .sv-mcp-status {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 14px;
+    margin-top: 16px;
     font-size: 12.5px;
 
     > i {
@@ -1648,7 +1900,7 @@ function goBack() {
     }
 
     &.is-off {
-      color: var(--text-muted, #8a8a8a);
+      color: var(--ink-muted);
     }
   }
 
@@ -1672,6 +1924,32 @@ function goBack() {
     &:hover {
       border-color: var(--ink-accent);
     }
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+// 窄窗口：卡片单列、MCP 两栏堆叠
+@media (max-width: 760px) {
+  .sv-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sv-mcp-card .sv-mcp-body {
+    flex-direction: column;
+  }
+
+  .sv-mcp-card .sv-mcp-opts {
+    flex-basis: auto;
   }
 }
 </style>
