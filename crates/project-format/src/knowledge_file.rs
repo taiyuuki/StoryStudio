@@ -208,6 +208,12 @@ pub struct EvidenceDef {
     pub id: String,
     pub loc: String,
     pub quote: String,
+    /// 中段采样摘录（漂移比对锚点之二；旧数据无此字段 = 仅头段比对）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_mid: Option<String>,
+    /// 尾段采样摘录（漂移比对锚点之三；旧数据无此字段 = 仅头段比对）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_tail: Option<String>,
     #[serde(default)]
     pub source: String,
 }
@@ -238,6 +244,8 @@ impl EvidenceDef {
             id: StableId::new_unchecked(&self.id),
             loc: StableId::new_unchecked(&self.loc),
             quote: self.quote.clone(),
+            quote_mid: self.quote_mid.clone(),
+            quote_tail: self.quote_tail.clone(),
             source: parse_evidence_source(&self.source),
         }
     }
@@ -247,6 +255,8 @@ impl EvidenceDef {
             id: e.id.as_str().to_string(),
             loc: e.loc.as_str().to_string(),
             quote: e.quote.clone(),
+            quote_mid: e.quote_mid.clone(),
+            quote_tail: e.quote_tail.clone(),
             source: serialize_evidence_source(&e.source),
         }
     }

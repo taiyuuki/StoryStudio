@@ -19,8 +19,16 @@ pub struct Evidence {
     /// 源文本位置（Fragment 的 StableId）
     pub loc: StableId,
 
-    /// 原文摘录
+    /// 原文摘录（头段采样）
     pub quote: String,
+
+    /// 中段采样摘录（漂移比对锚点之二；None = 旧数据，仅头段比对）
+    #[serde(default)]
+    pub quote_mid: Option<String>,
+
+    /// 尾段采样摘录（漂移比对锚点之三；None = 旧数据，仅头段比对）
+    #[serde(default)]
+    pub quote_tail: Option<String>,
 
     /// 来源
     #[serde(default)]
@@ -47,6 +55,8 @@ impl Evidence {
             id,
             loc,
             quote: quote.into(),
+            quote_mid: None,
+            quote_tail: None,
             source: EvidenceSource::default(),
         }
     }

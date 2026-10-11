@@ -3035,17 +3035,19 @@ fn register_evidence(paths: &ProjectPaths, fragment_id: &str) -> Result<String, 
         .unwrap_or(0);
     let id = format!("ev_{:04}", max_num + 1);
 
-    // 摘录登记时的正文开头：evidence 依据的是当时的内容，留快照才能在
-    // 片段被改写后核对事实依据是否已漂移
-    let quote = std::fs::read_to_string(&frag_path)
+    // 摘录登记时的正文快照（头/中/尾三点采样）：evidence 依据的是当时的
+    // 内容，留快照才能在片段被改写后核对事实依据是否已漂移
+    let (quote, quote_mid, quote_tail) = std::fs::read_to_string(&frag_path)
         .ok()
-        .map(|content| evidence_quote_excerpt(crate::fragment::fragment_body(&content)))
+        .map(|content| evidence_excerpt_set(crate::fragment::fragment_body(&content)))
         .unwrap_or_default();
 
     file.evidence.push(EvidenceDef {
         id: id.clone(),
         loc: fragment_id.to_string(),
         quote,
+        quote_mid: Some(quote_mid),
+        quote_tail: Some(quote_tail),
         source: "manual".to_string(),
     });
     file.save(&evidence_path)?;
@@ -3057,13 +3059,34 @@ fn register_evidence(paths: &ProjectPaths, fragment_id: &str) -> Result<String, 
 /// 摘录是漂移比对的锚，不是展示文本——超长截断**不追加省略号**：
 /// '…' 不会出现在正文里，带上它会让「正文包含摘录」恒为 false，
 /// 导致每个长片段登记证据后必误报漂移（曾在引入时踩过）。
-fn evidence_quote_excerpt(body: &str) -> String {
-    const MAX_CHARS: usize = 80;
+/// 三点采样摘录集：头 / 中 / 尾各取一段空白折叠后的快照。
+///
+/// 只靠开头摘录时，长片段中后段的改写完全无感（误安全感）；三点采样把
+/// 检测面扩到全文。中/尾各取 60 字：短片段（折叠后 <120 字）时三段互相
+/// 重叠，退化为近似全文比对。采样点之间的局部润色仍不可见——这是有界
+/// 漏报的取舍：全文哈希会把任何无关润色都变成预警，噪声淹没问题本身。
+fn evidence_excerpt_set(body: &str) -> (String, String, String) {
+    const HEAD_CHARS: usize = 80;
+    const SPAN_CHARS: usize = 60;
+    let flat = collapse_whitespace(body);
+    let chars: Vec<char> = flat.chars().collect();
+    let take = |start: usize| -> String {
+        let s = start.min(chars.len());
+        chars[s..(s + SPAN_CHARS).min(chars.len())].iter().collect()
+    };
+    let head: String = chars[..HEAD_CHARS.min(chars.len())].iter().collect();
+    let mid = take(chars.len() / 2);
+    let tail_start = chars.len().saturating_sub(SPAN_CHARS);
+    let tail = take(tail_start);
+    // 极短正文时 mid/tail 是 head 的子串，比对冗余但无害；保持非空使
+    // 「空摘录跳过核验」的旧口径不误触发
+    (head, mid, tail)
+}
+
+/// 空白折叠：连续空白折为单空格、去首尾（与摘录登记口径一致）
+fn collapse_whitespace(body: &str) -> String {
     let mut out = String::new();
     for ch in body.trim().chars() {
-        if out.chars().count() >= MAX_CHARS {
-            break;
-        }
         if ch.is_whitespace() {
             if !out.ends_with(' ') {
                 out.push(' ');
@@ -3106,8 +3129,8 @@ pub fn refresh_evidence(
         let frag_path = paths.file_for_id(&entry.loc).ok_or_else(|| {
             StudioError::Config(format!("无效的片段 ID: {}", entry.loc))
         })?;
-        let quote = std::fs::read_to_string(&frag_path)
-            .map(|content| evidence_quote_excerpt(crate::fragment::fragment_body(&content)))
+        let (quote, quote_mid, quote_tail) = std::fs::read_to_string(&frag_path)
+            .map(|content| evidence_excerpt_set(crate::fragment::fragment_body(&content)))
             .unwrap_or_default();
         if quote.is_empty() {
             return Err(StudioError::NotFound(format!(
@@ -3116,6 +3139,8 @@ pub fn refresh_evidence(
             )));
         }
         entry.quote = quote;
+        entry.quote_mid = Some(quote_mid);
+        entry.quote_tail = Some(quote_tail);
         refreshed.push((entry.id.clone(), entry.loc.clone()));
     }
 
@@ -3161,18 +3186,21 @@ pub fn evidence_usage_note(
                 .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect();
+            let excerpt_hit = |excerpt: &str| -> bool {
+                let q: String = excerpt.chars().filter(|c| !c.is_whitespace()).collect();
+                let q = q.trim_end_matches('…');
+                q.is_empty() || flat.contains(q)
+            };
             Some(
                 evidence_file.evidence.iter().all(|e| {
                     if !ev_ids.contains(&e.id.as_str()) || e.quote.is_empty() {
                         return true; // 非本片段条目/空摘录不在本层核验（空摘录见下）
                     }
-                    let quote: String = e
-                        .quote
-                        .chars()
-                        .filter(|c| !c.is_whitespace())
-                        .collect();
-                    let quote = quote.trim_end_matches('…');
-                    flat.contains(quote)
+                    // 三点采样：任一采样段失配即视为基线偏离（中后段改写
+                    // 也要拦下，不再只看开头）
+                    excerpt_hit(&e.quote)
+                        && e.quote_mid.as_deref().map(&excerpt_hit) != Some(false)
+                        && e.quote_tail.as_deref().map(&excerpt_hit) != Some(false)
                 }) && evidence_file
                     .evidence
                     .iter()
@@ -5771,6 +5799,8 @@ mod tests {
             id: "ev_0999".into(),
             loc: fid.clone(),
             quote: "过时摘录".into(),
+            quote_mid: None,
+            quote_tail: None,
             source: "manual".into(),
         });
         evidence.save(&evidence_path).unwrap();
@@ -6016,6 +6046,61 @@ mod tests {
         // 无参数 → 报错；不存在的 id → 报错
         assert!(refresh_evidence(&paths, None, None).is_err());
         assert!(refresh_evidence(&paths, Some("ev_9999"), None).is_err());
+    }
+
+    /// 回归：漂移检测三点采样。只靠开头摘录时，长片段尾段的改写完全无感
+    /// （头段毫发无损、证据"名存实亡"无人知晓）——中/尾采样后必须拦下。
+    #[test]
+    fn evidence_drift_detects_tail_edits_on_long_fragments() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        // 长正文：头/中/尾三段采样互不重叠（>120 字）
+        let head = "开头的雨下了整夜，青石巷的路灯在水洼里碎成一片昏黄。";
+        let mid = "中段他提着灯走过长巷，伞骨上的水珠一颗一颗坠下来，巷口的猫竖起了耳朵。";
+        let tail = "结尾他推开门，炉火还温着，桌上留着半盏凉透的茶与一张字条。";
+        let body = format!("{head}{mid}{tail}");
+        let fid = create_fragment(&paths, &sc, &body).unwrap();
+        add_assertion(&paths, "c_0001", "located_at", "l_0001", Some(&fid)).unwrap();
+
+        // 采样落盘核验：三段摘录互不相同且都非空
+        let file =
+            EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        let ev = &file.evidence[0];
+        assert!(!ev.quote.is_empty());
+        let m = ev.quote_mid.as_deref().unwrap();
+        let t = ev.quote_tail.as_deref().unwrap();
+        assert!(!m.is_empty() && !t.is_empty());
+        assert_ne!(ev.quote, m);
+        assert_ne!(m, t);
+
+        // 只改尾段（头段完好）：漂移必须报（旧逻辑只看开头、漏检）
+        write_fragment_text_source(
+            &paths,
+            &fid,
+            &format!("{head}{mid}结尾门被撞开，一群官差举着火把冲了进来。"),
+            crate::stats::WriteSource::Ai,
+        )
+        .unwrap();
+        let note = evidence_usage_note(&paths, &fid, false);
+        assert!(note.is_some(), "尾段改写应触发证据漂移提示");
+
+        // 只改中段：同样必须报
+        write_fragment_text_source(
+            &paths,
+            &fid,
+            &format!("{head}中段巷子里空无一人，灯也灭了。{tail}"),
+            crate::stats::WriteSource::Ai,
+        )
+        .unwrap();
+        let note = evidence_usage_note(&paths, &fid, false);
+        assert!(note.is_some(), "中段改写应触发证据漂移提示");
+
+        // 刷新基线后恢复安静
+        refresh_evidence(&paths, None, Some(&fid)).unwrap();
+        let note = evidence_usage_note(&paths, &fid, false);
+        assert!(note.is_none(), "刷新基线后不应再提示");
     }
 
     #[test]

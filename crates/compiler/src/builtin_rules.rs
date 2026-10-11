@@ -670,11 +670,19 @@ impl Rule for EvidenceMismatch {
                     // （片段没删、依据的事实可能已被改写掉）。
                     // 摘录登记时空白已折叠，双侧去空白后比对，换行差异不误报；
                     // 历史摘录带省略号尾巴（正文里不存在该字符），剥离后再比。
+                    // 头/中/尾三点采样：任一采样段失配即报（只看开头时
+                    // 长片段中后段的改写无感）。
                     if let Some(frag) = ctx.ir.document.get_fragment(&evidence.loc) {
                         let body = strip_all_ws(&frag.text);
-                        let quote = strip_all_ws(&evidence.quote);
-                        let quote = quote.trim_end_matches('…');
-                        if !quote.is_empty() && !body.contains(quote) {
+                        let excerpt_hit = |excerpt: &str| -> bool {
+                            let q = strip_all_ws(excerpt);
+                            let q = q.trim_end_matches('…');
+                            q.is_empty() || body.contains(q)
+                        };
+                        let drifted = !excerpt_hit(&evidence.quote)
+                            || evidence.quote_mid.as_deref().map(&excerpt_hit) == Some(false)
+                            || evidence.quote_tail.as_deref().map(&excerpt_hit) == Some(false);
+                        if drifted {
                             ctx.warning(
                                 self.id(),
                                 "evidence_mismatch",
@@ -1320,6 +1328,8 @@ mod tests {
             id: StableId::new_unchecked("ev_0001"),
             loc: StableId::new_unchecked("f_0001"),
             quote: quote.to_string(),
+            quote_mid: None,
+            quote_tail: None,
             source: Default::default(),
         });
         kb
