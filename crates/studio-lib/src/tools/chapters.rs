@@ -52,8 +52,8 @@ impl Tool for DesignChaptersTool {
                                 "summary": { "type": "string", "description": "可选：本章梗概" },
                                 "goal": { "type": "string", "description": "可选：本章目标" },
                                 "beats": { "type": "array", "items": { "type": "string" }, "description": "可选：节拍列表" },
-                                "characters": { "type": "array", "items": { "type": "string" }, "description": "可选：涉及角色" },
-                                "threads": { "type": "array", "items": { "type": "string" }, "description": "可选：涉及线索" },
+                                "characters": { "type": "array", "items": { "type": "string" }, "description": "可选：涉及角色（角色 ID 或名称，写入时自动归一为 ID）" },
+                                "threads": { "type": "array", "items": { "type": "string" }, "description": "可选：涉及线索（线索 ID 或标题，写入时自动归一为 ID）" },
                                 "hook": { "type": "string", "description": "可选：章末钩子" },
                                 "notes": { "type": "string", "description": "可选：备注" }
                             },
@@ -167,6 +167,7 @@ impl Tool for DesignChaptersTool {
             file.chapters.clear();
         }
         let start_index = file.chapters.len() + 1;
+        let mut ref_warnings: Vec<String> = Vec::new();
 
         for input in &chapter_inputs {
             let title = get_str(input, "title")?;
@@ -175,8 +176,18 @@ impl Tool for DesignChaptersTool {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
             let beats = parse_str_array(input, "beats")?;
-            let characters = parse_str_array(input, "characters")?;
-            let threads = parse_str_array(input, "threads")?;
+            // 角色/线索引用归一：Agent 常传名字/标题，消费侧按 ID 查找——
+            // 此处统一解析，解析不到的保留原值并把警告带回回执
+            let (characters, warns) = crate::mutations::resolve_character_refs(
+                &self.ctx.paths(),
+                &parse_str_array(input, "characters")?,
+            );
+            ref_warnings.extend(warns);
+            let (threads, warns) = crate::mutations::resolve_thread_refs(
+                &self.ctx.paths(),
+                &parse_str_array(input, "threads")?,
+            );
+            ref_warnings.extend(warns);
 
             file.chapters.push(ChapterOutlineDef {
                 chapter_id: get_str_opt(input, "chapter_id"),
@@ -201,10 +212,14 @@ impl Tool for DesignChaptersTool {
             volume_note = format!("，{ensure_note}");
         }
 
-        Ok(format!(
+        let mut msg = format!(
             "已设计 {} 个章节脉络（序号 {}-{}），已写入 chapters.toml{}。各章状态为 planned，动笔时用 update_chapter_outline(index, status=\"writing\") 标记。",
             added, start_index, end_index, volume_note
-        ))
+        );
+        if !ref_warnings.is_empty() {
+            msg.push_str(&format!("\n⚠️ 引用解析：{}", ref_warnings.join("；")));
+        }
+        Ok(msg)
     }
 }
 
@@ -455,8 +470,8 @@ impl Tool for UpdateChapterOutlineTool {
                 ("summary", "string", "章节梗概", false),
                 ("goal", "string", "本章目标", false),
                 ("beats", "array", "节拍列表（如 [\"登场\",\"冲突\"]；逗号分隔字符串亦可），整体替换", false),
-                ("characters", "array", "涉及角色 ID 列表，整体替换", false),
-                ("threads", "array", "涉及线索 ID 列表，整体替换", false),
+                ("characters", "array", "涉及角色（ID 或名称，写入时自动归一为 ID）列表，整体替换", false),
+                ("threads", "array", "涉及线索（ID 或标题，写入时自动归一为 ID）列表，整体替换", false),
                 ("hook", "string", "章末钩子", false),
                 ("notes", "string", "其他备注", false),
                 ("chapter_id", "string", "对齐 structure.toml 的章节 ID（ch_XX）；传空字符串清除", false),
@@ -473,6 +488,7 @@ impl Tool for UpdateChapterOutlineTool {
         let item = &mut file.chapters[index - 1];
 
         let mut changes: Vec<&str> = Vec::new();
+        let mut ref_warnings: Vec<String> = Vec::new();
 
         if let Some(v) = get_str_opt(arguments, "title") {
             item.title = v;
@@ -498,11 +514,17 @@ impl Tool for UpdateChapterOutlineTool {
             changes.push("beats");
         }
         if let Some(v) = get_str_array_opt(arguments, "characters")? {
-            item.characters = v;
+            // 名字/ID 统一归一为角色 ID（消费侧按 ID 查找）
+            let (resolved, warns) = crate::mutations::resolve_character_refs(&self.ctx.paths(), &v);
+            ref_warnings.extend(warns);
+            item.characters = resolved;
             changes.push("characters");
         }
         if let Some(v) = get_str_array_opt(arguments, "threads")? {
-            item.threads = v;
+            // 标题/ID 统一归一为线索 ID（消费侧按 ID 查找）
+            let (resolved, warns) = crate::mutations::resolve_thread_refs(&self.ctx.paths(), &v);
+            ref_warnings.extend(warns);
+            item.threads = resolved;
             changes.push("threads");
         }
         if let Some(v) = get_str_opt(arguments, "hook") {
@@ -558,6 +580,9 @@ impl Tool for UpdateChapterOutlineTool {
             file.chapters[index - 1].title,
             changes.join(", ")
         );
+        if !ref_warnings.is_empty() {
+            msg.push_str(&format!("\n⚠️ 引用解析：{}", ref_warnings.join("；")));
+        }
         if !ensure_note.is_empty() {
             msg.push_str(&format!("；{ensure_note}"));
         }
@@ -829,6 +854,59 @@ mod tests {
         init_project(tmp.path(), "test-novel").unwrap();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         (tmp, ctx)
+    }
+
+    /// 脉络引用归一（回归：threads/characters 传标题/名字时被原样存储，
+    /// 消费侧按 ID 查找 → get_scene_context 报「threads.toml 中不存在」、
+    /// prepare_writing 角色速查静默缺人）。
+    #[test]
+    fn design_and_update_resolve_thread_and_character_refs() {
+        let (_tmp, ctx) = setup();
+        let paths = ctx.paths();
+
+        // 夹具：一条线索 + 一个角色（threads.toml 的 serde 字段名是单数 [[thread]]）
+        std::fs::write(
+            paths.threads_toml(),
+            "[[thread]]\nid = \"t_001\"\ntitle = \"旧案之谜\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(paths.characters_dir()).unwrap();
+        std::fs::write(
+            paths.characters_dir().join("c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"林风\"\n",
+        )
+        .unwrap();
+
+        // design：标题/名字/ID/未知混传
+        let res = DesignChaptersTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                "chapters": [{
+                    "title": "雨夜",
+                    "characters": ["林风", "路人甲"],
+                    "threads": ["旧案之谜", "t_001", "不存在之谜"]
+                }]
+            }))
+            .unwrap();
+        assert!(res.contains("不存在之谜"), "未知线索应在回执警告: {res}");
+        assert!(res.contains("路人甲"), "未知角色应在回执警告: {res}");
+
+        let content = std::fs::read_to_string(paths.chapters_toml()).unwrap();
+        assert!(content.contains("\"t_001\""), "线索标题应归一为 ID: {content}");
+        assert!(content.contains("\"c_0001\""), "角色名应归一为 ID: {content}");
+        assert!(!content.contains("\"旧案之谜\""), "已解析的标题不应残留: {content}");
+        assert!(content.contains("\"不存在之谜\""), "未知引用按原样保留（不静默丢数据）: {content}");
+
+        // update：同样归一
+        UpdateChapterOutlineTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                "index": 1,
+                "threads": ["旧案之谜"],
+                "characters": ["林风"]
+            }))
+            .unwrap();
+        let content = std::fs::read_to_string(paths.chapters_toml()).unwrap();
+        assert!(content.contains("\"t_001\""), "update 路径也应归一线索标题: {content}");
+        assert!(content.contains("\"c_0001\""), "update 路径也应归一角色名: {content}");
     }
 
     #[test]

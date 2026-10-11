@@ -205,6 +205,87 @@ pub fn save_chapters_file(paths: &ProjectPaths, file: &ChaptersFile) -> Result<(
     file.save(&paths.chapters_toml())
 }
 
+/// 脉络线索引用归一：把 threads 字段里的「线索标题」解析为 threads.toml 中的线索 ID。
+///
+/// 脉络写入侧对 threads 字段来者不拒（Agent 常传标题），而消费侧
+/// （get_scene_context / prepare_writing 的认知快照）一律按 ID 查找——
+/// 标题引用会显示成「threads.toml 中不存在」，设计意图与认知矩阵脱钩。
+/// 在写入侧统一归一：
+/// - 恰是存在的线索 ID → 原样保留
+/// - 命中线索标题（精确匹配）→ 换成对应 ID
+/// - 都不是 → 保留原值并返回警告（不静默丢数据，回执推动补建或修正）
+pub fn resolve_thread_refs(
+    paths: &ProjectPaths,
+    refs: &[String],
+) -> (Vec<String>, Vec<String>) {
+    if refs.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let file = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap_or_default();
+    let mut resolved = Vec::with_capacity(refs.len());
+    let mut warnings = Vec::new();
+    for r in refs {
+        if file.threads.iter().any(|t| &t.id == r) {
+            resolved.push(r.clone());
+        } else if let Some(t) = file.threads.iter().find(|t| &t.title == r) {
+            resolved.push(t.id.clone());
+        } else {
+            resolved.push(r.clone());
+            warnings
+                .push(format!("线索「{r}」在 threads.toml 中不存在（已按原样保留）：请先 create_thread 建立该线索，或修正引用"));
+        }
+    }
+    (resolved, warnings)
+}
+
+/// 脉络角色引用归一：把 characters 字段里的「角色名/别名」解析为角色 ID。
+///
+/// 与 [`resolve_thread_refs`] 同理：消费侧（prepare_writing 的涉及角色速查）
+/// 按 ID 匹配，名字引用会被静默跳过。匹配 display_name 与 aliases（精确匹配）；
+/// 角色目录扫不到引用对应的实体时保留原值并返回警告。
+pub fn resolve_character_refs(
+    paths: &ProjectPaths,
+    refs: &[String],
+) -> (Vec<String>, Vec<String>) {
+    if refs.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut roster: Vec<(String, String, Vec<String>)> = Vec::new(); // (id, display_name, aliases)
+    let dir = paths.characters_dir();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(entity) = EntityFile::from_toml_str(&content) else {
+                continue;
+            };
+            roster.push((entity.id, entity.display_name, entity.aliases));
+        }
+    }
+    let mut resolved = Vec::with_capacity(refs.len());
+    let mut warnings = Vec::new();
+    for r in refs {
+        if roster.iter().any(|(id, _, _)| id == r) {
+            resolved.push(r.clone());
+        } else if let Some((id, _, _)) = roster
+            .iter()
+            .find(|(_, name, aliases)| name == r || aliases.iter().any(|a| a == r))
+        {
+            resolved.push(id.clone());
+        } else {
+            resolved.push(r.clone());
+            warnings
+                .push(format!("角色「{r}」在角色名册中不存在（已按原样保留）：请先 create_character 建档，或修正引用"));
+        }
+    }
+    (resolved, warnings)
+}
+
 /// 章节收尾提示（写正文回执用）：scene/fragment 所属章节的全部场景
 /// 都已有正文片段、且章节脉络状态未到 completed 时，返回提示行。
 ///
