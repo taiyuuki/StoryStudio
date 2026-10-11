@@ -15,6 +15,7 @@ rmcp = { version = "3.5", features = ["server", "transport-io", "transport-strea
 axum = "0.8"
 tokio-util = "0.7"
 getrandom = "0.3"
+async-trait = "0.1"
 tracing.workspace = true
 
 [dev-dependencies]

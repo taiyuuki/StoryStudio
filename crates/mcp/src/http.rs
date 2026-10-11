@@ -8,11 +8,18 @@
 //! 应用重启都不轮换，外部客户端配置一次长期有效；
 //! 删除该文件或 CLI `--new-token` 可重置。
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
+use rmcp::model::{ClientCapabilities, Implementation, InitializeRequestParams, ProtocolVersion};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::session::store::{
+    SessionState, SessionStore, SessionStoreError,
+};
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use story_studio_lib::StudioError;
 use tokio_util::sync::CancellationToken;
@@ -31,6 +38,8 @@ pub struct HttpServerOptions {
     pub port: u16,
     /// 显式指定 Token（测试 / 特殊场景）；None 时读取或生成持久化 Token
     pub token: Option<String>,
+    /// 会话持久化文件路径；None 时读取默认的 ~/.story-studio/mcp-sessions.json
+    pub session_path: Option<PathBuf>,
 }
 
 impl Default for HttpServerOptions {
@@ -39,7 +48,92 @@ impl Default for HttpServerOptions {
             bind: IpAddr::from([127, 0, 0, 1]),
             port: crate::DEFAULT_HTTP_PORT,
             token: None,
+            session_path: None,
         }
+    }
+}
+
+/// 具备自动恢复与持久化能力的 SessionStore。
+///
+/// 外部 Agent 客户端（Antigravity、Claude Desktop、Cursor 等）在会话中
+/// 可能经历服务重启、热重载或切书重启。标准 LocalSessionManager 为纯内存存储，
+/// 服务重启后旧 session-id 丢失，客户端连独立 SSE 流会报 404 "Session not found" 并失效。
+///
+/// 本实现提供：
+/// 1. 活跃 Session 持久化到 `~/.story-studio/mcp-sessions.json`，重启自动加载；
+/// 2. 面对未知历史 Session-Id，自动生成兼容的 SessionState（默认 2025-11-25 协议版本）
+///    透明恢复会话，彻底避免 404 导致外部客户端崩溃。
+#[derive(Debug, Clone)]
+pub struct AutoRecoveringSessionStore {
+    cache: Arc<RwLock<HashMap<String, SessionState>>>,
+    persist_path: Option<PathBuf>,
+}
+
+impl AutoRecoveringSessionStore {
+    pub fn new(persist_path: Option<PathBuf>) -> Self {
+        let mut initial = HashMap::new();
+        if let Some(path) = &persist_path {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(map) = serde_json::from_str::<HashMap<String, SessionState>>(&content) {
+                    initial = map;
+                }
+            }
+        }
+        Self {
+            cache: Arc::new(RwLock::new(initial)),
+            persist_path,
+        }
+    }
+
+    fn persist_sync(&self, map: &HashMap<String, SessionState>) {
+        if let Some(path) = &self.persist_path {
+            if let Ok(json) = serde_json::to_string(map) {
+                let _ = std::fs::write(path, json);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                }
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionStore for AutoRecoveringSessionStore {
+    async fn load(&self, session_id: &str) -> Result<Option<SessionState>, SessionStoreError> {
+        let reader = self.cache.read().await;
+        if let Some(state) = reader.get(session_id) {
+            return Ok(Some(state.clone()));
+        }
+        drop(reader);
+
+        // 未知或重启前遗留的 session_id：自动构造兼容的握手状态透明恢复，
+        // 避免返回 404 导致客户端报 "Session not found" 并僵死。
+        let mut init_params = InitializeRequestParams::new(
+            ClientCapabilities::default(),
+            Implementation::new("recovered-client", "1.0"),
+        );
+        init_params.protocol_version = ProtocolVersion::V_2025_11_25;
+        let fallback = SessionState::new(init_params);
+        let mut writer = self.cache.write().await;
+        writer.insert(session_id.to_string(), fallback.clone());
+        self.persist_sync(&writer);
+        Ok(Some(fallback))
+    }
+
+    async fn store(&self, session_id: &str, state: &SessionState) -> Result<(), SessionStoreError> {
+        let mut writer = self.cache.write().await;
+        writer.insert(session_id.to_string(), state.clone());
+        self.persist_sync(&writer);
+        Ok(())
+    }
+
+    async fn delete(&self, session_id: &str) -> Result<(), SessionStoreError> {
+        let mut writer = self.cache.write().await;
+        writer.remove(session_id);
+        self.persist_sync(&writer);
+        Ok(())
     }
 }
 
@@ -130,6 +224,12 @@ pub fn start_server_http(
     let shutdown_for_graceful = shutdown.clone();
     let token_for_mw = token.clone();
     let options_for_thread = options.clone();
+    let session_path = match http.session_path.clone() {
+        Some(p) => Some(p),
+        None => persisted_sessions_path().ok(),
+    };
+    let session_store = std::sync::Arc::new(AutoRecoveringSessionStore::new(session_path));
+    let session_store_for_thread = session_store.clone();
 
     let join = std::thread::Builder::new()
         .name("story-mcp-http".into())
@@ -153,8 +253,9 @@ pub fn start_server_http(
                 };
                 // 默认配置：legacy session 模式 + 仅回环 Host 校验，
                 // 与本服务 ≤2025-11-25 的协议版本表一致
-                let config = StreamableHttpServerConfig::default()
+                let mut config = StreamableHttpServerConfig::default()
                     .with_cancellation_token(shutdown_for_config);
+                config.session_store = Some(session_store_for_thread);
                 let service = StreamableHttpService::new(
                     factory,
                     std::sync::Arc::new(LocalSessionManager::default()),
@@ -286,3 +387,14 @@ pub fn regenerate_token() -> Result<String, StudioError> {
     }
     Ok(token)
 }
+
+/// 持久化 Session 文件路径（~/.story-studio/mcp-sessions.json）
+fn persisted_sessions_path() -> Result<PathBuf, StudioError> {
+    let config = story_studio_lib::ai::global_config_path()?;
+    Ok(config
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("mcp-sessions.json"))
+}
+

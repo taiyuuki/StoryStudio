@@ -92,8 +92,9 @@ fn spawn_server(read_only: bool) -> (tempfile::TempDir, story_mcp::McpHttpHandle
         },
         HttpServerOptions {
             port: 0,
-            // 测试注入独立 Token，避免读写真实的 ~/.story-studio/mcp-token
+            // 测试注入独立 Token 与 Session 文件，避免读写真实的 ~/.story-studio/
             token: Some(format!("{:032x}", u64::from(!read_only))),
+            session_path: Some(tmp.path().join("mcp-sessions.json")),
             ..Default::default()
         },
     )
@@ -221,3 +222,29 @@ fn http_invalid_project_fails_fast() {
     );
     assert!(err.is_err(), "非项目目录应启动即失败");
 }
+
+#[test]
+fn http_stale_or_unknown_session_auto_recovers() {
+    let (_tmp, handle) = spawn_server(false);
+    let url = handle.url();
+    let token = handle.token().to_string();
+    let http = client();
+
+    // 客户端使用一个未曾 initialize 的未知 session-id（模拟客户端携带服务重启前遗留的 session）
+    let unknown_session_id = "00000000-0000-0000-0000-000000000001";
+    let (_, called) = rpc(
+        &http,
+        &url,
+        &token,
+        Some(unknown_session_id),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "get_project_stats", "arguments": {}}
+        }),
+    );
+    let result = &called["result"];
+    assert_eq!(result["isError"], serde_json::json!(false), "未知 session 调工具应自动恢复并成功");
+    assert!(!result["content"][0]["text"].as_str().unwrap().is_empty());
+    handle.stop();
+}
+
