@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
+    ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
@@ -145,6 +146,21 @@ impl ServerHandler for StoryMcpServer {
             .with_instructions(self.instructions.clone())
     }
 
+    /// 只协商到 ping 仍是标准请求的协议版本。
+    ///
+    /// 2026-07-28（无状态修订）移除了 ping 请求：协商到该版本的客户端
+    /// （如 ZCode）保活探测会报 "Method 'ping' is not supported by the
+    /// negotiated protocol version"，连接被反复判 stale 重连。本服务
+    /// 用不到该版本的特性，默认版本表里去掉它即可。
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(&[
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+        ])
+    }
+
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -219,4 +235,22 @@ fn build_instructions(dir: &Path, read_only: bool) -> String {
         );
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 协商版本表不得包含 2026-07-28（该版本移除 ping，客户端保活会失败）
+    #[test]
+    fn negotiated_versions_exclude_pingless_era() {
+        let versions = ServerHandler::supported_protocol_versions(&StoryMcpServer {
+            registry: Arc::new(ToolRegistry::new()),
+            tools: Vec::new(),
+            instructions: String::new(),
+            read_only: false,
+        });
+        assert!(!versions.contains(&ProtocolVersion::V_2026_07_28));
+        assert!(versions.contains(&ProtocolVersion::V_2025_11_25));
+    }
 }
