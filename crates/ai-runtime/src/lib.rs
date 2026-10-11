@@ -25,7 +25,7 @@ pub mod task;
 
 pub use agent::{
     Agent, AgentConfig, AgentState, AgentStep, AgentTrace, Scratchpad, SubTask, TaskPlan, Tool,
-    ToolRegistry,
+    ToolRegistry, clamp_tool_result,
 };
 pub use cancel::CancelToken;
 pub use context::ContextBuilder;

@@ -18,7 +18,7 @@ jobs:
         run: >
           cargo test -p story-ir -p story-project-format -p story-parser
           -p story-compiler -p story-knowledge -p story-exporter
-          -p story-ai-runtime -p story-studio-lib
+          -p story-ai-runtime -p story-studio-lib -p story-mcp
 
   frontend:
     name: 前端检查

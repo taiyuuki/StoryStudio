@@ -8,6 +8,7 @@ description = "Story Studio CLI — command line interface"
 
 [dependencies]
 story-studio-lib.workspace = true
+story-mcp.workspace = true
 story-compiler.workspace = true
 story-ai-runtime.workspace = true
 serde_json.workspace = true

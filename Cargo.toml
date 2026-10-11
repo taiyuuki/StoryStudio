@@ -9,6 +9,7 @@ members = [
     "crates/exporter",
     "crates/ai-runtime",
     "crates/studio-lib",
+    "crates/mcp",
     "crates/cli",
     "app/src-tauri",
 ]
@@ -60,3 +61,4 @@ story-knowledge = { path = "crates/knowledge" }
 story-exporter = { path = "crates/exporter" }
 story-ai-runtime = { path = "crates/ai-runtime" }
 story-studio-lib = { path = "crates/studio-lib" }
+story-mcp = { path = "crates/mcp" }

@@ -1262,7 +1262,9 @@ fn truncate_chars(s: &str, max_chars: usize) -> &str {
 /// 最后一道闸。
 const MAX_TOOL_RESULT_CHARS: usize = 20_000;
 
-fn clamp_tool_result(raw: &str) -> String {
+/// 工具结果输出闸：超出上限即截断并附引导文字。
+/// Agent 循环与 MCP 服务共用，保证两条调用路径的输出体积一致。
+pub fn clamp_tool_result(raw: &str) -> String {
     let total = raw.chars().count();
     if total <= MAX_TOOL_RESULT_CHARS {
         return raw.to_string();

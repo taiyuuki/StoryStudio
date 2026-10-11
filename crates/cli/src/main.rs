@@ -93,6 +93,15 @@ enum Commands {
         #[command(subcommand)]
         action: WorkflowCommands,
     },
+
+    /// 启动 MCP 服务器：把项目工具集暴露给外部 Agent（Claude / ZCode 等，stdio 传输）
+    Mcp {
+        #[arg(short, long, default_value = ".")]
+        dir: String,
+        /// 只读模式：只暴露查询类工具，不修改项目
+        #[arg(long)]
+        read_only: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -147,8 +156,17 @@ enum WorkflowCommands {
 }
 
 fn main() {
-    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
+
+    // MCP 的 stdio 传输占用 stdout 作为协议通道，日志必须走 stderr，
+    // 否则任何一条 tracing 输出都会破坏 JSON-RPC 帧
+    if matches!(cli.command, Commands::Mcp { .. }) {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt::init();
+    }
 
     let result = match cli.command {
         Commands::Init { name, location } => cmd_init(&name, &location),
@@ -228,6 +246,10 @@ fn main() {
                 cmd_workflow_action(&dir, story_studio_lib::WorkflowAction::Skip, None, None)
             }
         },
+        Commands::Mcp { dir, read_only } => story_mcp::run_server(story_mcp::McpServerOptions {
+            project_dir: PathBuf::from(dir),
+            read_only,
+        }),
     };
 
     if let Err(e) = result {
