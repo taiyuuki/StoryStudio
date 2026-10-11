@@ -167,6 +167,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(UpdateThreadTool::new(ctx.clone())));
     registry.register(Box::new(AdvanceThreadTool::new(ctx.clone())));
     registry.register(Box::new(SetThreadKnowledgeTool::new(ctx.clone())));
+    registry.register(Box::new(RemoveThreadKnowledgeTool::new(ctx.clone())));
     registry.register(Box::new(DeleteThreadTool::new(ctx.clone())));
     registry.register(Box::new(WriteFragmentTextTool::new(ctx.clone())));
     registry.register(Box::new(EditFragmentTextTool::new(ctx.clone())));

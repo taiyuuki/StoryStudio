@@ -1309,6 +1309,78 @@ impl Tool for SetThreadKnowledgeTool {
 }
 
 // ============================================================================
+// remove_thread_knowledge
+// ============================================================================
+
+pub struct RemoveThreadKnowledgeTool {
+    ctx: ToolContext,
+}
+impl RemoveThreadKnowledgeTool {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl Tool for RemoveThreadKnowledgeTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "remove_thread_knowledge".into(),
+            description: "删除线索可见性记录（录错时的撤销入口——set_thread_knowledge 只追加不覆盖）。\
+            删单条：传 thread_id + observer + scene_id（只移除该场景的那条时间线记录）；\
+            删整条观察者记录：省略 scene_id（该观察者对这条线索的全部认知记录移除）。\
+            逐条删除不影响其他观察者的时间线；线索本身的叙事状态（planted/revealed 等）不在此管理。"
+                .into(),
+            parameters: object_schema(vec![
+                ("thread_id", "string", "线索 ID（如 t_001）", true),
+                (
+                    "observer",
+                    "string",
+                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)",
+                    true,
+                ),
+                (
+                    "scene_id",
+                    "string",
+                    "可选：只删该场景的时间线记录；省略则删该观察者的整条认知记录",
+                    false,
+                ),
+            ]),
+        }
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let thread_id = get_str(arguments, "thread_id")?;
+        let observer = get_str(arguments, "observer")?;
+        let scene_id = get_str_opt(arguments, "scene_id");
+
+        let paths = self.ctx.paths();
+        let removed = crate::mutations::remove_thread_knowledge(
+            &paths,
+            &thread_id,
+            &observer,
+            scene_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        if removed {
+            Ok(match scene_id {
+                Some(scene) => format!(
+                    "已删除可见性记录：线索 {thread_id} — {observer} 在 {scene} 的时间线条目"
+                ),
+                None => format!("已删除观察者 {observer} 对线索 {thread_id} 的整条认知记录"),
+            })
+        } else {
+            Ok(format!(
+                "未找到匹配的可见性记录：线索 {thread_id} — {observer}{}（无改动）",
+                scene_id
+                    .map(|s| format!(" 在 {s}"))
+                    .unwrap_or_default()
+            ))
+        }
+    }
+}
+
+// ============================================================================
 // write_fragment_text
 // ============================================================================
 
@@ -4677,6 +4749,66 @@ race = "星辰精灵"
             std::fs::read_to_string(dir.join("knowledge/assertions.toml")).unwrap();
         assert_eq!(content.matches("id = ").count(), 3, "{content}");
         assert!(content.contains("superseded"), "{content}");
+    }
+
+    /// 录错认知记录后的撤销入口（set_thread_knowledge 只追加不覆盖，
+    /// 此前 MCP 侧无删除工具，录错只能靠后续场景硬盖）。
+    #[test]
+    fn remove_thread_knowledge_tool_deletes_records() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+
+        // 建线索 + 录两条 reader 时间线 + 一条角色认知
+        CreateThreadTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                "title": "旧案之谜", "description": "测试线索"
+            }))
+            .unwrap();
+        let set = SetThreadKnowledgeTool::new(ctx.clone());
+        set.execute(&serde_json::json!({
+            "thread_id": "t_001", "observer": "reader", "state": "suspected", "scene_id": "sc_01_01"
+        }))
+        .unwrap();
+        set.execute(&serde_json::json!({
+            "thread_id": "t_001", "observer": "reader", "state": "known", "scene_id": "sc_01_02"
+        }))
+        .unwrap();
+        set.execute(&serde_json::json!({
+            "thread_id": "t_001", "observer": "c_0001", "state": "known", "scene_id": "sc_01_02"
+        }))
+        .unwrap();
+
+        // 删单场景记录：只移除 reader 在 sc_01_01 的那条
+        let tool = RemoveThreadKnowledgeTool::new(ctx.clone());
+        let out = tool
+            .execute(&serde_json::json!({
+                "thread_id": "t_001", "observer": "reader", "scene_id": "sc_01_01"
+            }))
+            .unwrap();
+        assert!(out.contains("已删除"), "{out}");
+        let content = std::fs::read_to_string(dir.join("threads.toml")).unwrap();
+        assert!(!content.contains("sc_01_01"), "该场景记录应移除: {content}");
+        assert!(content.contains("sc_01_02"), "其他时间线记录保留: {content}");
+
+        // 删整条观察者记录
+        let out = tool
+            .execute(&serde_json::json!({
+                "thread_id": "t_001", "observer": "reader"
+            }))
+            .unwrap();
+        assert!(out.contains("整条认知记录"), "{out}");
+        let content = std::fs::read_to_string(dir.join("threads.toml")).unwrap();
+        assert!(!content.contains("reader"), "reader 记录应整体移除: {content}");
+        assert!(content.contains("c_0001"), "角色认知不受影响: {content}");
+
+        // 再删 → 未找到，无副作用
+        let out = tool
+            .execute(&serde_json::json!({
+                "thread_id": "t_001", "observer": "reader"
+            }))
+            .unwrap();
+        assert!(out.contains("未找到"), "{out}");
     }
 
 }
