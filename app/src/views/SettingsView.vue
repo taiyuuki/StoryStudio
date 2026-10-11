@@ -6,11 +6,14 @@ import {
   api,
   type AiConfigDto,
   type AiProfileDto,
+  type McpServerStatusDto,
   type ProfileTestRecordDto,
   type ProviderPresetDto,
 } from '@/api/backend'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 const router = useRouter()
+const workspace = useWorkspaceStore()
 
 // ── 配置状态 ────────────────────────────────────────────
 const config = ref<AiConfigDto>({ profiles: [], activeProfile: null, purposeProfiles: null, agentMaxToolTurns: null })
@@ -445,8 +448,110 @@ async function setAgentTurns(raw: string, target: HTMLInputElement) {
   await persist(`妙笔每轮上限已设为 ${n}`)
 }
 
+// ── MCP 服务（外部 Agent 接入）──────────────────────────
+const MCP_PORT_DEFAULT = 27520
+// localStorage 偏好键（workspace.ts 的 mcpFollowProject 读取同名键）
+const MCP_PREF = { enabled: 'mcp.autoStart', port: 'mcp.port', readOnly: 'mcp.readOnly' } as const
+
+const mcpStatus = ref<McpServerStatusDto | null>(null)
+const mcpPortInput = ref(MCP_PORT_DEFAULT)
+const mcpReadOnly = ref(false)
+const mcpBusy = ref(false)
+const mcpEnabled = computed(() => mcpStatus.value?.running ?? false)
+
+async function mcpRefresh() {
+  try {
+    mcpStatus.value = await api.mcpServerStatus()
+    if (mcpStatus.value.running) {
+      mcpPortInput.value = mcpStatus.value.port
+      mcpReadOnly.value = mcpStatus.value.readOnly
+    }
+  } catch {
+    // 状态查询失败不弹窗，卡片显示为未运行
+  }
+}
+
+function mcpSavePref() {
+  localStorage.setItem(MCP_PREF.enabled, mcpEnabled.value ? 'on' : 'off')
+  localStorage.setItem(MCP_PREF.port, String(mcpPortInput.value))
+  localStorage.setItem(MCP_PREF.readOnly, mcpReadOnly.value ? '1' : '0')
+}
+
+async function mcpToggle(on: boolean) {
+  if (!on) {
+    mcpBusy.value = true
+    try {
+      await api.mcpServerStop()
+      mcpSavePref()
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+    } finally {
+      mcpBusy.value = false
+    }
+    await mcpRefresh()
+    return
+  }
+  if (!workspace.root) {
+    ElMessage.warning('请先打开一个项目，再启动 MCP 服务')
+    await mcpRefresh()
+    return
+  }
+  mcpBusy.value = true
+  try {
+    mcpStatus.value = await api.mcpServerStart(workspace.root, mcpPortInput.value, mcpReadOnly.value)
+    mcpSavePref()
+    ElMessage.success(`MCP 服务已启动：${mcpStatus.value.url}`)
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    mcpBusy.value = false
+  }
+}
+
+/** 端口 / 只读变化时热重启（未运行则只记住偏好） */
+async function mcpApplySettings() {
+  mcpSavePref()
+  if (!mcpEnabled.value) return
+  const cur = mcpStatus.value
+  if (cur && cur.port === mcpPortInput.value && cur.readOnly === mcpReadOnly.value) return
+  mcpBusy.value = true
+  try {
+    mcpStatus.value = await api.mcpServerStart(workspace.root, mcpPortInput.value, mcpReadOnly.value)
+    ElMessage.success('MCP 服务已按新设置重启')
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    mcpBusy.value = false
+  }
+}
+
+/** 复制外部 Agent 的接入配置（ZCode mcp.servers 格式，URL + Token 已填好） */
+async function mcpCopyConfig() {
+  const st = mcpStatus.value
+  if (!st?.running) return
+  const text = JSON.stringify(
+    {
+      mcp: {
+        servers: {
+          'story-studio': {
+            type: 'http',
+            url: st.url,
+            headers: { Authorization: `Bearer ${st.token}` },
+            timeoutMs: 300000,
+          },
+        },
+      },
+    },
+    null,
+    2,
+  )
+  await navigator.clipboard.writeText(text)
+  ElMessage.success('接入配置已复制（含 URL 与 Token）')
+}
+
 // ── 页面加载 / 返回 ────────────────────────────────────
 onMounted(async () => {
+  void mcpRefresh()
   try {
     const [cfg, presetList] = await Promise.all([api.getAiConfig(), api.providerPresets()])
     presets.value = presetList
@@ -571,6 +676,68 @@ function goBack() {
             <p class="sv-purpose-sub">
               默认 40。通读全书、批量改稿等长任务可调高（上限 200）；越高越费
               token，中途纠偏也越难。改完对妙笔的下一轮对话生效。
+            </p>
+          </div>
+
+          <!-- MCP 服务：外部 Agent 接入 -->
+          <div class="fusion-card sv-mcp-card">
+            <div class="card-head">
+              <i class="fa-solid fa-plug" />
+              <span>MCP 服务</span>
+              <ElSwitch
+                class="sv-mcp-switch"
+                :model-value="mcpEnabled"
+                :loading="mcpBusy"
+                :disabled="!workspace.root && !mcpEnabled"
+                @update:model-value="mcpToggle($event as boolean)"
+              />
+            </div>
+            <p class="sv-purpose-sub">
+              把当前项目的创作工具集暴露给外部 Agent（ZCode / Claude 等）。
+              仅监听本机；服务跟随当前打开的项目自动切换，Token 持久化在
+              ~/.story-studio/mcp-token，换书、重启都不变——外部客户端配置一次长期有效。
+            </p>
+            <div class="sv-agent-row">
+              <div class="sv-purpose-meta">
+                <span class="sv-purpose-label">端口</span>
+                <span class="sv-purpose-hint">默认 {{ MCP_PORT_DEFAULT }}</span>
+              </div>
+              <input
+                class="num sv-agent-input"
+                type="number"
+                min="1"
+                max="65535"
+                step="1"
+                v-model.number="mcpPortInput"
+                @change="mcpApplySettings"
+              />
+            </div>
+            <div class="sv-agent-row">
+              <div class="sv-purpose-meta">
+                <span class="sv-purpose-label">只读模式</span>
+                <span class="sv-purpose-hint">仅暴露查询类工具，不改项目</span>
+              </div>
+              <ElSwitch
+                :model-value="mcpReadOnly"
+                @update:model-value="((mcpReadOnly = $event as boolean), mcpApplySettings())"
+              />
+            </div>
+            <template v-if="mcpEnabled && mcpStatus">
+              <div class="sv-mcp-status is-ok">
+                <i class="fa-solid fa-circle-check" />
+                <span>运行中 · {{ mcpStatus.toolCount }} 个工具</span>
+                <button class="ink-btn ink-btn--sm sv-mcp-copy" @click="mcpCopyConfig">
+                  <i class="fa-regular fa-copy" />
+                  复制接入配置
+                </button>
+              </div>
+              <button class="sv-mcp-url num" :title="`${mcpStatus.url}（点击复制接入配置）`" @click="mcpCopyConfig">
+                {{ mcpStatus.url }}
+              </button>
+            </template>
+            <p v-else-if="!workspace.root" class="sv-mcp-status is-off">
+              <i class="fa-regular fa-circle" />
+              <span>先打开一个项目，才能启动 MCP 服务</span>
             </p>
           </div>
         </aside>
@@ -901,6 +1068,7 @@ function goBack() {
 .sv-list-card,
 .sv-purpose-card,
 .sv-agent-card,
+.sv-mcp-card,
 .sv-editor {
   padding: 18px 20px;
 }
@@ -1456,6 +1624,54 @@ function goBack() {
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+.sv-mcp-card {
+  .sv-mcp-switch {
+    margin-left: auto;
+  }
+
+  .sv-mcp-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    font-size: 12.5px;
+
+    > i {
+      font-size: 13px;
+    }
+
+    &.is-ok > i {
+      color: var(--state-success);
+    }
+
+    &.is-off {
+      color: var(--text-muted, #8a8a8a);
+    }
+  }
+
+  .sv-mcp-copy {
+    margin-left: auto;
+  }
+
+  .sv-mcp-url {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--ui-border);
+    border-radius: 6px;
+    background: var(--input-bg);
+    color: var(--ink-main);
+    font-size: 12px;
+    text-align: left;
+    cursor: copy;
+
+    &:hover {
+      border-color: var(--ink-accent);
+    }
   }
 }
 </style>

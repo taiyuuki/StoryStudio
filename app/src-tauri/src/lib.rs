@@ -31,14 +31,8 @@ fn clamp_window_to_work_area(window: &tauri::WebviewWindow) {
     // 工作区是物理像素，窗口 API 用逻辑像素
     let scale = monitor.scale_factor();
     let wa = monitor.work_area();
-    let (wa_x, wa_y) = (
-        wa.position.x as f64 / scale,
-        wa.position.y as f64 / scale,
-    );
-    let (wa_w, wa_h) = (
-        wa.size.width as f64 / scale,
-        wa.size.height as f64 / scale,
-    );
+    let (wa_x, wa_y) = (wa.position.x as f64 / scale, wa.position.y as f64 / scale);
+    let (wa_w, wa_h) = (wa.size.width as f64 / scale, wa.size.height as f64 / scale);
 
     // 给窗口阴影与边线留一点呼吸；下限保证极端小屏（低于最小尺寸的
     // 工作区）仍能完整放下窗口，此时同步放宽最小尺寸约束
@@ -208,6 +202,10 @@ pub fn run() {
             commands::workflow_cancel,
             commands::workflow_status,
             commands::chapter_progress,
+            // MCP 服务（外部 Agent 接入）
+            commands::mcp_server_start,
+            commands::mcp_server_stop,
+            commands::mcp_server_status,
         ])
         .run(tauri::generate_context!())
         .expect("StoryStudio 启动失败");

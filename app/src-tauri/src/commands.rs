@@ -79,14 +79,14 @@ pub fn delete_chapter(root: String, chapter_id: String) -> R<()> {
 }
 
 #[tauri::command]
-pub fn create_scene(root: String, chapter_id: String, title: String, pov: Option<String>) -> R<SceneDetailDto> {
-    let id = mutations::create_scene(
-        &paths(&root),
-        &chapter_id,
-        title.trim(),
-        pov.as_deref(),
-    )
-    .map_err(e)?;
+pub fn create_scene(
+    root: String,
+    chapter_id: String,
+    title: String,
+    pov: Option<String>,
+) -> R<SceneDetailDto> {
+    let id = mutations::create_scene(&paths(&root), &chapter_id, title.trim(), pov.as_deref())
+        .map_err(e)?;
     get_scene(root, id)
 }
 
@@ -124,10 +124,9 @@ pub fn update_scene(root: String, scene_id: String, patch: ScenePatchDto) -> R<V
 #[tauri::command]
 pub fn get_scene(root: String, scene_id: String) -> R<SceneDetailDto> {
     let p = paths(&root);
-    let structure = story_project_format::StructureFile::from_toml_str(
-        &read_file(&p.structure_toml())?,
-    )
-    .map_err(|err| format!("structure.toml 解析失败: {err}"))?;
+    let structure =
+        story_project_format::StructureFile::from_toml_str(&read_file(&p.structure_toml())?)
+            .map_err(|err| format!("structure.toml 解析失败: {err}"))?;
 
     let (chapter_id, chapter_title, scene_def) = structure
         .chapter
@@ -166,10 +165,9 @@ pub fn get_scene(root: String, scene_id: String) -> R<SceneDetailDto> {
 #[tauri::command]
 pub fn read_chapter(root: String, chapter_id: String) -> R<ChapterReadDto> {
     let p = paths(&root);
-    let structure = story_project_format::StructureFile::from_toml_str(
-        &read_file(&p.structure_toml())?,
-    )
-    .map_err(|err| format!("structure.toml 解析失败: {err}"))?;
+    let structure =
+        story_project_format::StructureFile::from_toml_str(&read_file(&p.structure_toml())?)
+            .map_err(|err| format!("structure.toml 解析失败: {err}"))?;
 
     let ch = structure
         .chapter
@@ -179,7 +177,9 @@ pub fn read_chapter(root: String, chapter_id: String) -> R<ChapterReadDto> {
     let mut scenes = Vec::new();
     let mut word_count = 0u64;
     for sc_id in &ch.scenes {
-        let Some(sc) = structure.scene.get(sc_id) else { continue };
+        let Some(sc) = structure.scene.get(sc_id) else {
+            continue;
+        };
         let mut texts: Vec<String> = Vec::new();
         let mut scene_words = 0u64;
         for fid in &sc.fragments {
@@ -207,17 +207,21 @@ pub fn read_chapter(root: String, chapter_id: String) -> R<ChapterReadDto> {
 
 /// 在指定片段后插入新片段（场景末尾追加时 after_id 为 None）
 #[tauri::command]
-pub fn insert_fragment(root: String, scene_id: String, after_id: Option<String>, text: String) -> R<FragmentDto> {
+pub fn insert_fragment(
+    root: String,
+    scene_id: String,
+    after_id: Option<String>,
+    text: String,
+) -> R<FragmentDto> {
     let p = paths(&root);
     let new_id = mutations::create_fragment(&p, &scene_id, &text).map_err(e)?;
 
     // create_fragment 追加到末尾；若指定了 after_id 则移动到其后
     if let Some(after) = after_id {
         // 计算 after 在移除 new_id 后的目标位置
-        let structure = story_project_format::StructureFile::from_toml_str(
-            &read_file(&p.structure_toml())?,
-        )
-        .map_err(|err| format!("structure.toml 解析失败: {err}"))?;
+        let structure =
+            story_project_format::StructureFile::from_toml_str(&read_file(&p.structure_toml())?)
+                .map_err(|err| format!("structure.toml 解析失败: {err}"))?;
         let scene = structure
             .scene
             .get(&scene_id)
@@ -248,7 +252,12 @@ pub fn delete_fragment(root: String, scene_id: String, fragment_id: String) -> R
 }
 
 #[tauri::command]
-pub fn move_fragment(root: String, scene_id: String, fragment_id: String, new_index: usize) -> R<()> {
+pub fn move_fragment(
+    root: String,
+    scene_id: String,
+    fragment_id: String,
+    new_index: usize,
+) -> R<()> {
     mutations::move_fragment(&paths(&root), &scene_id, &fragment_id, new_index).map_err(e)
 }
 
@@ -287,7 +296,10 @@ pub fn remove_fragment_anchor(
 
 /// 列出片段的本地版本（节流快照，存 .novelstudio/history/）
 #[tauri::command]
-pub fn fragment_versions(root: String, fragment_id: String) -> R<Vec<lib::history::FragmentVersion>> {
+pub fn fragment_versions(
+    root: String,
+    fragment_id: String,
+) -> R<Vec<lib::history::FragmentVersion>> {
     lib::history::list_versions(&paths(&root), &fragment_id).map_err(e)
 }
 
@@ -299,7 +311,11 @@ pub fn fragment_version_read(root: String, fragment_id: String, timestamp: u64) 
 
 /// 恢复指定版本（恢复前自动快照当前内容，恢复动作本身可撤销）
 #[tauri::command]
-pub fn fragment_restore_version(root: String, fragment_id: String, timestamp: u64) -> R<FragmentDto> {
+pub fn fragment_restore_version(
+    root: String,
+    fragment_id: String,
+    timestamp: u64,
+) -> R<FragmentDto> {
     let p = paths(&root);
     lib::history::restore_version(&p, &fragment_id, timestamp).map_err(e)?;
     let ff = load_fragment_file(std::path::Path::new(&root), &fragment_id)?;
@@ -345,7 +361,10 @@ pub fn stats_sync_clock(root: String, tz_offset_min: i32) -> R<()> {
 
 #[tauri::command]
 pub fn ai_ledger_summary(root: String) -> R<lib::ai_ledger::AiLedgerSummary> {
-    Ok(lib::ai_ledger::summary(Path::new(&root), lib::ai_ledger::MAX_ENTRIES))
+    Ok(lib::ai_ledger::summary(
+        Path::new(&root),
+        lib::ai_ledger::MAX_ENTRIES,
+    ))
 }
 
 // ============================================================================
@@ -431,8 +450,8 @@ pub fn update_relation(
 
 #[tauri::command]
 pub fn merge_entities(root: String, from_entity_id: String, into_entity_id: String) -> R<String> {
-    let report = mutations::merge_entities(&paths(&root), &from_entity_id, &into_entity_id)
-        .map_err(e)?;
+    let report =
+        mutations::merge_entities(&paths(&root), &from_entity_id, &into_entity_id).map_err(e)?;
     Ok(report.summary(&from_entity_id, &into_entity_id))
 }
 
@@ -461,10 +480,7 @@ pub fn resolve_unresolved(
 
 /// 批量忽略未锚定指代（一次性背景人物等低价值代称）
 #[tauri::command]
-pub fn ignore_unresolved_refs(
-    root: String,
-    refs: Vec<(String, String)>,
-) -> R<String> {
+pub fn ignore_unresolved_refs(root: String, refs: Vec<(String, String)>) -> R<String> {
     mutations::resolve_unresolved_refs(&paths(&root), &refs, "ignore", None, None, None, None)
         .map_err(e)
 }
@@ -573,7 +589,8 @@ pub fn advance_thread(
     status: String,
     scene_id: Option<String>,
 ) -> R<ThreadDto> {
-    mutations::advance_thread(&paths(&root), &thread_id, &status, scene_id.as_deref()).map_err(e)?;
+    mutations::advance_thread(&paths(&root), &thread_id, &status, scene_id.as_deref())
+        .map_err(e)?;
     load_thread(&root, &thread_id)
 }
 
@@ -652,7 +669,9 @@ pub fn save_worldview(root: String, worldview: WorldviewDto) -> R<()> {
 /// 读取书籍信息（手动项目无 outline.toml 时返回空值）
 #[tauri::command]
 pub fn get_book_meta(root: String) -> R<BookMetaDto> {
-    lib::get_book_meta(Path::new(&root)).map(BookMetaDto::from).map_err(e)
+    lib::get_book_meta(Path::new(&root))
+        .map(BookMetaDto::from)
+        .map_err(e)
 }
 
 /// 保存书籍信息（仅替换表单字段，title/setting/time_span 与其它段保留）
@@ -832,8 +851,13 @@ pub fn ai_list_models(
     api_url_full: Option<bool>,
     api_key: Option<String>,
 ) -> R<Vec<String>> {
-    lib::list_models(&provider, api_url.as_deref(), api_url_full.unwrap_or(false), api_key.as_deref())
-        .map_err(e)
+    lib::list_models(
+        &provider,
+        api_url.as_deref(),
+        api_url_full.unwrap_or(false),
+        api_key.as_deref(),
+    )
+    .map_err(e)
 }
 
 #[derive(serde::Serialize)]
@@ -1050,8 +1074,7 @@ pub async fn ai_check(root: String, scope: String, id: String) -> R<AiCheckResul
     let task = tauri::async_runtime::spawn_blocking(move || {
         let provider = active_provider(lib::purpose::CHECK)?;
 
-        let map_items = |items: &[lib::AiCheckItem],
-                         fallback_fid: Option<&str>| {
+        let map_items = |items: &[lib::AiCheckItem], fallback_fid: Option<&str>| {
             items
                 .iter()
                 .map(|it| AiCheckItemDto {
@@ -1060,7 +1083,10 @@ pub async fn ai_check(root: String, scope: String, id: String) -> R<AiCheckResul
                     feature_name: it.feature_name.clone(),
                     severity: format!("{:?}", it.severity),
                     explanation: it.explanation.clone(),
-                    fragment_id: it.fragment_id.clone().or_else(|| fallback_fid.map(str::to_string)),
+                    fragment_id: it
+                        .fragment_id
+                        .clone()
+                        .or_else(|| fallback_fid.map(str::to_string)),
                     fragment_uncertain: it.fragment_uncertain,
                 })
                 .collect()
@@ -1168,7 +1194,9 @@ pub fn git_init(root: String) -> R<lib::GitStatusDto> {
 /// 存档当前状态（无变更自动跳过）
 #[tauri::command]
 pub fn git_commit(root: String, message: Option<String>) -> R<lib::GitCommitResult> {
-    let msg = message.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| "手动存档".to_string());
+    let msg = message
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| "手动存档".to_string());
     lib::git_commit(Path::new(&root), &msg).map_err(e)
 }
 
@@ -1186,7 +1214,11 @@ pub fn git_restore(root: String, commit_id: String) -> R<lib::GitCommitResult> {
 
 /// 文件级改动统计：from → to（to 省略为工作区）
 #[tauri::command]
-pub fn git_diff_summary(root: String, from: String, to: Option<String>) -> R<Vec<lib::GitDiffFileDto>> {
+pub fn git_diff_summary(
+    root: String,
+    from: String,
+    to: Option<String>,
+) -> R<Vec<lib::GitDiffFileDto>> {
     lib::git_diff_summary(Path::new(&root), &from, to.as_deref()).map_err(e)
 }
 
@@ -1233,9 +1265,20 @@ impl From<&story_ai_runtime::AgentStep> for AgentEventDto {
             extra: None,
         };
         match step {
-            S::UserMessage { content } => AgentEventDto { kind: "user".into(), text: content.clone(), ..base() },
-            S::AiText { content } => AgentEventDto { kind: "ai".into(), text: content.clone(), ..base() },
-            S::ToolCall { tool_name, arguments } => AgentEventDto {
+            S::UserMessage { content } => AgentEventDto {
+                kind: "user".into(),
+                text: content.clone(),
+                ..base()
+            },
+            S::AiText { content } => AgentEventDto {
+                kind: "ai".into(),
+                text: content.clone(),
+                ..base()
+            },
+            S::ToolCall {
+                tool_name,
+                arguments,
+            } => AgentEventDto {
                 kind: "toolCall".into(),
                 tool: Some(tool_name.clone()),
                 detail: Some(arguments.to_string()),
@@ -1247,33 +1290,56 @@ impl From<&story_ai_runtime::AgentStep> for AgentEventDto {
                 detail: Some(content.clone()),
                 ..base()
             },
-            S::Error { message } => AgentEventDto { kind: "error".into(), text: message.clone(), ..base() },
+            S::Error { message } => AgentEventDto {
+                kind: "error".into(),
+                text: message.clone(),
+                ..base()
+            },
             S::Planning { plan } => AgentEventDto {
                 kind: "plan".into(),
                 extra: serde_json::to_value(plan).ok(),
                 ..base()
             },
-            S::PlanProgress { subtask_index, total, description } => AgentEventDto {
+            S::PlanProgress {
+                subtask_index,
+                total,
+                description,
+            } => AgentEventDto {
                 kind: "planProgress".into(),
                 text: description.clone(),
                 extra: Some(serde_json::json!({ "current": subtask_index + 1, "total": total })),
                 ..base()
             },
-            S::Reasoning { thought } => AgentEventDto { kind: "reasoning".into(), text: thought.clone(), ..base() },
-            S::ContextCompacted { summary, tokens_saved } => AgentEventDto {
+            S::Reasoning { thought } => AgentEventDto {
+                kind: "reasoning".into(),
+                text: thought.clone(),
+                ..base()
+            },
+            S::ContextCompacted {
+                summary,
+                tokens_saved,
+            } => AgentEventDto {
                 kind: "compacted".into(),
                 text: summary.clone(),
                 extra: Some(serde_json::json!({ "tokensSaved": tokens_saved })),
                 ..base()
             },
-            S::AskUser { prompt_id, question, options } => AgentEventDto {
+            S::AskUser {
+                prompt_id,
+                question,
+                options,
+            } => AgentEventDto {
                 kind: "ask".into(),
                 text: question.clone(),
                 options: options.clone(),
                 prompt_id: Some(prompt_id.clone()),
                 ..base()
             },
-            S::Retrying { attempt, max_retries, reason } => AgentEventDto {
+            S::Retrying {
+                attempt,
+                max_retries,
+                reason,
+            } => AgentEventDto {
                 kind: "retrying".into(),
                 text: reason.clone(),
                 extra: Some(serde_json::json!({ "attempt": attempt, "max": max_retries })),
@@ -1307,14 +1373,9 @@ pub async fn agent_chat(
             std::sync::Arc::new(move |step: story_ai_runtime::AgentStep| {
                 let _ = on_event.send(AgentEventDto::from(&step));
             });
-        let trace = lib::agent_chat_streaming(
-            Path::new(&root),
-            &session_id,
-            provider,
-            &message,
-            on_step,
-        )
-        .map_err(e)?;
+        let trace =
+            lib::agent_chat_streaming(Path::new(&root), &session_id, provider, &message, on_step)
+                .map_err(e)?;
         Ok(AgentTraceDto {
             total_tokens: trace.total_tokens,
             tool_call_count: trace.tool_call_count,
@@ -1428,9 +1489,7 @@ pub fn chat_delete(root: String, id: String) -> R<()> {
 
 /// 第 1 步：生成构思候选（3 个方向，纯 LLM 无落盘）
 #[tauri::command]
-pub async fn ai_book_concepts(
-    options: lib::BookCreationOptions,
-) -> R<Vec<lib::BookConcept>> {
+pub async fn ai_book_concepts(options: lib::BookCreationOptions) -> R<Vec<lib::BookConcept>> {
     let task = tauri::async_runtime::spawn_blocking(move || {
         let provider = active_provider(lib::purpose::DESIGN)?;
         lib::ai_book_concepts(&options, provider).map_err(e)
@@ -1469,14 +1528,10 @@ pub fn save_book_world(root: String, draft: lib::WorldDraft) -> R<lib::WorldSave
 
 /// 第 4 步 / 续排：生成下一批章节脉络草稿（含已完成章节上下文）
 #[tauri::command]
-pub async fn ai_book_outline_batch(
-    root: String,
-    count: u32,
-) -> R<lib::OutlineBatchDraft> {
+pub async fn ai_book_outline_batch(root: String, count: u32) -> R<lib::OutlineBatchDraft> {
     let task = tauri::async_runtime::spawn_blocking(move || {
         let provider = active_provider(lib::purpose::DESIGN)?;
-        lib::ai_book_outline_batch(Path::new(&root), count, provider)
-            .map_err(e)
+        lib::ai_book_outline_batch(Path::new(&root), count, provider).map_err(e)
     });
     one_call_timeout(task).await
 }
@@ -1499,7 +1554,10 @@ async fn one_call_timeout<T>(
 ) -> Result<T, String> {
     match tokio::time::timeout(std::time::Duration::from_secs(300), task).await {
         Ok(res) => res.map_err(|err| format!("任务执行失败: {err}"))?,
-        Err(_) => Err("这一步等得太久了，已停止等待。可以重试，或在设置里给「AI 建书」换一个更快的档案".to_string()),
+        Err(_) => Err(
+            "这一步等得太久了，已停止等待。可以重试，或在设置里给「AI 建书」换一个更快的档案"
+                .to_string(),
+        ),
     }
 }
 
@@ -1606,7 +1664,11 @@ impl From<&lib::WorkflowEvent> for WorkflowEventDto {
                 dto.kind = "chapterCompleted".into();
                 dto.index = Some(*index);
             }
-            E::Paused { index, title, issues } => {
+            E::Paused {
+                index,
+                title,
+                issues,
+            } => {
                 dto.kind = "paused".into();
                 dto.index = Some(*index);
                 dto.title = Some(title.clone());
@@ -1751,17 +1813,112 @@ pub fn workflow_status(root: String) -> R<WorkflowStateDto> {
 /// 章节进度列表（来自章节脉络）
 #[tauri::command]
 pub fn chapter_progress(root: String) -> R<Vec<ChapterProgressDto>> {
-    lib::chapter_progress(Path::new(&root))
-        .map_err(e)
-        .map(|v| {
-            v.into_iter()
-                .map(|c| ChapterProgressDto {
-                    index: c.index,
-                    title: c.title,
-                    status: c.status,
-                })
-                .collect()
-        })
+    lib::chapter_progress(Path::new(&root)).map_err(e).map(|v| {
+        v.into_iter()
+            .map(|c| ChapterProgressDto {
+                index: c.index,
+                title: c.title,
+                status: c.status,
+            })
+            .collect()
+    })
+}
+
+// ============================================================================
+// MCP 服务（外部 Agent 接入）— Streamable HTTP 传输
+// ============================================================================
+
+/// 进程内至多一个 MCP HTTP 服务实例
+static MCP_HTTP_SLOT: std::sync::OnceLock<std::sync::Mutex<Option<story_mcp::McpHttpHandle>>> =
+    std::sync::OnceLock::new();
+
+fn mcp_slot() -> &'static std::sync::Mutex<Option<story_mcp::McpHttpHandle>> {
+    MCP_HTTP_SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatusDto {
+    pub running: bool,
+    pub url: String,
+    pub port: u16,
+    /// 本次启动随机生成的 Bearer Token（外部客户端接入凭据）
+    pub token: String,
+    pub read_only: bool,
+    pub project_dir: String,
+    pub tool_count: usize,
+}
+
+fn mcp_status_from(handle: Option<&story_mcp::McpHttpHandle>) -> McpServerStatusDto {
+    match handle {
+        Some(h) => McpServerStatusDto {
+            running: true,
+            url: h.url(),
+            port: h.port(),
+            token: h.token().to_string(),
+            read_only: h.read_only(),
+            project_dir: h.project_dir().display().to_string(),
+            tool_count: h.tool_count(),
+        },
+        None => McpServerStatusDto {
+            running: false,
+            url: String::new(),
+            port: 0,
+            token: String::new(),
+            read_only: false,
+            project_dir: String::new(),
+            tool_count: 0,
+        },
+    }
+}
+
+/// 启动 MCP HTTP 服务。
+///
+/// 幂等：项目与参数一致时直接返回现状；项目或参数变化时自动重启
+/// （切换项目后由前端重新调用，工具注册表随之指向新书）。
+#[tauri::command]
+pub fn mcp_server_start(root: String, port: u16, read_only: bool) -> R<McpServerStatusDto> {
+    let root_path = std::path::PathBuf::from(&root);
+    let mut slot = mcp_slot().lock().unwrap();
+    if let Some(h) = slot.as_ref() {
+        if h.project_dir() == &root_path && h.port() == port && h.read_only() == read_only {
+            return Ok(mcp_status_from(slot.as_ref()));
+        }
+        if let Some(old) = slot.take() {
+            old.stop();
+        }
+    }
+    let handle = story_mcp::start_server_http(
+        story_mcp::McpServerOptions {
+            project_dir: root_path,
+            read_only,
+        },
+        story_mcp::HttpServerOptions {
+            port,
+            ..Default::default()
+        },
+    )
+    .map_err(e)?;
+    let dto = mcp_status_from(Some(&handle));
+    *slot = Some(handle);
+    Ok(dto)
+}
+
+/// 停止 MCP HTTP 服务（未运行时为空操作）
+#[tauri::command]
+pub fn mcp_server_stop() -> R<()> {
+    let mut slot = mcp_slot().lock().unwrap();
+    if let Some(old) = slot.take() {
+        old.stop();
+    }
+    Ok(())
+}
+
+/// 查询 MCP HTTP 服务状态
+#[tauri::command]
+pub fn mcp_server_status() -> R<McpServerStatusDto> {
+    let slot = mcp_slot().lock().unwrap();
+    Ok(mcp_status_from(slot.as_ref()))
 }
 
 // ============================================================================

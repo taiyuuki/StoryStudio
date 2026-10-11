@@ -94,13 +94,25 @@ enum Commands {
         action: WorkflowCommands,
     },
 
-    /// 启动 MCP 服务器：把项目工具集暴露给外部 Agent（Claude / ZCode 等，stdio 传输）
+    /// 启动 MCP 服务器：把项目工具集暴露给外部 Agent（stdio 或 HTTP 传输）
     Mcp {
         #[arg(short, long, default_value = ".")]
         dir: String,
         /// 只读模式：只暴露查询类工具，不修改项目
         #[arg(long)]
         read_only: bool,
+        /// 传输方式：stdio（由客户端拉起）或 http（本方常驻监听）
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+        /// HTTP 监听端口（仅 --transport http 时生效）
+        #[arg(long, default_value_t = story_mcp::DEFAULT_HTTP_PORT)]
+        port: u16,
+        /// HTTP 监听地址（仅 --transport http 时生效，默认仅本机回环）
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// 重置持久化 Token（仅 --transport http：生成新值写入 ~/.story-studio/mcp-token）
+        #[arg(long)]
+        new_token: bool,
     },
 }
 
@@ -246,15 +258,74 @@ fn main() {
                 cmd_workflow_action(&dir, story_studio_lib::WorkflowAction::Skip, None, None)
             }
         },
-        Commands::Mcp { dir, read_only } => story_mcp::run_server(story_mcp::McpServerOptions {
-            project_dir: PathBuf::from(dir),
+        Commands::Mcp {
+            dir,
             read_only,
-        }),
+            transport,
+            port,
+            bind,
+            new_token,
+        } => cmd_mcp(&dir, read_only, &transport, port, &bind, new_token),
     };
 
     if let Err(e) = result {
         eprintln!("✗ {e}");
         std::process::exit(1);
+    }
+}
+
+// ============================================================================
+// mcp — MCP 服务器
+// ============================================================================
+
+fn cmd_mcp(
+    dir: &str,
+    read_only: bool,
+    transport: &str,
+    port: u16,
+    bind: &str,
+    new_token: bool,
+) -> Result<(), StudioError> {
+    let options = story_mcp::McpServerOptions {
+        project_dir: PathBuf::from(dir),
+        read_only,
+    };
+    match transport {
+        "stdio" => story_mcp::run_server(options),
+        "http" => {
+            let bind_addr: std::net::IpAddr = bind
+                .parse()
+                .map_err(|e| StudioError::Config(format!("无效的监听地址 {bind:?}：{e}")))?;
+            if new_token {
+                let token = story_mcp::regenerate_token()?;
+                println!("已重置 Token：{token}");
+            }
+            let handle = story_mcp::start_server_http(
+                options,
+                story_mcp::HttpServerOptions {
+                    bind: bind_addr,
+                    port,
+                    token: None,
+                },
+            )?;
+            println!("MCP HTTP 服务已启动：{}", handle.url());
+            println!(
+                "  Token：{}（持久化于 ~/.story-studio/mcp-token，重启不轮换；接入需携带 Authorization: Bearer <token>）",
+                handle.token()
+            );
+            println!(
+                "  工具数：{}（只读模式：{}）",
+                handle.tool_count(),
+                read_only
+            );
+            println!("  Ctrl-C 退出。");
+            // 阻塞直到服务线程结束（Ctrl-C 直接结束进程，无需信号处理）
+            handle.wait();
+            Ok(())
+        }
+        other => Err(StudioError::Config(format!(
+            "不支持的传输方式：{other}（支持: stdio, http）"
+        ))),
     }
 }
 
@@ -298,7 +369,10 @@ fn cmd_init(name: &str, location: &str) -> Result<(), StudioError> {
 
 fn cmd_repair(dir: &str) -> Result<(), StudioError> {
     let report = story_studio_lib::repair_project(std::path::Path::new(dir))?;
-    if report.fragments_cleaned.is_empty() && report.assertions_fixed == 0 && report.evidence_skipped == 0 {
+    if report.fragments_cleaned.is_empty()
+        && report.assertions_fixed == 0
+        && report.evidence_skipped == 0
+    {
         println!("数据一致，无需修复。");
         return Ok(());
     }

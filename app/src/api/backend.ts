@@ -469,6 +469,19 @@ export interface AiConfigDto {
   agentMaxToolTurns: number | null
 }
 
+/** MCP HTTP 服务状态（外部 Agent 接入） */
+export interface McpServerStatusDto {
+  running: boolean
+  /** 接入 URL（未运行时为空串） */
+  url: string
+  port: number
+  /** 本次启动随机生成的 Bearer Token */
+  token: string
+  readOnly: boolean
+  projectDir: string
+  toolCount: number
+}
+
 export interface ExportOutputDto {
   content: string
   filename: string
@@ -1409,5 +1422,17 @@ export const api = {
   },
   chapterProgress(root: string) {
     return call<ChapterProgressDto[]>('chapter_progress', { root })
+  },
+
+  // ── MCP 服务（外部 Agent 接入）─────────────────────────
+  /** 启动 MCP HTTP 服务（幂等；项目/参数变化时后端自动重启） */
+  mcpServerStart(root: string, port: number, readOnly: boolean) {
+    return call<McpServerStatusDto>('mcp_server_start', { root, port, readOnly })
+  },
+  mcpServerStop() {
+    return call<void>('mcp_server_stop')
+  },
+  mcpServerStatus() {
+    return call<McpServerStatusDto>('mcp_server_status')
   },
 }

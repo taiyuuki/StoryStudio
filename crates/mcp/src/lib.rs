@@ -5,16 +5,27 @@
 //! 小说项目。工具实现、增量解析缓存、AI 档案配置全部与桌面端共用
 //! 同一条代码路径。
 //!
-//! 传输：stdio（stdout 是协议通道，所有日志必须走 stderr）。
-//! 入口：CLI 子命令 `story-studio mcp -d <项目目录> [--read-only]`。
+//! 传输：stdio（stdout 是协议通道，所有日志必须走 stderr）
+//! 或 Streamable HTTP（桌面应用内嵌 / 无头常驻，URL + Bearer Token 接入）。
+//! 入口：CLI 子命令 `story-studio mcp -d <项目目录> [--read-only]
+//! [--transport stdio|http] [--port N]`。
 
 mod server;
+
+pub mod http;
 
 use std::path::PathBuf;
 
 use story_studio_lib::StudioError;
 
+pub use http::{
+    load_or_create_token, load_or_create_token_at, regenerate_token, start_server_http,
+    HttpServerOptions, McpHttpHandle,
+};
 pub use server::{build_tool_descriptors, is_exposed, READ_ONLY_TOOLS};
+
+/// HTTP 传输的默认端口
+pub const DEFAULT_HTTP_PORT: u16 = 27520;
 
 /// MCP 服务器启动选项
 #[derive(Debug, Clone)]

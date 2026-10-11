@@ -26,3 +26,4 @@ story-project-format = { workspace = true }
 story-studio-lib = { workspace = true }
 story-compiler = { workspace = true }
 story-ai-runtime = { workspace = true }
+story-mcp = { workspace = true }

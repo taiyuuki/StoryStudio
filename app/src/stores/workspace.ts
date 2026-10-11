@@ -79,12 +79,33 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (target) await selectScene(target)
       void runCompile()
       void refreshStats()
+      // MCP 服务跟随项目（工具注册表绑定项目目录）：已运行则重启指向新书，
+      // 未运行但偏好开启则随项目自动启动；失败静默，不阻塞项目打开
+      void mcpFollowProject(data.root)
       return true
     } catch (err) {
       ElMessage.error((err as Error).message)
       return false
     } finally {
       loading.value = false
+    }
+  }
+
+  // MCP 偏好键（设置页写入，与 SettingsView 保持一致）
+  const MCP_PREF = { enabled: 'mcp.autoStart', port: 'mcp.port', readOnly: 'mcp.readOnly' } as const
+
+  async function mcpFollowProject(newRoot: string): Promise<void> {
+    try {
+      const st = await api.mcpServerStatus()
+      if (st.running) {
+        await api.mcpServerStart(newRoot, st.port, st.readOnly)
+      } else if (localStorage.getItem(MCP_PREF.enabled) === 'on') {
+        const port = Number(localStorage.getItem(MCP_PREF.port) ?? 27520)
+        const readOnly = localStorage.getItem(MCP_PREF.readOnly) === '1'
+        await api.mcpServerStart(newRoot, port, readOnly)
+      }
+    } catch {
+      // MCP 服务不阻塞项目打开
     }
   }
 

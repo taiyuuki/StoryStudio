@@ -134,6 +134,11 @@ impl StoryMcpServer {
             read_only: options.read_only,
         })
     }
+
+    /// 暴露的工具数（HTTP 句柄 / Tauri 状态用）
+    pub(crate) fn tool_count(&self) -> usize {
+        self.tools.len()
+    }
 }
 
 impl ServerHandler for StoryMcpServer {
