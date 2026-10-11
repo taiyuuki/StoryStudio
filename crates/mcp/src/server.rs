@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-    ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
+    Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+    ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
@@ -97,8 +97,9 @@ fn mcp_tool_from_def(def: ToolDef) -> Tool {
 enum CallFailure {
     /// 工具执行失败 — 以 isError 结果返回，让调用方模型看到并自行纠偏
     ToolError(String),
-    /// 协议层参数错误 — 以 JSON-RPC error 返回
-    InvalidParams(String),
+    /// 工具不可调用（未知 / 隐藏 / 只读模式下被拒）— 以 JSON-RPC -32601
+    /// 返回：语义是"该方法在此服务上不可用"，而非参数无效（-32602）
+    MethodNotFound(String),
 }
 
 /// 工具执行闸门：读共享、写排他（进程级全局——HTTP 模式每会话一个
@@ -131,13 +132,13 @@ fn execute_gated(
     gate: Option<&Path>,
 ) -> Result<String, CallFailure> {
     if HIDDEN_TOOLS.contains(&name) {
-        return Err(CallFailure::InvalidParams(format!(
+        return Err(CallFailure::MethodNotFound(format!(
             "工具 {name} 在 MCP 服务中不可用（依赖桌面端交互）"
         )));
     }
     // 只读模式在调用层复核：即使客户端绕过 tools/list 直接调用
     if read_only && !READ_ONLY_TOOLS.contains(&name) {
-        return Err(CallFailure::InvalidParams(format!(
+        return Err(CallFailure::MethodNotFound(format!(
             "服务器以 --read-only 模式启动，{name} 会修改项目，不可用"
         )));
     }
@@ -175,7 +176,7 @@ fn execute_gated(
     match registry.execute(name, arguments) {
         Some(Ok(text)) => Ok(clamp_tool_result(&text)),
         Some(Err(e)) => Err(CallFailure::ToolError(e)),
-        None => Err(CallFailure::InvalidParams(format!("未知工具：{name}"))),
+        None => Err(CallFailure::MethodNotFound(format!("未知工具：{name}"))),
     }
 }
 
@@ -288,7 +289,9 @@ impl ServerHandler for StoryMcpServer {
             Err(CallFailure::ToolError(e)) => {
                 Ok(CallToolResult::error(vec![ContentBlock::text(e)]).into())
             }
-            Err(CallFailure::InvalidParams(msg)) => Err(McpError::invalid_params(msg, None)),
+            Err(CallFailure::MethodNotFound(msg)) => {
+                Err(McpError::new(ErrorCode::METHOD_NOT_FOUND, msg, None))
+            }
         }
     }
 }
@@ -436,7 +439,7 @@ mod tests {
             Some(&gate),
         )
         .unwrap_err();
-        assert!(matches!(err, CallFailure::InvalidParams(_)));
+        assert!(matches!(err, CallFailure::MethodNotFound(_)));
     }
 
     /// 跨进程项目锁语义：锁属 open file description——同进程两次独立
