@@ -903,6 +903,8 @@ pub struct MergeReport {
     pub self_loops_removed: usize,
     /// 重定向的断言 subject 数
     pub assertions: usize,
+    /// 重定向后与既有 active 断言完全相同被置为 superseded 的条数
+    pub assertions_deduped: usize,
     /// 重定向的场景 POV 数
     pub povs: usize,
     /// 章节脉络 characters 列表中替换的章数
@@ -935,6 +937,12 @@ impl MergeReport {
         }
         if self.assertions > 0 {
             parts.push(format!("断言 {} 条", self.assertions));
+        }
+        if self.assertions_deduped > 0 {
+            parts.push(format!(
+                "重定向断言去重 {} 条（与既有 active 断言完全相同，已置为 superseded）",
+                self.assertions_deduped
+            ));
         }
         if self.povs > 0 {
             parts.push(format!("场景 POV {} 处", self.povs));
@@ -1120,6 +1128,40 @@ pub fn merge_entities(
         }
         if hit {
             report.assertions += 1;
+            assertion_changed = true;
+        }
+    }
+    // 去重：重定向后与目标实体既有 active 断言完全相同（subject+predicate+object）
+    // 的会成对生效——add 路径对完全相同断言自动跳过，merge 也要保持这一不变量。
+    // 保留先出现的一条（通常是目标实体原有断言，ID 稳定），后出现的置为
+    // superseded 保留合并痕迹；重复项的证据引用先转移给保留者。
+    {
+        let mut keepers: Vec<(String, String, toml::Value, usize)> = Vec::new();
+        let mut superseded: Vec<(usize, usize)> = Vec::new();
+        for (i, a) in assertions.assertions.iter().enumerate() {
+            if matches!(a.status.as_str(), "superseded" | "contradicted") {
+                continue;
+            }
+            let key = (a.subject.clone(), a.predicate.clone(), a.object.clone());
+            match keepers
+                .iter()
+                .position(|(s, p, o, _)| *s == key.0 && *p == key.1 && *o == key.2)
+            {
+                Some(k) => superseded.push((i, keepers[k].3)),
+                None => keepers.push((key.0, key.1, key.2, i)),
+            }
+        }
+        if !superseded.is_empty() {
+            for (dupe, keeper) in &superseded {
+                let ev = assertions.assertions[*dupe].evidence.clone();
+                for e in ev {
+                    if !assertions.assertions[*keeper].evidence.contains(&e) {
+                        assertions.assertions[*keeper].evidence.push(e);
+                    }
+                }
+                assertions.assertions[*dupe].status = "superseded".to_string();
+            }
+            report.assertions_deduped = superseded.len();
             assertion_changed = true;
         }
     }
@@ -4715,6 +4757,52 @@ mod tests {
 
         let anchoring = AnchoringFile::load_or_default(&paths.anchoring_toml()).unwrap();
         assert_eq!(anchoring.refs[0].target.as_deref(), Some(real.as_str()));
+    }
+
+    /// 回归：merge 重定向断言后与目标既有 active 断言完全相同（subject+predicate+object），
+    /// 曾成对生效——add 路径对完全相同断言自动跳过，merge 没走该逻辑。
+    /// 现在去重：保留先出现者，后出现的置为 superseded，证据引用转移给保留者。
+    #[test]
+    fn merge_entities_dedupes_identical_assertions() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let from = create_entity(&paths, EntityKind::Character, "影子").unwrap();
+        let into = create_entity(&paths, EntityKind::Character, "本尊").unwrap();
+        create_chapter(&paths, "第一章").unwrap(); // 确保 structure.toml 存在（merge 会加载）
+
+        let mut assertions = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
+        let mk = |id: &str, subject: &str, object: &str, evidence: Vec<&str>| AssertionDef {
+            id: id.into(),
+            subject: subject.into(),
+            predicate: "located_at".into(),
+            object: toml::Value::String(object.into()),
+            status: String::new(),
+            extracted_by: String::new(),
+            evidence: evidence.into_iter().map(String::from).collect(),
+            valid: None,
+        };
+        // 目标已有 located_at=l_0001；from 也有同款（带证据）→ 合并后只留一条 active
+        assertions.assertions.push(mk("a_001", &into, "l_0001", vec![]));
+        assertions.assertions.push(mk("a_002", &from, "l_0001", vec!["ev_0001"]));
+        // 不重合的（object 不同）应保持 active
+        assertions.assertions.push(mk("a_003", &from, "l_0002", vec![]));
+        assertions.save(&paths.assertions_toml()).unwrap();
+
+        let report = merge_entities(&paths, &from, &into).unwrap();
+        assert_eq!(report.assertions_deduped, 1, "应去重 1 条完全相同的断言");
+
+        let file = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
+        let get = |id: &str| file.assertions.iter().find(|a| a.id == id).unwrap();
+        let a1 = get("a_001");
+        assert_eq!(a1.status, "", "保留先出现的目标断言（ID 稳定）");
+        assert_eq!(a1.evidence, vec!["ev_0001".to_string()], "重复项的证据应转移给保留者");
+        let a2 = get("a_002");
+        assert_eq!(a2.status, "superseded", "重定向后的重复断言置为 superseded");
+        assert_eq!(a2.subject, into, "重定向本身仍应完成");
+        let a3 = get("a_003");
+        assert_eq!(a3.status, "", "不重合的断言保持 active");
+        assert_eq!(a3.subject, into);
     }
 
     #[test]
