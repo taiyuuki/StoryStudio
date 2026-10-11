@@ -1956,7 +1956,14 @@ fn find_lcs_range(haystack: &str, needle: &str) -> Option<((usize, usize), f64)>
         return None; // 命中过于零散：拒绝整段替换
     }
     let from = hay_view[first_j].1;
-    let to = hay_view[last_j].1 + hay_view[last_j].0.len_utf8();
+    // 终点取下一字符的字节位置（归一化字符与原字符的字节长度不一致，
+    // 如「。」归一为「.」：用归一化长度推终点会落在原字符的字节中间，
+    // replace_range 即 panic「非字符边界」）
+    let to = if last_j + 1 < hay_view.len() {
+        hay_view[last_j + 1].1
+    } else {
+        haystack.len()
+    };
     Some(((from, to), lcs_len as f64 / n_len as f64))
 }
 
@@ -4574,6 +4581,33 @@ fragments = []
             "new_text": "替换",
         }));
         assert!(result.is_err());
+    }
+
+    /// 回归：近似匹配命中的末字符是全角标点（归一化为 1 字节 ASCII）时，
+    /// 区间终点曾按归一化字符长度推算，落在原字符（3 字节）字节中间，
+    /// replace_range panic「非字符边界」。
+    #[test]
+    fn edit_lcs_range_ends_on_fullwidth_punctuation() {
+        let (_tmp, ctx, fid) =
+            setup_fragment("他摆了摆手，往蒲团上一躺。窗外的麻雀叫了两声，像是替苏小满抗议。");
+
+        let tool = EditFragmentTextTool::new(ctx.clone());
+        // 一字之转写（三/两），且 old_text 以全角句号结尾
+        let msg = tool
+            .execute(&serde_json::json!({
+                "fragment_id": fid,
+                "old_text": "窗外的麻雀叫了三声，像是替苏小满抗议。",
+                "new_text": "檐角的雨滴落了三声。",
+            }))
+            .expect("不应 panic，近似匹配应成功");
+        assert!(msg.contains("近似匹配"), "{msg}");
+
+        let out = ReadFragmentTextTool::new(ctx)
+            .execute(&serde_json::json!({ "fragment_id": fid }))
+            .unwrap();
+        assert!(out.contains("檐角的雨滴落了三声。"), "替换应生效: {out}");
+        assert!(out.contains("他摆了摆手"), "邻句不应被波及: {out}");
+        assert!(!out.contains("麻雀"), "原句应被整体替换: {out}");
     }
 
     #[test]
