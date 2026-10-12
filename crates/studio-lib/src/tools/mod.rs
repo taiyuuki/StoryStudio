@@ -160,8 +160,9 @@ impl ToolContext {
 /// 构建工具参数的 JSON Schema。
 ///
 /// `typ` 是迷你 DSL：`string` / `integer` / `boolean` / `array`（元素形态
-/// 不限）/ `object-array`（对象数组，渲染为 `items: {type: object}`）。
-/// 对象数组的 items 必须显式声明——裸 `array` 时部分模型默认按字符串
+/// 不限）/ `string-array`（字符串数组，渲染为 `items: {type: string}`）/
+/// `object-array`（对象数组，渲染为 `items: {type: object}`）。
+/// 数组的 items 必须显式声明——裸 `array` 时部分模型默认按字符串
 /// 数组传参，序列化字符串项会在读取字段时整链报「缺少参数」。
 pub(super) fn object_schema(properties: Vec<(&str, &str, &str, bool)>) -> serde_json::Value {
     let mut props = serde_json::Map::new();
@@ -169,6 +170,8 @@ pub(super) fn object_schema(properties: Vec<(&str, &str, &str, bool)>) -> serde_
     for (name, typ, desc, req) in &properties {
         let mut prop = if *typ == "object-array" {
             serde_json::json!({"type": "array", "items": {"type": "object"}})
+        } else if *typ == "string-array" {
+            serde_json::json!({"type": "array", "items": {"type": "string"}})
         } else {
             serde_json::json!({ "type": typ })
         };
@@ -584,12 +587,16 @@ mod tests {
         let schema = object_schema(vec![
             ("title", "string", "标题", true),
             ("items", "object-array", "批量：对象数组", false),
+            ("ids", "string-array", "批量：字符串数组", false),
         ]);
         assert_eq!(schema["properties"]["title"]["type"], "string");
         // object-array 简写渲染为 items: {type: object}，防模型默认传字符串数组
         assert_eq!(schema["properties"]["items"]["type"], "array");
         assert_eq!(schema["properties"]["items"]["items"]["type"], "object");
         assert_eq!(schema["properties"]["items"]["description"], "批量：对象数组");
+        // string-array 同理显式声明 items: {type: string}
+        assert_eq!(schema["properties"]["ids"]["type"], "array");
+        assert_eq!(schema["properties"]["ids"]["items"]["type"], "string");
         assert_eq!(schema["required"], serde_json::json!(["title"]));
     }
 

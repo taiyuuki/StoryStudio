@@ -334,6 +334,54 @@ pub fn chapter_completion_hint(
     ))
 }
 
+/// 本章规划线索仍未埋设的提醒（写正文回执用）：章节脉络 entry.threads 中
+/// 存在状态仍为 planned 的线索时返回提示行。动笔阶段作者/AI 专注正文，
+/// 线索状态推进最易被遗漏、长期停留在 planned——提示落在写入时机，把
+/// 推进动作带进当前上下文。best-effort，不影响写入。
+pub fn planned_threads_hint(paths: &ProjectPaths, scene_or_fragment_id: &str) -> Option<String> {
+    let scene_id = if scene_or_fragment_id.starts_with("f_") {
+        scene_of_fragment_id(paths, scene_or_fragment_id)?
+    } else {
+        scene_or_fragment_id.to_string()
+    };
+    let structure = load_structure(paths).ok()?;
+    let ch_id = structure
+        .chapter
+        .iter()
+        .find(|(_, ch)| ch.scenes.iter().any(|s| s == &scene_id))
+        .map(|(id, _)| id.clone())?;
+    let chapters = ChaptersFile::load_or_default(&paths.chapters_toml()).ok()?;
+    let entry = chapters
+        .chapters
+        .iter()
+        .find(|c| c.chapter_id.as_deref() == Some(&ch_id))?;
+    if entry.threads.is_empty() {
+        return None;
+    }
+    let threads = ThreadsFile::load_or_default(&paths.threads_toml()).ok()?;
+    // 与 ThreadStatus::derive 同口径：planned = 四个锚点均未设置
+    let planned: Vec<String> = entry
+        .threads
+        .iter()
+        .filter_map(|tid| {
+            let t = threads.threads.iter().find(|t| &t.id == tid)?;
+            let is_planned = !t.abandoned
+                && t.planted_at.is_none()
+                && t.revealed_at.is_none()
+                && t.resolved_at.is_none();
+            is_planned.then(|| format!("{} ({})", t.title, t.id))
+        })
+        .collect();
+    if planned.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n💡 本章规划线索「{}」仍为 planned，若本场已埋下伏笔，\
+         建议 advance_thread（或 write_fragment_text 的 advance_threads 参数）推进",
+        planned.join("」「")
+    ))
+}
+
 /// 场景元数据缺失提示（写正文回执用）：场景已有正文但 summary 或
 /// story_time 缺失时返回提示行。这两项直接喂 get_story_recap 的摘要质量
 /// 与时间线注记，高速写作时最容易长期空白——提示落在写入时机，把

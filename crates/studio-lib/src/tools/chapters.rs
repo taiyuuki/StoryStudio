@@ -645,11 +645,58 @@ impl Tool for DeleteChapterOutlineTool {
 // populate_scenes_from_beats
 // ============================================================================
 
-/// 节拍标题头：优先在 8..=12 字窗口内的标点处断句（去掉断点标点），
-/// 无标点才按 12 字符截断——避免「年轻审判官（伊莲娜，正文」这类词中腰斩。
+/// 节拍标题头：前缀标记优先，无标记退回字数窗口断句。
+///
+/// 1. `【标题】…` / `[标题]…`：包裹段是作者显式给出的标题，直接提取；
+/// 2. `标题：…`（全角/半角冒号）：冒号前 ≤12 字且不含句末标点视为标题；
+/// 3. 在 8..=12 字窗口内的标点处断句（去掉断点标点），无标点才按
+///    12 字符截断——避免「年轻审判官（伊莲娜，正文」这类词中腰斩。
 fn beat_title_head(beat: &str) -> String {
-    const BREAKS: &[char] = &['，', '。', '、', '；', '：', ',', '，', '（', '(', '—', ' '];
-    let chars: Vec<char> = beat.chars().collect();
+    let src = beat.trim();
+    // 前缀括号标记：内嵌段过长（>16 字）时对内嵌段继续走通用规则
+    if let Some(inner) = bracket_marker_head(src) {
+        if inner.chars().count() <= 16 {
+            return inner.to_string();
+        }
+        return beat_title_head(inner);
+    }
+    if let Some(head) = colon_marker_head(src) {
+        return head;
+    }
+    window_break_head(src)
+}
+
+/// 提取前缀括号标记 `【…】` / `[…]` 的内嵌段（须在开头，取首个闭合括号）。
+fn bracket_marker_head(src: &str) -> Option<&str> {
+    let (open, close) = match src.chars().next()? {
+        '【' => ('【', '】'),
+        '[' => ('[', ']'),
+        _ => return None,
+    };
+    let close_pos = src[open.len_utf8()..].find(close)? + open.len_utf8();
+    let inner = &src[open.len_utf8()..close_pos];
+    (!inner.trim().is_empty()).then(|| inner.trim())
+}
+
+/// 提取 `标题：描述` 形态的标题：冒号在开头或太靠后（>12 字）、
+/// 或冒号前含句末标点（正文句子的冒号，如引语）时不视为标记。
+fn colon_marker_head(src: &str) -> Option<String> {
+    let chars: Vec<char> = src.chars().collect();
+    let pos = chars.iter().position(|c| *c == '：' || *c == ':')?;
+    if pos == 0 || pos > 12 {
+        return None;
+    }
+    let head: String = chars[..pos].iter().collect();
+    let head = head.trim();
+    if head.is_empty() || head.chars().any(|c| "。！？!?；;".contains(c)) {
+        return None;
+    }
+    Some(head.to_string())
+}
+
+fn window_break_head(src: &str) -> String {
+    const BREAKS: &[char] = &['，', '。', '、', '；', '：', ',', '（', '(', '—', ' '];
+    let chars: Vec<char> = src.chars().collect();
     let max = 12.min(chars.len());
     for end in 8..=max {
         if BREAKS.contains(&chars[end - 1]) {
@@ -672,19 +719,35 @@ impl Tool for PopulateScenesFromBeatsTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "populate_scenes_from_beats".into(),
-            description: "按章节脉络的节拍（beats）一键生成场景骨架：每个节拍创建一个待写场景\n            （标题取节拍摘要、叙事功能存完整节拍文本），并同步到脉络的 scenes 列表。\n            前提：该章已 create_chapter 落实（chapter_id 已回填）。\n            生成的是骨架，写正文仍用 write_fragment_text 逐场景推进。"
+            description: "按章节脉络的节拍（beats）一键生成场景骨架：每个节拍创建一个待写场景\n            （标题取节拍摘要、叙事功能存完整节拍文本），并同步到脉络的 scenes 列表。\n            场景标题优先取节拍的前缀标记（【标题】… / [标题]… / 标题：…），\n            无标记时在 8-12 字窗口断句；也可用 titles 显式指定精简标题。\n            POV 默认取本章脉络的第一个角色（本章主咖），可用 default_pov 覆盖。\n            前提：该章已 create_chapter 落实（chapter_id 已回填）。\n            生成的是骨架，写正文仍用 write_fragment_text 逐场景推进。"
                 .into(),
-            parameters: object_schema(vec![(
-                "index",
-                "integer",
-                "章序号（1-based，对应 get_chapter_outline 显示的编号）",
-                true,
-            )]),
+            parameters: object_schema(vec![
+                (
+                    "index",
+                    "integer",
+                    "章序号（1-based，对应 get_chapter_outline 显示的编号）",
+                    true,
+                ),
+                (
+                    "titles",
+                    "array",
+                    "可选：显式指定本次新生成场景的精简标题（字符串数组，按序对应第 i 个新场景；无需带「第N幕·」前缀）。提供数少于新场景时其余按节拍自动提取，多余忽略",
+                    false,
+                ),
+                (
+                    "default_pov",
+                    "string",
+                    "可选：新建场景的默认 POV（角色 ID 或名称，名称自动归一为 ID）。未传时自动取本章脉络的第一个角色（本章主咖）；本章无角色则不设 POV",
+                    false,
+                ),
+            ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let index = get_index(arguments, "index")?;
+        let titles = get_str_array_opt(arguments, "titles")?;
+        let default_pov_input = get_str_opt(arguments, "default_pov");
         let paths = self.ctx.paths();
 
         let (file, _volumes, _path) = load_chapters(&self.ctx)?;
@@ -707,11 +770,50 @@ impl Tool for PopulateScenesFromBeatsTool {
         // 已生成的骨架数量（按脉络 scenes 记录，幂等基准）
         let existing = file.chapters[index - 1].scenes.len();
 
+        // POV 优先级：显式 default_pov（名字归一为 ID）> 本章脉络第一个角色（本章主咖）
+        let mut notes: Vec<String> = Vec::new();
+        let default_pov = match &default_pov_input {
+            Some(raw) => {
+                let (resolved, warns) = crate::mutations::resolve_character_refs(
+                    &paths,
+                    std::slice::from_ref(raw),
+                );
+                notes.extend(warns);
+                Some(resolved[0].clone())
+            }
+            None => entry.characters.first().cloned(),
+        };
+
+        let new_count = beats.len() - existing;
+        if let Some(ts) = &titles {
+            if ts.len() < new_count {
+                notes.push(format!(
+                    "titles 提供 {} 个，本次新建 {} 个场景，其余按节拍自动提取标题",
+                    ts.len(),
+                    new_count
+                ));
+            } else if ts.len() > new_count {
+                notes.push(format!(
+                    "titles 提供 {} 个，超出本次新建的 {} 个，多余忽略",
+                    ts.len(),
+                    new_count
+                ));
+            }
+        }
+
         let mut created = Vec::new();
         for (i, beat) in beats.iter().skip(existing).enumerate() {
-            let scene_title = format!("第{}幕·{}", existing + i + 1, beat_title_head(beat));
-            let scene_id = crate::mutations::create_scene(&paths, &chapter_id, &scene_title, None)
-                .map_err(|e| e.to_string())?;
+            // 显式 titles 按序覆盖；否则从节拍提取标题头（前缀标记 > 窗口断句）
+            let head = titles
+                .as_ref()
+                .and_then(|ts| ts.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| beat_title_head(beat));
+            let scene_title = format!("第{}幕·{}", existing + i + 1, head);
+            let scene_id =
+                crate::mutations::create_scene(&paths, &chapter_id, &scene_title, default_pov.as_deref())
+                    .map_err(|e| e.to_string())?;
             // 叙事功能存完整节拍文本，写作时上下文自含
             let update = crate::mutations::SceneUpdate {
                 title: None,
@@ -733,12 +835,22 @@ impl Tool for PopulateScenesFromBeatsTool {
                 beats.len()
             ))
         } else {
-            Ok(format!(
+            let mut msg = format!(
                 "第 {index} 章「{title}」按 {} 个节拍生成 {} 个场景骨架：{}",
                 beats.len(),
                 created.len(),
                 created.join("、")
-            ))
+            );
+            if let Some(pov) = &default_pov {
+                let src = if default_pov_input.is_some() { "指定" } else { "本章主咖" };
+                msg.push_str(&format!("；默认 POV: {pov}（{src}）"));
+            } else {
+                msg.push_str("；未设 POV（本章脉络无角色且未传 default_pov）");
+            }
+            for note in notes {
+                msg.push_str(&format!("；⚠️ {note}"));
+            }
+            Ok(msg)
         }
     }
 }
@@ -1311,6 +1423,107 @@ mod tests {
         // 脉络 scenes 列表已同步 3 个场景 ID
         let file = crate::mutations::load_chapters_file(&paths).unwrap();
         assert_eq!(file.chapters[0].scenes.len(), 3);
+    }
+
+    /// 节拍标题头提取：前缀标记优先（【】/[]/冒号），无标记退回窗口断句。
+    #[test]
+    fn beat_title_head_prefers_prefix_markers() {
+        // 【标题】… / [标题]…：包裹段即标题，不再截断正文
+        assert_eq!(
+            beat_title_head("【清点账目】苏白在主殿清点账目，发现亏空"),
+            "清点账目"
+        );
+        assert_eq!(beat_title_head("[夜探]潜入藏经阁翻查旧档"), "夜探");
+        // 标题：描述（全角/半角冒号均可，冒号前 ≤12 字）
+        assert_eq!(beat_title_head("山门对峙：林风与守门弟子起冲突"), "山门对峙");
+        assert_eq!(beat_title_head("断崖顿悟:于断崖处领悟剑意"), "断崖顿悟");
+        // 冒号前含句末标点 → 正文句子的冒号（如引语），退回窗口断句
+        assert_eq!(beat_title_head("苏白连夜赶回主殿，在殿前拦住长老：质问"), "苏白连夜赶回主殿");
+        // 无标记：保持旧行为——窗口断句或 12 字硬截断
+        assert_eq!(beat_title_head("夜探藏经阁，发现空匣"), "夜探藏经阁，发现空匣");
+        assert_eq!(beat_title_head("苏白在断云峰的无为宗主殿与长老对峙"), "苏白在断云峰的无为宗主殿");
+        assert_eq!(beat_title_head("断崖顿悟"), "断崖顿悟");
+    }
+
+    /// populate 的新参数：titles 显式标题、default_pov 指定/自动推断。
+    #[test]
+    fn populate_scenes_titles_and_default_pov() {
+        let (_tmp, ctx) = setup();
+        let paths = ctx.paths();
+        // 角色档案：default_pov 按名字传入时的归一基准
+        std::fs::create_dir_all(paths.characters_dir()).unwrap();
+        std::fs::write(
+            paths.characters_dir().join("c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"林风\"\n",
+        )
+        .unwrap();
+
+        let design = DesignChaptersTool::new(ctx.clone());
+        design
+            .execute(&serde_json::json!({
+                "chapters": r#"[
+                    {"title":"上山","beats":["【山门对峙】林风与守门弟子起冲突","夜探藏经阁，发现空匣","断崖顿悟"],"characters":["林风"]},
+                    {"title":"渡河","beats":["摆渡人索要旧铜钱","河心旋涡卷走行囊"],"characters":["林风"]},
+                    {"title":"夜雨","beats":["客栈投宿","查房","夜半异响"],"characters":[]}
+                ]"#
+            }))
+            .unwrap();
+        let ch1 = crate::mutations::create_chapter(&paths, "上山").unwrap();
+        let ch2 = crate::mutations::create_chapter(&paths, "渡河").unwrap();
+        let ch3 = crate::mutations::create_chapter(&paths, "夜雨").unwrap();
+
+        let tool = PopulateScenesFromBeatsTool::new(ctx.clone());
+
+        // 自动路径：标题走节拍前缀标记/窗口断句，POV 取本章脉络第一个角色
+        let out = tool.execute(&serde_json::json!({"index": 1})).unwrap();
+        assert!(out.contains("第1幕·山门对峙"), "{out}");
+        assert!(out.contains("第2幕·夜探藏经阁，发现空匣"), "{out}");
+        assert!(out.contains("第3幕·断崖顿悟"), "{out}");
+        assert!(out.contains("默认 POV: c_0001（本章主咖）"), "{out}");
+
+        // 显式路径：titles 覆盖标题、default_pov 传名字归一为 ID
+        let out = tool
+            .execute(&serde_json::json!({
+                "index": 2,
+                "titles": ["铜钱", "旋涡"],
+                "default_pov": "林风"
+            }))
+            .unwrap();
+        assert!(out.contains("第1幕·铜钱"), "{out}");
+        assert!(out.contains("第2幕·旋涡"), "{out}");
+        assert!(out.contains("默认 POV: c_0001（指定）"), "{out}");
+
+        // titles 少于新场景数：其余按节拍自动提取并附说明；本章无角色 → 不设 POV
+        let out = tool
+            .execute(&serde_json::json!({"index": 3, "titles": ["投宿"]}))
+            .unwrap();
+        assert!(out.contains("第1幕·投宿"), "{out}");
+        assert!(out.contains("第2幕·查房"), "{out}");
+        assert!(out.contains("其余按节拍自动提取标题"), "{out}");
+        assert!(out.contains("未设 POV"), "{out}");
+
+        // POV 已真正落盘到 structure.toml（而非仅回执说明）
+        let structure = crate::mutations::load_structure(&paths).unwrap();
+        for ch in [&ch1, &ch2] {
+            let povs: Vec<Option<String>> = structure.chapter[ch]
+                .scenes
+                .iter()
+                .map(|s| structure.scene[s].pov.clone())
+                .collect();
+            assert!(
+                povs.iter().all(|p| p.as_deref() == Some("c_0001")),
+                "{ch} 的场景 POV 应为 c_0001: {povs:?}"
+            );
+        }
+        let povs3: Vec<Option<String>> = structure.chapter[&ch3]
+            .scenes
+            .iter()
+            .map(|s| structure.scene[s].pov.clone())
+            .collect();
+        assert!(
+            povs3.iter().all(|p| p.is_none()),
+            "无角色章不应设 POV: {povs3:?}"
+        );
     }
 
     #[test]

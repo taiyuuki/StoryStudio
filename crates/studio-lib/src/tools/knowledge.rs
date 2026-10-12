@@ -1414,7 +1414,9 @@ impl Tool for WriteFragmentTextTool {
             传入已有 fragment_id 则覆盖该片段的全部内容。\
             ⚠️ 要追加内容到已有片段请用 append_fragment_text，不要用此工具。\
             正文一般应达 800 字以上、包含完整叙事；刻意的短片段（收尾/过渡/暗线视角）\
-            传 short=true 声明，跳过字数下限警示。注意：正文不要以 --- 分隔线起笔。"
+            传 short=true 声明，跳过字数下限警示。注意：正文不要以 --- 分隔线起笔。\
+            顺手机制：scene_summary / scene_time 同步写场景元数据，advance_threads\
+            同步推进线索状态（当前场景自动作叙事锚点），均省一次单独调用。"
                     .into(),
             parameters: object_schema(vec![
                 ("scene_id", "string", "目标场景 ID（如 sc_01_01）", true),
@@ -1448,6 +1450,12 @@ impl Tool for WriteFragmentTextTool {
                     "顺手附带故事时间：数字（1023-9-15 / 1023）或历法标签（灵历3217年），写入 scene.story_time",
                     false,
                 ),
+                (
+                    "advance_threads",
+                    "string-array",
+                    "顺手推进的线索状态列表，如 [\"t_001:planted\", \"t_002:revealed\"]。当前 scene_id 会自动作为叙事锚点（abandoned 无需锚点）。写入成功后同步推进，省一次 advance_thread 往返",
+                    false,
+                ),
             ]),
         }
     }
@@ -1458,6 +1466,7 @@ impl Tool for WriteFragmentTextTool {
         let fragment_id_opt = get_str_opt(arguments, "fragment_id");
         let scene_summary = get_str_opt(arguments, "scene_summary");
         let scene_time_raw = get_str_opt(arguments, "scene_time");
+        let advance_threads_raw = get_str_array_opt(arguments, "advance_threads")?;
 
 
         let paths = self.ctx.paths();
@@ -1565,6 +1574,11 @@ impl Tool for WriteFragmentTextTool {
                 Err(e) => msg.push_str(&format!("\n⚠️ 场景元数据落盘失败: {e}（正文已写入）")),
             }
         }
+        // 顺手推进线索：正文写入成功后同步推进（锚点 = 当前场景），
+        // 省一次 advance_thread 往返
+        if let Some(raw_items) = advance_threads_raw.filter(|v| !v.is_empty()) {
+            apply_inline_thread_advances(&mut msg, &paths, &raw_items, &scene_id);
+        }
         // 覆盖已有片段时：若它是断言证据，提示事实依据可能漂移（best-effort）
         if !is_new {
             if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, false) {
@@ -1579,11 +1593,84 @@ impl Tool for WriteFragmentTextTool {
         if let Some(hint) = crate::mutations::chapter_completion_hint(&paths, &scene_id) {
             msg.push_str(&hint);
         }
+        // 本章规划线索仍为 planned：轻提醒防遗忘（在 advance_threads 之后，
+        // 本次刚推进过的线索不会再提示）
+        if let Some(note) = crate::mutations::planned_threads_hint(&paths, &scene_id) {
+            msg.push_str(&note);
+        }
         // 场景已有正文但缺 summary/story_time：提示顺手补齐（best-effort）
         if let Some(note) = crate::mutations::scene_metadata_gap_note(&paths, &scene_id) {
             msg.push_str(&note);
         }
         Ok(msg)
+    }
+}
+
+/// 顺手推进线索的回执拼接（write_fragment_text / append_fragment_text 共用）：
+/// 解析 `t_001:planted` 项 → 复用 mutations::advance_threads，
+/// 锚点自动取当前场景/片段。正文已先行落盘，解析或推进失败只附 ⚠️ 回执、
+/// 不返回 Err——防调用方误判失败重试造成正文重复写入。
+fn apply_inline_thread_advances(
+    msg: &mut String,
+    paths: &story_project_format::ProjectPaths,
+    raw_items: &[String],
+    anchor: &str,
+) {
+    let mut parse_errs: Vec<String> = Vec::new();
+    let mut entries: Vec<(String, String)> = Vec::with_capacity(raw_items.len());
+    for (n, raw) in raw_items.iter().enumerate() {
+        match parse_thread_advance(raw) {
+            Ok(pair) => entries.push(pair),
+            Err(e) => parse_errs.push(format!("第 {} 项 '{raw}' {e}", n + 1)),
+        }
+    }
+    if !parse_errs.is_empty() {
+        msg.push_str(&format!(
+            "\n⚠️ 线索推进未生效（{}）：{}（正文已写入；修正后用 advance_thread 补推进）",
+            parse_errs.len(),
+            parse_errs.join("；")
+        ));
+        return;
+    }
+    let items: Vec<(String, String, Option<String>)> = entries
+        .into_iter()
+        .map(|(tid, status)| (tid, status, Some(anchor.to_string())))
+        .collect();
+    match crate::mutations::advance_threads(paths, &items) {
+        Ok(results) => {
+            let parts: Vec<String> = items
+                .iter()
+                .zip(&results)
+                .map(|((tid, _, _), st)| format!("{tid} → {st}"))
+                .collect();
+            msg.push_str(&format!("\n✅ 已同步推进线索: {}", parts.join("；")));
+        }
+        Err(e) => msg.push_str(&format!(
+            "\n⚠️ 线索推进未生效: {e}（正文已写入；可单独调用 advance_thread 推进）"
+        )),
+    }
+}
+
+/// 解析顺手推进项 `t_001:planted`（兼容全角冒号）为 (线索 ID, 状态)。
+/// 状态非法 / 缺分隔符时返回带定位上下文由调用方拼接的错误说明。
+fn parse_thread_advance(raw: &str) -> Result<(String, String), String> {
+    let raw = raw.trim();
+    let (id, status) = raw
+        .split_once('：')
+        .or_else(|| raw.split_once(':'))
+        .ok_or_else(|| "缺少 ':' 分隔符，应为 线索ID:状态（如 t_001:planted）".to_string())?;
+    let id = id.trim();
+    let status = status.trim();
+    if id.is_empty() {
+        return Err("线索 ID 为空".to_string());
+    }
+    match status {
+        "planted" | "revealed" | "resolved" | "abandoned" => {
+            Ok((id.to_string(), status.to_string()))
+        }
+        other => Err(format!(
+            "状态 '{other}' 非法，应为 planted/revealed/resolved/abandoned"
+        )),
     }
 }
 
@@ -2232,7 +2319,9 @@ impl Tool for AppendFragmentTextTool {
             description: "向已有片段追加续写内容（不覆盖原有正文）。\
             用于扩写、继续创作、加长篇幅。追加内容一般应达 500 字以上，\
             过短会收到警示提示；局部修改请改用 edit_fragment_text。\
-            建议先 read_fragment_text 了解当前内容，再决定续写方向。"
+            建议先 read_fragment_text 了解当前内容，再决定续写方向。\
+            顺手机制：advance_threads 同步推进线索状态（当前片段自动作叙事锚点），\
+            省一次 advance_thread 往返。"
                 .into(),
             parameters: object_schema(vec![
                 (
@@ -2247,6 +2336,12 @@ impl Tool for AppendFragmentTextTool {
                     "要追加的故事正文（至少 500 字，自然衔接已有内容）",
                     true,
                 ),
+                (
+                    "advance_threads",
+                    "string-array",
+                    "顺手推进的线索状态列表，如 [\"t_001:planted\", \"t_002:revealed\"]。当前片段 ID 会自动作为叙事锚点（abandoned 无需锚点）。追加成功后同步推进，省一次 advance_thread 往返",
+                    false,
+                ),
             ]),
         }
     }
@@ -2254,6 +2349,7 @@ impl Tool for AppendFragmentTextTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let fragment_id = get_str(arguments, "fragment_id")?;
         let text = get_str(arguments, "text")?;
+        let advance_threads_raw = get_str_array_opt(arguments, "advance_threads")?;
 
         let paths = self.ctx.paths();
         let stored = crate::mutations::append_fragment_text(&paths, &fragment_id, &text)
@@ -2289,6 +2385,11 @@ impl Tool for AppendFragmentTextTool {
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored) {
             msg.push_str(&note);
         }
+        // 顺手推进线索：追加成功后同步推进（锚点 = 当前片段，reader 知情
+        // 联动会按片段归属场景对齐），省一次 advance_thread 往返
+        if let Some(raw_items) = advance_threads_raw.filter(|v| !v.is_empty()) {
+            apply_inline_thread_advances(&mut msg, &paths, &raw_items, &fragment_id);
+        }
         // 首次写入正文自动推进脉络 planned → writing（best-effort）
         if let Some(note) = crate::mutations::auto_advance_outline_writing(&paths, &fragment_id) {
             msg.push_str(&note);
@@ -2296,6 +2397,11 @@ impl Tool for AppendFragmentTextTool {
         // 本章所有场景都有正文时提示收尾（best-effort，不影响追加）
         if let Some(hint) = crate::mutations::chapter_completion_hint(&paths, &fragment_id) {
             msg.push_str(&hint);
+        }
+        // 本章规划线索仍为 planned：轻提醒防遗忘（在 advance_threads 之后，
+        // 本次刚推进过的线索不会再提示）
+        if let Some(note) = crate::mutations::planned_threads_hint(&paths, &fragment_id) {
+            msg.push_str(&note);
         }
         // 场景已有正文但缺 summary/story_time：提示顺手补齐（best-effort）
         if let Some(note) = crate::mutations::scene_metadata_gap_note(&paths, &fragment_id) {
@@ -4855,6 +4961,144 @@ race = "星辰精灵"
             }))
             .unwrap();
         assert!(out.contains("未找到"), "{out}");
+    }
+
+    /// write_fragment_text 的 advance_threads 顺手推进：
+    /// 成功推进（锚点=当前场景）/ 项格式错误不阻断写入 / planned 线索轻提醒。
+    #[test]
+    fn write_fragment_text_advances_threads_and_hints_planned() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let paths = story_project_format::ProjectPaths::new(dir);
+
+        // 夹具：物理章 + 场景 + 两条 planned 线索挂到本章脉络
+        let ch_id = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc_id = crate::mutations::create_scene(&paths, &ch_id, "开场", None).unwrap();
+        crate::mutations::create_thread(&paths, "旧案之谜", "测试线索一", "main", None, None, None)
+            .unwrap();
+        crate::mutations::create_thread(&paths, "空匣去向", "测试线索二", "minor", None, None, None)
+            .unwrap();
+        std::fs::write(
+            paths.chapters_toml(),
+            format!(
+                "[[chapters]]\ntitle = \"第一章\"\nchapter_id = \"{ch_id}\"\nthreads = [\"t_001\", \"t_002\"]\n"
+            ),
+        )
+        .unwrap();
+
+        let tool = WriteFragmentTextTool::new(ctx.clone());
+        let text = "夜雨敲窗，他提灯走过长巷。".repeat(40);
+
+        // 1) 顺手推进：t_001 → planted，锚点自动为当前场景
+        let out = tool
+            .execute(&serde_json::json!({
+                "scene_id": sc_id,
+                "text": text,
+                "advance_threads": ["t_001:planted"],
+            }))
+            .unwrap();
+        assert!(out.contains("已同步推进线索: t_001 → planted"), "{out}");
+        let content = std::fs::read_to_string(paths.threads_toml()).unwrap();
+        assert!(
+            content.contains(&format!("planted_at = \"{sc_id}\"")),
+            "锚点应为当前场景: {content}"
+        );
+
+        // 2) 项格式错误：不阻断写入，回执附 ⚠️ 引导补推进
+        let out = tool
+            .execute(&serde_json::json!({
+                "scene_id": sc_id,
+                "fragment_id": crate::mutations::load_structure(&paths).unwrap().scene[&sc_id].fragments[0],
+                "text": text,
+                "advance_threads": ["t_002bogus"],
+            }))
+            .unwrap();
+        assert!(out.contains("片段已更新"), "正文应正常写入: {out}");
+        assert!(out.contains("线索推进未生效"), "{out}");
+        assert!(out.contains("缺少 ':' 分隔符"), "{out}");
+        assert!(!out.contains("已同步推进线索"), "{out}");
+
+        // 3) 未推进的 t_002 仍为 planned → 轻提醒（t_001 已推进不再提示）
+        assert!(out.contains("仍为 planned"), "{out}");
+        assert!(out.contains("空匣去向 (t_002)"), "{out}");
+        assert!(!out.contains("旧案之谜 (t_001)"), "{out}");
+
+        // 4) 推进到不存在的线索：mutation 校验失败同样不阻断写入
+        let out = tool
+            .execute(&serde_json::json!({
+                "scene_id": sc_id,
+                "fragment_id": crate::mutations::load_structure(&paths).unwrap().scene[&sc_id].fragments[0],
+                "text": text,
+                "advance_threads": ["t_999:planted"],
+            }))
+            .unwrap();
+        assert!(out.contains("线索推进未生效"), "{out}");
+        assert!(out.contains("'t_999' 不存在"), "{out}");
+    }
+
+    /// append_fragment_text 的 advance_threads 顺手推进：锚点 = 当前片段，
+    /// 未推进的 planned 线索同样有轻提醒。
+    #[test]
+    fn append_fragment_text_advances_threads_with_fragment_anchor() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let paths = story_project_format::ProjectPaths::new(dir);
+
+        // 夹具：物理章 + 场景 + 已有片段 + 两条 planned 线索挂到本章脉络
+        let ch_id = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc_id = crate::mutations::create_scene(&paths, &ch_id, "开场", None).unwrap();
+        let fid = crate::mutations::create_fragment(&paths, &sc_id, "夜雨敲窗。").unwrap();
+        crate::mutations::create_thread(&paths, "旧案之谜", "测试线索一", "main", None, None, None)
+            .unwrap();
+        crate::mutations::create_thread(&paths, "空匣去向", "测试线索二", "minor", None, None, None)
+            .unwrap();
+        std::fs::write(
+            paths.chapters_toml(),
+            format!(
+                "[[chapters]]\ntitle = \"第一章\"\nchapter_id = \"{ch_id}\"\nthreads = [\"t_001\", \"t_002\"]\n"
+            ),
+        )
+        .unwrap();
+
+        let out = AppendFragmentTextTool::new(ctx.clone())
+            .execute(&serde_json::json!({
+                "fragment_id": fid,
+                "text": "他提灯走过长巷。".repeat(40),
+                "advance_threads": ["t_001:planted"],
+            }))
+            .unwrap();
+        assert!(out.contains(&format!("已向片段 {fid} 追加")), "{out}");
+        assert!(out.contains("已同步推进线索: t_001 → planted"), "{out}");
+        // 锚点落的是片段 ID（合法叙事锚点，时间线按归属场景对齐）
+        let content = std::fs::read_to_string(paths.threads_toml()).unwrap();
+        assert!(
+            content.contains(&format!("planted_at = \"{fid}\"")),
+            "锚点应为当前片段: {content}"
+        );
+        // t_002 仍为 planned → 轻提醒；已推进的 t_001 不再提示
+        assert!(out.contains("空匣去向 (t_002)"), "{out}");
+        assert!(!out.contains("旧案之谜 (t_001)"), "{out}");
+    }
+
+    /// 顺手推进项解析：全角冒号兼容、状态白名单、空 ID。
+    #[test]
+    fn parse_thread_advance_accepts_fullwidth_colon_and_validates() {
+        assert_eq!(
+            parse_thread_advance("t_001：planted").unwrap(),
+            ("t_001".to_string(), "planted".to_string())
+        );
+        assert_eq!(
+            parse_thread_advance(" t_002:revealed ").unwrap(),
+            ("t_002".to_string(), "revealed".to_string())
+        );
+        assert!(parse_thread_advance("t_001:resolved").is_ok());
+        assert!(parse_thread_advance("t_001:abandoned").is_ok());
+        assert!(parse_thread_advance("t_001").is_err());
+        assert!(parse_thread_advance(":planted").is_err());
+        let err = parse_thread_advance("t_001:bogus").unwrap_err();
+        assert!(err.contains("非法"), "{err}");
     }
 
 }
