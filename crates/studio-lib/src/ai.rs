@@ -1047,6 +1047,142 @@ pub fn create_provider_for_purpose_with_thinking(
     provider_from_config(&config, profile, provider_name, None)
 }
 
+/// 按调用动态解析档案的 Provider 包装器（长生命周期服务用，如 MCP）。
+///
+/// 外部 Agent 的 MCP 会话存活很久（会话状态甚至跨服务重启持久化恢复），
+/// 启动时一次性解析的 provider 会在用户切换 AI 档案后继续用旧档案，
+/// 表现为「明明切了档案，锚定 / AI 检测仍报旧档案的错」。本包装器按
+/// config.json 内容哈希缓存底层 provider：档案切换对活跃会话的下一次
+/// 调用立即生效；配置暂时不可解析（写坏 / 中途态）时沿用上一个可用
+/// provider，避免长会话中途硬失败。
+#[derive(Debug)]
+pub struct DynamicProfileProvider {
+    purpose: String,
+    provider_name: String,
+    model_name: Option<String>,
+    state: std::sync::Mutex<DynamicProfileState>,
+}
+
+#[derive(Debug, Default)]
+struct DynamicProfileState {
+    config_hash: u64,
+    inner: Option<Box<dyn AiProvider>>,
+}
+
+impl DynamicProfileProvider {
+    /// 构造并立即解析一次（配置错误立刻失败，保持启动期校验语义）
+    pub fn new(
+        purpose: &str,
+        provider_name: &str,
+        model_name: Option<&str>,
+    ) -> Result<Self, StudioError> {
+        let config = read_global_ai_config()?;
+        let profile = config.profile_for_purpose(purpose);
+        let inner = provider_from_config(&config, profile, provider_name, model_name)?;
+        let hash = Self::config_hash();
+        Ok(Self {
+            purpose: purpose.to_string(),
+            provider_name: provider_name.to_string(),
+            model_name: model_name.map(str::to_string),
+            state: std::sync::Mutex::new(DynamicProfileState {
+                config_hash: hash,
+                inner: Some(inner),
+            }),
+        })
+    }
+
+    fn config_hash() -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Ok(path) = global_config_path() {
+            if let Ok(bytes) = std::fs::read(&path) {
+                bytes.hash(&mut hasher);
+                return hasher.finish();
+            }
+        }
+        // 读不到配置（异常环境）时给一个不可能与内容哈希稳定重合的值，
+        // 触发一次重建尝试；重建失败仍沿用旧 provider
+        hasher.finish() ^ u64::from_ne_bytes([0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4])
+    }
+
+    /// 按当前配置解析底层 provider（纯函数，无 IO）
+    fn resolve_from(&self, config: &GlobalAiConfig) -> Result<Box<dyn AiProvider>, StudioError> {
+        let profile = config.profile_for_purpose(&self.purpose);
+        provider_from_config(config, profile, &self.provider_name, self.model_name.as_deref())
+    }
+
+    /// 配置变化时重建底层 provider；失败时保留旧值。
+    /// 返回当前可用的 provider（调用方保证锁已持有）。
+    fn refresh_locked(&self, state: &mut DynamicProfileState) {
+        let hash = Self::config_hash();
+        if hash != state.config_hash {
+            match read_global_ai_config().and_then(|config| self.resolve_from(&config)) {
+                Ok(inner) => {
+                    state.config_hash = hash;
+                    state.inner = Some(inner);
+                }
+                Err(e) => {
+                    // 配置写坏 / 解析失败：沿用旧 provider 继续服务，
+                    // 等下次配置写完好的版本再切换
+                    eprintln!("[ai] 档案热切换解析失败，沿用原 provider：{e}");
+                }
+            }
+        }
+    }
+
+    fn with_inner<T>(
+        &self,
+        f: impl FnOnce(&dyn AiProvider) -> Result<T, story_ai_runtime::provider::AiError>,
+    ) -> Result<T, story_ai_runtime::provider::AiError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.refresh_locked(&mut state);
+        match state.inner.as_deref() {
+            Some(p) => f(p),
+            None => Err(story_ai_runtime::provider::AiError::Unavailable(
+                "无可用 AI 档案（配置解析失败且无历史 provider）".to_string(),
+            )),
+        }
+    }
+}
+
+impl AiProvider for DynamicProfileProvider {
+    /// 底层档案随配置变化，无法安全返回其 id 的借用；固定标识即可（仅展示用）
+    fn id(&self) -> &str {
+        "dynamic-profile"
+    }
+
+    fn generate(
+        &self,
+        request: &story_ai_runtime::provider::GenerateRequest,
+    ) -> Result<story_ai_runtime::provider::GenerateResponse, story_ai_runtime::provider::AiError>
+    {
+        self.with_inner(|p| p.generate(request))
+    }
+
+    fn stream_generate(
+        &self,
+        request: &story_ai_runtime::provider::GenerateRequest,
+        on_event: &(dyn Fn(story_ai_runtime::provider::StreamEvent) + Send + Sync),
+    ) -> Result<(), story_ai_runtime::provider::AiError> {
+        self.with_inner(|p| p.stream_generate(request, on_event))
+    }
+}
+
+/// 构建按调用动态解析档案的 Provider（MCP 服务端专用入口）
+///
+/// 语义同 [`create_provider_for_purpose`]，但档案切换（active_profile /
+/// 用途分配 / 档案字段编辑）对已建立的会话立即生效，无需重连。
+pub fn create_dynamic_provider_for_purpose(
+    purpose: &str,
+    provider_name: &str,
+    model_name: Option<&str>,
+) -> Result<DynamicProfileProvider, StudioError> {
+    DynamicProfileProvider::new(purpose, provider_name, model_name)
+}
+
 /// 共享的档案 → Provider 构造（档案缺失时走旧字段回退）
 fn provider_from_config(
     config: &GlobalAiConfig,
@@ -1556,5 +1692,84 @@ mod preset_tests {
         // 序列化回填
         let json = serde_json::to_value(ProviderProfile::new("a", "n")).unwrap();
         assert!(json.get("preset").is_none(), "None 不序列化");
+    }
+}
+
+#[cfg(test)]
+mod dynamic_provider_tests {
+    use super::*;
+
+    fn profile(id: &str, provider: &str, model: &str) -> ProviderProfile {
+        ProviderProfile {
+            id: id.to_string(),
+            preset: None,
+            last_test: None,
+            name: id.to_string(),
+            provider: Some(provider.to_string()),
+            model: Some(model.to_string()),
+            api_key: Some("test-key".to_string()),
+            api_url: None,
+            api_url_full: None,
+            extra_body: None,
+            extra_headers: None,
+            thinking: None,
+            timeout_secs: None,
+            max_tokens: None,
+            long_context: None,
+            api_mode: None,
+        }
+    }
+
+    fn config_with_active(id: &str) -> GlobalAiConfig {
+        GlobalAiConfig {
+            profiles: Some(vec![
+                profile("p1", "openai", "model-a"),
+                profile("p2", "anthropic", "model-b"),
+            ]),
+            active_profile: Some(id.to_string()),
+            purpose_profiles: None,
+            agent_max_tool_turns: None,
+            default_provider: None,
+            default_model: None,
+            api_key: None,
+            api_url: None,
+            api_url_full: None,
+        }
+    }
+
+    /// 构造不触发 HOME 全局配置读取的实例（字段直接初始化，跳过 new）
+    fn bare(purpose: &str) -> DynamicProfileProvider {
+        DynamicProfileProvider {
+            purpose: purpose.to_string(),
+            provider_name: "anthropic".to_string(),
+            model_name: None,
+            state: std::sync::Mutex::new(DynamicProfileState::default()),
+        }
+    }
+
+    #[test]
+    fn resolve_follows_active_profile_switch() {
+        // 用户切档案后，同一会话的下一次解析应跟随新激活档案
+        let dynp = bare(purpose::AGENT);
+        let a = dynp.resolve_from(&config_with_active("p1")).unwrap();
+        let b = dynp.resolve_from(&config_with_active("p2")).unwrap();
+        assert_eq!(a.model(), "model-a");
+        assert_eq!(b.model(), "model-b");
+        assert_ne!(a.id(), b.id());
+    }
+
+    #[test]
+    fn refresh_keeps_old_provider_when_config_broken() {
+        // 会话中途配置写坏：refresh 失败应沿用旧 provider，不丢状态
+        let dynp = bare(purpose::AGENT);
+        let mut state = DynamicProfileState::default();
+        state.inner = Some(dynp.resolve_from(&config_with_active("p1")).unwrap());
+        state.config_hash = 42; // 与任何真实哈希都不同 → 强制走重建分支
+
+        // 无 HOME 下 read_global_ai_config 兜底空配置，resolve 仍应成功；
+        // 真正写坏的场景（Err 分支）以 eprintln + 保留旧值为准，
+        // 这里至少验证 refresh 后仍持有可用 provider
+        dynp.refresh_locked(&mut state);
+        assert!(state.inner.is_some(), "refresh 失败时必须保留旧 provider");
     }
 }

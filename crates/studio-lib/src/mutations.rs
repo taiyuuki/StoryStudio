@@ -3199,8 +3199,8 @@ pub fn evidence_usage_note(
                     // 三点采样：任一采样段失配即视为基线偏离（中后段改写
                     // 也要拦下，不再只看开头）
                     excerpt_hit(&e.quote)
-                        && e.quote_mid.as_deref().map(&excerpt_hit) != Some(false)
-                        && e.quote_tail.as_deref().map(&excerpt_hit) != Some(false)
+                        && e.quote_mid.as_deref().map(excerpt_hit) != Some(false)
+                        && e.quote_tail.as_deref().map(excerpt_hit) != Some(false)
                 }) && evidence_file
                     .evidence
                     .iter()

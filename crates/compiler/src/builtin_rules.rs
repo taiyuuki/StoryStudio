@@ -680,8 +680,8 @@ impl Rule for EvidenceMismatch {
                             q.is_empty() || body.contains(q)
                         };
                         let drifted = !excerpt_hit(&evidence.quote)
-                            || evidence.quote_mid.as_deref().map(&excerpt_hit) == Some(false)
-                            || evidence.quote_tail.as_deref().map(&excerpt_hit) == Some(false);
+                            || evidence.quote_mid.as_deref().map(excerpt_hit) == Some(false)
+                            || evidence.quote_tail.as_deref().map(excerpt_hit) == Some(false);
                         if drifted {
                             ctx.warning(
                                 self.id(),

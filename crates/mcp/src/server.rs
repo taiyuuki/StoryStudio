@@ -12,7 +12,7 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use story_ai_runtime::{clamp_tool_result, ToolDef, ToolRegistry};
-use story_studio_lib::{create_provider_for_purpose, create_tool_registry, purpose, StudioError};
+use story_studio_lib::{create_tool_registry, purpose, StudioError};
 
 use crate::McpServerOptions;
 
@@ -200,8 +200,10 @@ impl StoryMcpServer {
         }
         // 与桌面端妙笔一致的 provider 解析：agent 用途档案 → 激活档案 →
         // 旧字段 / 环境变量。LLM 工具（ai_check_* 等）实际调用发生在
-        // 工具执行时，启动阶段无需 API Key。
-        let provider = Arc::from(create_provider_for_purpose(
+        // 工具执行时，启动阶段无需 API Key。用动态包装器承载：外部
+        // Agent 会话生命周期远长于一次档案切换，静态 provider 会把旧
+        // 档案冻结在会话里，切档后仍报旧档案的错。
+        let provider = Arc::from(story_studio_lib::create_dynamic_provider_for_purpose(
             purpose::AGENT,
             "anthropic",
             None,

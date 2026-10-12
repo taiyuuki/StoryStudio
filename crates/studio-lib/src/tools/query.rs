@@ -1318,15 +1318,11 @@ impl Tool for GetCharacterStateTool {
             out.push_str("  （无关系记录）\n");
         } else {
             for (_, edge) in &relations {
-                let direction;
-                let other_id;
-                if edge.from == sid {
-                    direction = "→";
-                    other_id = &edge.to;
+                let (direction, other_id) = if edge.from == sid {
+                    ("→", &edge.to)
                 } else {
-                    direction = "←";
-                    other_id = &edge.from;
-                }
+                    ("←", &edge.from)
+                };
                 let other_name = parse_output
                     .ir
                     .semantic
