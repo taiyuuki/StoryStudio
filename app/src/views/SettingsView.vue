@@ -549,29 +549,71 @@ async function mcpApplySettings() {
   }
 }
 
-/** 复制外部 Agent 的接入配置（ZCode mcp.servers 格式，URL + Token 已填好） */
-async function mcpCopyConfig() {
-  const st = mcpStatus.value
-  if (!st?.running) return
-  const text = JSON.stringify(
-    {
-      mcp: {
-        servers: {
-          'story-studio': {
-            type: 'http',
-            url: st.url,
-            headers: { Authorization: `Bearer ${st.token}` },
-            timeoutMs: 300000,
+/**
+ * 接入信息的可复制形态：
+ * - json：`mcpServers` 通用格式，Claude Code / Cursor / Cline / Cherry Studio 等大多数客户端直接可用
+ * - zcode：ZCode settings.json 的 `mcp.servers` 格式
+ * - claude-cli：`claude mcp add` 一行命令
+ * - url / token：单项裸值，供只有表单输入框的客户端手动填写
+ */
+type McpCopyFormat = 'json' | 'zcode' | 'claude-cli' | 'url' | 'token'
+
+const MCP_COPY_DONE: Record<McpCopyFormat, string> = {
+  json: '已复制通用 JSON 配置（含 URL 与 Token）',
+  zcode: '已复制 ZCode 配置（含 URL 与 Token）',
+  'claude-cli': '已复制 Claude Code 添加命令',
+  url: '已复制 URL',
+  token: '已复制 Token',
+}
+
+function mcpCopyText(st: McpServerStatusDto, fmt: McpCopyFormat): string {
+  const auth = `Bearer ${st.token}`
+  switch (fmt) {
+    case 'url':
+      return st.url
+    case 'token':
+      return st.token
+    case 'claude-cli':
+      return `claude mcp add --transport http story-studio ${st.url} --header "Authorization: ${auth}"`
+    case 'zcode':
+      return JSON.stringify(
+        {
+          mcp: {
+            servers: {
+              'story-studio': { type: 'http', url: st.url, headers: { Authorization: auth }, timeoutMs: 300000 },
+            },
           },
         },
-      },
-    },
-    null,
-    2,
-  )
-  await navigator.clipboard.writeText(text)
-  ElMessage.success('接入配置已复制（含 URL 与 Token）')
+        null,
+        2,
+      )
+    case 'json':
+      return JSON.stringify(
+        { mcpServers: { 'story-studio': { type: 'http', url: st.url, headers: { Authorization: auth } } } },
+        null,
+        2,
+      )
+  }
 }
+
+async function mcpCopy(fmt: McpCopyFormat) {
+  const st = mcpStatus.value
+  if (!st?.running) return
+  try {
+    await navigator.clipboard.writeText(mcpCopyText(st, fmt))
+    ElMessage.success(MCP_COPY_DONE[fmt])
+  } catch (err) {
+    ElMessage.error(`复制失败：${(err as Error).message}`)
+  }
+}
+
+const mcpTokenShown = ref(false)
+/** 遮罩显示的 Token：保留首尾各 4 位便于核对，其余打点 */
+const mcpTokenMasked = computed(() => {
+  const t = mcpStatus.value?.token ?? ''
+  if (t.length <= 12) return '••••••••••••'
+  return `${t.slice(0, 4)}••••••••••••${t.slice(-4)}`
+})
 
 // ── 页面加载 / 返回 ────────────────────────────────────
 onMounted(async () => {
@@ -1048,14 +1090,49 @@ function goBack() {
               <div class="sv-mcp-status is-ok">
                 <i class="fa-solid fa-circle-check" />
                 <span>运行中 · {{ mcpStatus.toolCount }} 个工具</span>
-                <button class="ink-btn ink-btn--sm sv-mcp-copy" @click="mcpCopyConfig">
-                  <i class="fa-regular fa-copy" />
-                  复制接入配置
-                </button>
+                <ElDropdown trigger="click" class="sv-mcp-copy" @command="mcpCopy">
+                  <button class="ink-btn ink-btn--sm">
+                    <i class="fa-regular fa-copy" />
+                    复制接入配置
+                    <i class="fa-solid fa-chevron-down sv-mcp-caret" />
+                  </button>
+                  <template #dropdown>
+                    <ElDropdownMenu>
+                      <ElDropdownItem command="json">通用 JSON（mcpServers）</ElDropdownItem>
+                      <ElDropdownItem command="zcode">ZCode（mcp.servers）</ElDropdownItem>
+                      <ElDropdownItem command="claude-cli">Claude Code 命令行（claude mcp add）</ElDropdownItem>
+                    </ElDropdownMenu>
+                  </template>
+                </ElDropdown>
               </div>
-              <button class="sv-mcp-url num" :title="`${mcpStatus.url}（点击复制接入配置）`" @click="mcpCopyConfig">
-                {{ mcpStatus.url }}
-              </button>
+              <div class="sv-mcp-fields">
+                <div class="sv-mcp-field">
+                  <span class="sv-mcp-field-label">URL</span>
+                  <button class="sv-mcp-field-val num" title="点击复制 URL" @click="mcpCopy('url')">
+                    <span>{{ mcpStatus.url }}</span>
+                    <i class="fa-regular fa-copy" />
+                  </button>
+                  <span class="sv-mcp-field-spacer" />
+                </div>
+                <div class="sv-mcp-field">
+                  <span class="sv-mcp-field-label">Token</span>
+                  <button class="sv-mcp-field-val num" title="点击复制 Token" @click="mcpCopy('token')">
+                    <span>{{ mcpTokenShown ? mcpStatus.token : mcpTokenMasked }}</span>
+                    <i class="fa-regular fa-copy" />
+                  </button>
+                  <button
+                    class="ink-icon-btn"
+                    :title="mcpTokenShown ? '隐藏 Token' : '显示 Token'"
+                    @click="mcpTokenShown = !mcpTokenShown"
+                  >
+                    <i class="fa-regular" :class="mcpTokenShown ? 'fa-eye-slash' : 'fa-eye'" />
+                  </button>
+                </div>
+              </div>
+              <p class="sv-card-note sv-mcp-hint">
+                通用 JSON 适用于 Claude Code / Cursor / Cline / Cherry Studio 等大多数客户端；
+                手动填表单时，请求头填 <code class="num">Authorization: Bearer &lt;Token&gt;</code>。
+              </p>
             </template>
             <p v-else-if="!workspace.root" class="sv-mcp-status is-off">
               <i class="fa-regular fa-circle" />
@@ -1908,10 +1985,40 @@ function goBack() {
     margin-left: auto;
   }
 
-  .sv-mcp-url {
-    display: block;
-    width: 100%;
-    margin-top: 8px;
+  .sv-mcp-caret {
+    font-size: 9px;
+    margin-left: 2px;
+    opacity: 0.7;
+  }
+
+  // 接入信息两行：标签 / 可点击复制的值 / 右侧操作位（URL 行用占位保持两行右边对齐）
+  .sv-mcp-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .sv-mcp-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .sv-mcp-field-label {
+    flex: 0 0 44px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--ink-disabled);
+  }
+
+  .sv-mcp-field-val {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 6px 10px;
     border: 1px solid var(--ui-border);
     border-radius: 6px;
@@ -1920,9 +2027,44 @@ function goBack() {
     font-size: 12px;
     text-align: left;
     cursor: copy;
+    transition: border-color 0.2s;
+
+    > span {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    > i {
+      flex-shrink: 0;
+      font-size: 12px;
+      color: var(--ink-muted);
+      transition: color 0.2s;
+    }
 
     &:hover {
       border-color: var(--ink-accent);
+
+      > i {
+        color: var(--ink-accent);
+      }
+    }
+  }
+
+  .sv-mcp-field-spacer {
+    flex: 0 0 30px;
+  }
+
+  .sv-mcp-hint {
+    margin-top: 10px;
+
+    code {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--surface-2);
+      font-size: 10.5px;
     }
   }
 }
