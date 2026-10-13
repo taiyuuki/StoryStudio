@@ -264,6 +264,8 @@ fn run_workflow_inner(
     let paths = ProjectPaths::new(dir);
     let workflow_dir = workflow_dir(dir);
     std::fs::create_dir_all(workflow_dir.join("drafts"))?;
+    // 流水线写点与桌面端 / MCP 外部 Agent 共用项目锁（LLM 生成阶段不持锁）
+    let lock = crate::project_lock::ProjectLock::for_root(dir);
 
     let mut state = load_state(dir)?.unwrap_or_default();
     if let Some(cfg) = &config {
@@ -280,6 +282,7 @@ fn run_workflow_inner(
                 .paused
                 .take()
                 .ok_or_else(|| StudioError::Config("流水线当前没有暂停，无需批准/跳过".into()))?;
+            let _gate = lock.write();
             mutations::set_chapter_outline_status(&paths, pause.index, STATUS_COMPLETED)?;
             let _ = std::fs::remove_file(draft_path(dir, pause.index));
             state.phase = "idle".to_string();
@@ -371,6 +374,7 @@ fn run_workflow_inner(
             if beats.is_empty() {
                 return Err(StudioError::Ai("节拍生成为空，无法继续".into()));
             }
+            let _gate = lock.write();
             mutations::update_chapter_outline_beats(&paths, index, beats.clone())?;
             on_event(WorkflowEvent::BeatsGenerated {
                 index,
@@ -379,26 +383,33 @@ fn run_workflow_inner(
         }
 
         // ---- 2. 落实 structure（chapter / scene / 回填）= checkpoint ----
-        let chapter_id = match &def.chapter_id {
-            Some(id) => id.clone(),
-            None => {
-                let id = mutations::create_chapter(&paths, &def.title)?;
-                mutations::backfill_chapter_outline_id(&paths, index, &id)?;
-                id
+        // 多文件序列（建章 + 回填 ID + 建场景 + 挂脉络 + 置状态）整体持锁；
+        // 守卫必须收在块作用域内——活到阶段 4 的话会与提交闸门同线程重入写锁
+        let (chapter_id, scene_id) = {
+            let _materialize_gate = lock.write();
+            let chapter_id = match &def.chapter_id {
+                Some(id) => id.clone(),
+                None => {
+                    let id = mutations::create_chapter(&paths, &def.title)?;
+                    mutations::backfill_chapter_outline_id(&paths, index, &id)?;
+                    id
+                }
+            };
+            let scene_id = match def.scenes.first() {
+                Some(sid) => sid.clone(),
+                None => {
+                    let pov = def.characters.first().cloned();
+                    let sid =
+                        mutations::create_scene(&paths, &chapter_id, &def.title, pov.as_deref())?;
+                    mutations::append_chapter_outline_scene(&paths, index, &sid)?;
+                    sid
+                }
+            };
+            if def.status == STATUS_PLANNED {
+                mutations::set_chapter_outline_status(&paths, index, STATUS_WRITING)?;
             }
+            (chapter_id, scene_id)
         };
-        let scene_id = match def.scenes.first() {
-            Some(sid) => sid.clone(),
-            None => {
-                let pov = def.characters.first().cloned();
-                let sid = mutations::create_scene(&paths, &chapter_id, &def.title, pov.as_deref())?;
-                mutations::append_chapter_outline_scene(&paths, index, &sid)?;
-                sid
-            }
-        };
-        if def.status == STATUS_PLANNED {
-            mutations::set_chapter_outline_status(&paths, index, STATUS_WRITING)?;
-        }
         on_event(WorkflowEvent::ChapterMaterialized {
             index,
             chapter_id: chapter_id.clone(),
@@ -534,15 +545,26 @@ fn run_workflow_inner(
             format!("{partial}{}", draft.text.trim())
         };
 
-        // 重写时复用已有 fragment（ID 稳定），否则新建
-        let existing_fragment = first_fragment_of_scene(&compile_result.ir, &scene_id);
-        let fragment_id = match &existing_fragment {
-            Some(fid) => {
-                mutations::write_fragment_text_anchored(&paths, fid, &final_text, &draft.anchors)?;
-                fid.clone()
-            }
-            None => {
-                mutations::create_fragment_anchored(&paths, &scene_id, &final_text, &draft.anchors)?
+        // 重写时复用已有 fragment（ID 稳定），否则新建；查-改整体持锁
+        let fragment_id = {
+            let _commit_gate = lock.write();
+            let existing_fragment = first_fragment_of_scene(&compile_result.ir, &scene_id);
+            match &existing_fragment {
+                Some(fid) => {
+                    mutations::write_fragment_text_anchored(
+                        &paths,
+                        fid,
+                        &final_text,
+                        &draft.anchors,
+                    )?;
+                    fid.clone()
+                }
+                None => mutations::create_fragment_anchored(
+                    &paths,
+                    &scene_id,
+                    &final_text,
+                    &draft.anchors,
+                )?,
             }
         };
 
@@ -563,6 +585,7 @@ fn run_workflow_inner(
         });
 
         if passed {
+            let _gate = lock.write();
             mutations::set_chapter_outline_status(&paths, index, STATUS_COMPLETED)?;
             let _ = std::fs::remove_file(draft_path(dir, index));
             on_event(WorkflowEvent::ChapterCompleted { index });

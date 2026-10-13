@@ -369,6 +369,9 @@ fn cmd_init(name: &str, location: &str) -> Result<(), StudioError> {
 // ============================================================================
 
 fn cmd_repair(dir: &str) -> Result<(), StudioError> {
+    // 修复是批量写操作，与桌面端 / MCP 在同一把项目锁上排队
+    let _gate =
+        story_studio_lib::project_lock::ProjectLock::for_root(std::path::Path::new(dir)).write();
     let report = story_studio_lib::repair_project(std::path::Path::new(dir))?;
     if report.fragments_cleaned.is_empty()
         && report.assertions_fixed == 0
@@ -563,6 +566,8 @@ fn cmd_write(
     );
 
     if save {
+        // 落盘瞬间进项目锁（生成阶段不持锁），与桌面端 / MCP 写操作排队
+        let _gate = story_studio_lib::project_lock::ProjectLock::for_root(&project_dir).write();
         match story_studio_lib::save_write_result(&project_dir, scene_id_str, &result) {
             Ok(saved_ids) => {
                 println!("✓ 已保存 {} 个 Fragment：", saved_ids.len());
