@@ -21,26 +21,30 @@ use crate::McpServerOptions;
 /// MCP 客户端没有宿主 UI，外部 Agent 应直接询问自己的用户。
 pub const HIDDEN_TOOLS: &[&str] = &["ask_user"];
 
-/// 只读模式白名单：仅暴露不修改项目的查询 / 分析类工具。
-/// 分类表已下沉至 studio-lib（工具并发闸门共用同一份），此处原样转出。
-pub use story_studio_lib::tools::READ_ONLY_TOOLS;
-
+/// 只读模式的暴露规则：以**注册表自己的分类**为准
+/// （`ToolRegistry::register_readonly`，与工具并发闸门同一来源）。
+///
+/// 此前 MCP 另存一份名字白名单，与注册表是两份事实，改名或新增工具时
+/// 只读模式会静默失真；现在分类只有注册点一个真源。
+///
 /// 工具在当前模式下是否暴露
-pub fn is_exposed(name: &str, read_only: bool) -> bool {
+pub fn is_exposed(registry: &ToolRegistry, name: &str, read_only: bool) -> bool {
     if HIDDEN_TOOLS.contains(&name) {
         return false;
     }
     if read_only {
-        READ_ONLY_TOOLS.contains(&name)
+        registry.is_read_only(name)
     } else {
         true
     }
 }
 
-/// 内部 ToolDef 列表 → MCP 工具描述符列表（按模式过滤）
-pub fn build_tool_descriptors(defs: Vec<ToolDef>, read_only: bool) -> Vec<Tool> {
-    defs.into_iter()
-        .filter(|d| is_exposed(&d.name, read_only))
+/// 注册表 → MCP 工具描述符列表（按模式过滤）
+pub fn build_tool_descriptors(registry: &ToolRegistry, read_only: bool) -> Vec<Tool> {
+    registry
+        .definitions()
+        .into_iter()
+        .filter(|d| is_exposed(registry, &d.name, read_only))
         .map(mcp_tool_from_def)
         .collect()
 }
@@ -93,7 +97,7 @@ fn execute_gated(
         )));
     }
     // 只读模式在调用层复核：即使客户端绕过 tools/list 直接调用
-    if read_only && !READ_ONLY_TOOLS.contains(&name) {
+    if read_only && !registry.is_read_only(name) {
         return Err(CallFailure::MethodNotFound(format!(
             "服务器以 --read-only 模式启动，{name} 会修改项目，不可用"
         )));
@@ -132,7 +136,7 @@ impl StoryMcpServer {
             None,
         )?);
         let registry = Arc::new(create_tool_registry(&dir, provider));
-        let tools = build_tool_descriptors(registry.definitions(), options.read_only);
+        let tools = build_tool_descriptors(&registry, options.read_only);
         let instructions = build_instructions(&dir, options.read_only);
         Ok(Self {
             registry,

@@ -121,43 +121,18 @@ impl Tool for AskUserTool {
 // 工具并发闸门（读共享 / 写排他）
 // ============================================================================
 
-/// 查询 / 分析类工具白名单——不修改项目，执行期间共享读锁。
-/// 刻意用白名单而非黑名单：registry 新增工具默认按变更处理（安全默认），
-/// 确认无副作用后才手工加入。MCP 的只读模式暴露表与此同源。
-pub const READ_ONLY_TOOLS: &[&str] = &[
-    // 结构 / 实体 / 知识 / 线索 / 正文 / 大纲 / 世界观查询
-    "get_structure",
-    "get_project_stats",
-    "search_entities",
-    "get_entity_detail",
-    "profile_check",
-    "get_relations",
-    "query_assertions",
-    "get_character_state",
-    "find_mentions",
-    "search_text",
-    "get_scene_context",
-    "get_threads",
-    "get_thread_detail",
-    "read_fragment_text",
-    "read_scene_full_text",
-    "list_fragment_versions",
-    "get_outline",
-    "get_chapter_outline",
-    "get_worldview",
-    "get_writing_guide",
-    "prepare_writing",
-    "list_unresolved_refs",
-    // 校验 / 分析（不改项目，但 ai_check_* / get_story_recap 会调用 AI 服务）
-    "compile_check",
-    "ai_check_fragment",
-    "ai_check_scene",
-    "ai_check_chapter",
-    "ai_check_pov",
-    "get_story_recap",
-    // 交互工具：不改项目，但会阻塞等待用户回答——绝不能持写锁
-    "ask_user",
-];
+// 读 / 写分类的唯一真源是注册点：ToolRegistry::register（默认按会写处理）
+// 与 ToolRegistry::register_readonly（不改动项目文档树）。此前这里维护一份
+// 名字白名单，注册表新增或改了工具名时没有任何机制会发现，MCP 只读模式的
+// 暴露表与工具闸门的读锁都会跟着失真。
+//
+// 判定口径是"是否改动项目文档树"，不是"是否有任何副作用"：
+// - ai_check_* 会写 AI 台账（旁路日志，写入自身有原子性与回读校验），
+//   但不碰稿件——仍算只读。否则一次整章审校要独占写锁数分钟，把所有读写
+//   都堵住（代价仅是极端并发下可能丢一条台账记录）；
+// - get_story_recap 会把现场生成的场景摘要写回 structure.toml，属于项目
+//   SoT 的读-改-写，必须持写锁，因此不是只读；
+// - ask_user 不改项目，但会阻塞等待用户回答，绝不能持写锁。
 
 /// 带项目闸门的工具包装：查询类共享读锁，其余（默认）整体持写锁——
 /// 扫描→分配→落盘因此原子，并发的 ID 分配竞态（多路 create_* 分到同一
@@ -192,32 +167,40 @@ impl Tool for GatedTool {
 }
 
 // ============================================================================
+/// 构建完整工具注册表，并给每个工具套上项目闸门。
+///
+/// **每个工具必须在注册点声明读写分类**：改动项目文档树的用
+/// [`ToolRegistry::register`]（默认），不碰稿件的用
+/// [`ToolRegistry::register_readonly`]。这一处声明同时决定两件事——
+/// 工具执行期间持读锁还是写锁，以及 MCP `--read-only` 模式是否暴露它。
+/// 漏标的代价是"少一点并发"（默认按会写处理），不会反向出错。
 pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRegistry {
     let ctx = ToolContext::with_provider(dir.to_path_buf(), provider);
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(AskUserTool));
-    registry.register(Box::new(PrepareWritingTool::new(ctx.clone())));
-    registry.register(Box::new(GetWritingGuideTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(AskUserTool));
+    registry.register_readonly(Box::new(PrepareWritingTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetWritingGuideTool::new(ctx.clone())));
     registry.register(Box::new(CreateCharacterTool::new(ctx.clone())));
     registry.register(Box::new(CreateLocationTool::new(ctx.clone())));
     registry.register(Box::new(CreateItemTool::new(ctx.clone())));
     registry.register(Box::new(CreateOrganizationTool::new(ctx.clone())));
-    registry.register(Box::new(SearchEntitiesTool::new(ctx.clone())));
-    registry.register(Box::new(GetEntityDetailTool::new(ctx.clone())));
-    registry.register(Box::new(ProfileCheckTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(SearchEntitiesTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetEntityDetailTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(ProfileCheckTool::new(ctx.clone())));
     registry.register(Box::new(DeleteEntityTool::new(ctx.clone())));
     registry.register(Box::new(MergeEntitiesTool::new(ctx.clone())));
     registry.register(Box::new(RevealCharacterNameTool::new(ctx.clone())));
+    // 会写回 structure.toml（现场生成的场景摘要落盘）——必须持写锁
     registry.register(Box::new(GetStoryRecapTool::new(ctx.clone())));
-    registry.register(Box::new(GetRelationsTool::new(ctx.clone())));
-    registry.register(Box::new(QueryAssertionsTool::new(ctx.clone())));
-    registry.register(Box::new(GetCharacterStateTool::new(ctx.clone())));
-    registry.register(Box::new(FindMentionsTool::new(ctx.clone())));
-    registry.register(Box::new(SearchTextTool::new(ctx.clone())));
-    registry.register(Box::new(GetProjectStatsTool::new(ctx.clone())));
-    registry.register(Box::new(GetSceneContextTool::new(ctx.clone())));
-    registry.register(Box::new(CompileCheckTool::new(ctx.clone())));
-    registry.register(Box::new(GetStructureTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetRelationsTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(QueryAssertionsTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetCharacterStateTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(FindMentionsTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(SearchTextTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetProjectStatsTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetSceneContextTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(CompileCheckTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetStructureTool::new(ctx.clone())));
     registry.register(Box::new(CreateSceneTool::new(ctx.clone())));
     registry.register(Box::new(CreateChapterTool::new(ctx.clone())));
     registry.register(Box::new(UpdateSceneTool::new(ctx.clone())));
@@ -236,8 +219,8 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(RemoveRelationTool::new(ctx.clone())));
     registry.register(Box::new(UpdateRelationTool::new(ctx.clone())));
     registry.register(Box::new(CreateThreadTool::new(ctx.clone())));
-    registry.register(Box::new(GetThreadsTool::new(ctx.clone())));
-    registry.register(Box::new(GetThreadDetailTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetThreadsTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetThreadDetailTool::new(ctx.clone())));
     registry.register(Box::new(UpdateThreadTool::new(ctx.clone())));
     registry.register(Box::new(AdvanceThreadTool::new(ctx.clone())));
     registry.register(Box::new(SetThreadKnowledgeTool::new(ctx.clone())));
@@ -245,46 +228,46 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(DeleteThreadTool::new(ctx.clone())));
     registry.register(Box::new(WriteFragmentTextTool::new(ctx.clone())));
     registry.register(Box::new(EditFragmentTextTool::new(ctx.clone())));
-    registry.register(Box::new(ReadFragmentTextTool::new(ctx.clone())));
-    registry.register(Box::new(ReadSceneFullTextTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(ReadFragmentTextTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(ReadSceneFullTextTool::new(ctx.clone())));
     registry.register(Box::new(AppendFragmentTextTool::new(ctx.clone())));
     registry.register(Box::new(DeleteFragmentTool::new(ctx.clone())));
     registry.register(Box::new(RewriteFragmentTool::new(ctx.clone())));
     registry.register(Box::new(SplitFragmentTool::new(ctx.clone())));
     registry.register(Box::new(MergeFragmentsTool::new(ctx.clone())));
     registry.register(Box::new(MoveFragmentTool::new(ctx.clone())));
-    registry.register(Box::new(ListFragmentVersionsTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(ListFragmentVersionsTool::new(ctx.clone())));
     registry.register(Box::new(RestoreFragmentVersionTool::new(ctx.clone())));
     registry.register(Box::new(SetFragmentAnchorTool::new(ctx.clone())));
     registry.register(Box::new(RemoveFragmentAnchorTool::new(ctx.clone())));
     registry.register(Box::new(AnchorFragmentsTool::new(ctx.clone())));
-    registry.register(Box::new(ListUnresolvedRefsTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(ListUnresolvedRefsTool::new(ctx.clone())));
     registry.register(Box::new(ResolveUnresolvedRefTool::new(ctx.clone())));
-    registry.register(Box::new(AiCheckTool::new(ctx.clone())));
-    registry.register(Box::new(AiCheckScopeTool::chapter(ctx.clone())));
-    registry.register(Box::new(AiCheckScopeTool::scene(ctx.clone())));
-    registry.register(Box::new(AiCheckPovTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(AiCheckTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(AiCheckScopeTool::chapter(ctx.clone())));
+    registry.register_readonly(Box::new(AiCheckScopeTool::scene(ctx.clone())));
+    registry.register_readonly(Box::new(AiCheckPovTool::new(ctx.clone())));
     registry.register(Box::new(UpdateEntityTool::new(ctx.clone())));
-    registry.register(Box::new(GetOutlineTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetOutlineTool::new(ctx.clone())));
     registry.register(Box::new(SetOutlineItemTool::new(ctx.clone())));
     registry.register(Box::new(UpdateOutlineItemTool::new(ctx.clone())));
     registry.register(Box::new(DeleteOutlineItemTool::new(ctx.clone())));
     registry.register(Box::new(DesignChaptersTool::new(ctx.clone())));
     registry.register(Box::new(PopulateScenesFromBeatsTool::new(ctx.clone())));
-    registry.register(Box::new(GetChapterOutlineTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetChapterOutlineTool::new(ctx.clone())));
     registry.register(Box::new(UpdateChapterOutlineTool::new(ctx.clone())));
     registry.register(Box::new(DeleteChapterOutlineTool::new(ctx.clone())));
-    registry.register(Box::new(GetWorldviewTool::new(ctx.clone())));
+    registry.register_readonly(Box::new(GetWorldviewTool::new(ctx.clone())));
     registry.register(Box::new(SetWorldviewItemTool::new(ctx.clone())));
     registry.register(Box::new(SetTimelineErasTool::new(ctx.clone())));
     registry.register(Box::new(UpdateWorldviewItemTool::new(ctx.clone())));
     registry.register(Box::new(DeleteWorldviewItemTool::new(ctx.clone())));
     // 全部工具套项目闸门：桌面端妙笔、MCP（stdio / 内嵌 HTTP）、CLI
     // 的每一次工具调用都经同一把 ProjectLock（进程内 RwLock + 跨进程
-    // 文件锁）排队，读写分类见 READ_ONLY_TOOLS
+    // 文件锁）排队。读写分类由注册点声明、经 map_tools 透传给闸门——
+    // 闸门不再自己去翻白名单，分类不可能与注册表脱节
     let lock = crate::project_lock::ProjectLock::for_root(dir);
-    registry.map_tools(move |t| {
-        let is_read = READ_ONLY_TOOLS.contains(&t.definition().name.as_str());
+    registry.map_tools(move |t, is_read| {
         Box::new(GatedTool {
             inner: t,
             lock: lock.clone(),

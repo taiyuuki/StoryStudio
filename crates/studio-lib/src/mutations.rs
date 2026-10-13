@@ -1509,12 +1509,15 @@ pub fn delete_chapter(
 
     structure.book.chapters.retain(|ch| ch != chapter_id);
 
-    // 级联删除 scene 和 fragment 文件
+    // 级联删除 scene 和 fragment 文件。顺序：先摘条目并**快照**，
+    // 再落盘 structure，最后才删正文文件。
+    let mut doomed: Vec<String> = Vec::new();
     for scene_id in &chapter.scenes {
-        cascade_delete_scene_files(paths, &mut structure, scene_id);
+        doomed.extend(detach_scene_fragments(paths, &mut structure, scene_id));
     }
 
     structure.save(&structure_path)?;
+    remove_fragment_files(paths, &doomed);
 
     let unlinked = unlink_chapter_outline(paths, chapter_id);
     Ok(unlinked)
@@ -1857,6 +1860,12 @@ pub fn merge_scenes(
 ///
 /// 从所属 chapter.scenes 移除 + 删除 scene 条目。
 /// 级联删除其下所有 fragment 文件。
+///
+/// 顺序：**先快照 → 再落盘 structure → 最后删正文文件**。反序（旧实现
+/// 先删文件再写 structure）在写盘失败时留下"structure 仍引用着已不存在
+/// 的片段"的半损坏状态，而正文已经没了；而 scene / chapter 级联删除此前
+/// **完全不快照**（单片段删除 `delete_fragment` 是快照的），一次误删就
+/// 是永久损失。
 pub fn delete_scene(paths: &ProjectPaths, scene_id: &str) -> Result<(), StudioError> {
     let structure_path = paths.structure_toml();
     let mut structure = load_structure(paths)?;
@@ -1871,19 +1880,50 @@ pub fn delete_scene(paths: &ProjectPaths, scene_id: &str) -> Result<(), StudioEr
         chapter.scenes.retain(|s| s != scene_id);
     }
 
-    cascade_delete_scene_files(paths, &mut structure, scene_id);
+    let doomed = detach_scene_fragments(paths, &mut structure, scene_id);
 
     structure.save(&structure_path)?;
+    remove_fragment_files(paths, &doomed);
     Ok(())
 }
 
-/// 内部：删除 scene 条目 + 其下所有 fragment 文件（不改 structure 的 chapters/scenes 数组）
-fn cascade_delete_scene_files(paths: &ProjectPaths, structure: &mut StructureFile, scene_id: &str) {
-    if let Some(scene) = structure.scene.remove(scene_id) {
-        let frag_dir = paths.fragments_dir();
-        for frag_id in &scene.fragments {
-            let frag_path = frag_dir.join(format!("{frag_id}.md"));
-            std::fs::remove_file(&frag_path).ok();
+/// 从 structure 摘掉 scene 条目，返回其下片段 ID。
+///
+/// 摘条目之前对每个片段调 [`crate::history::force_snapshot`]——级联删除是
+/// 不可逆的物理删除，版本历史是唯一的找回途径；这里用 force（不受节流与
+/// 间隔限制），因为删掉之后没有第二次机会。
+fn detach_scene_fragments(
+    paths: &ProjectPaths,
+    structure: &mut StructureFile,
+    scene_id: &str,
+) -> Vec<String> {
+    let Some(scene) = structure.scene.remove(scene_id) else {
+        return Vec::new();
+    };
+    for frag_id in &scene.fragments {
+        crate::history::force_snapshot(paths, frag_id);
+    }
+    scene.fragments
+}
+
+/// 删除片段正文文件（级联删除的第二步）。
+///
+/// 失败不再静默吞掉（旧实现 `.ok()`）：文件删不掉时结构已经摘了引用，
+/// 磁盘上会留下"字数统计算它、阅读序看不到它"的孤儿片段，必须在日志里
+/// 留痕，否则这类不一致无从排查。
+fn remove_fragment_files(paths: &ProjectPaths, fragment_ids: &[String]) {
+    let frag_dir = paths.fragments_dir();
+    for frag_id in fragment_ids {
+        let frag_path = frag_dir.join(format!("{frag_id}.md"));
+        if let Err(e) = std::fs::remove_file(&frag_path) {
+            // 文件本就不存在不算异常（可能从未落盘或已被清理）
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "[delete] 片段文件删除失败（结构已摘除引用，磁盘可能残留孤儿文件）：\
+                     {} → {e}",
+                    frag_path.display()
+                );
+            }
         }
     }
 }
@@ -2616,11 +2656,13 @@ pub fn delete_fragment(paths: &ProjectPaths, fragment_id: &str) -> Result<(), St
     // 删除前把即将消失的内容强制留底到版本历史（目录随项目走，可手工找回）
     crate::history::force_snapshot(paths, fragment_id);
 
-    std::fs::remove_file(&frag_path)?;
-    crate::journal::record(paths.root(), "fragment_delete", &frag_path, 0, true, None);
-
     // 从 scene.fragments 移除引用；移除前记录原场景与位置（tombstone），
     // 供 restore_fragment_version 把恢复的片段挂回原位
+    //
+    // 顺序：**先落盘结构、再删文件**。反序（旧实现先 remove_file 再 save）
+    // 在 save 失败时留下"structure 仍引用着已删除片段"的悬空引用，而正文
+    // 已经没了——最坏情况变成磁盘上多一个不再被引用的孤儿文件，可恢复、
+    // 有日志可查。
     let structure_path = paths.structure_toml();
     if structure_path.exists() {
         let mut structure = load_structure(paths)?;
@@ -2639,6 +2681,18 @@ pub fn delete_fragment(paths: &ProjectPaths, fragment_id: &str) -> Result<(), St
         if changed {
             structure.save(&structure_path)?;
         }
+    }
+
+    match std::fs::remove_file(&frag_path) {
+        Ok(()) => {
+            crate::journal::record(paths.root(), "fragment_delete", &frag_path, 0, true, None)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!(
+            "[delete] 片段文件删除失败（结构已摘除引用，磁盘可能残留孤儿文件）：\
+             {} → {e}",
+            frag_path.display()
+        ),
     }
 
     Ok(())
@@ -2777,8 +2831,13 @@ pub fn merge_fragments(
     // 写回 primary
     story_project_format::atomic::write(&primary_path, &primary.to_markdown())?;
 
-    // 删除 secondary（文件 + structure 引用）
-    std::fs::remove_file(&secondary_path)?;
+    // 删除 secondary 前留底：合并是"内容进 primary、身份消失"，正文虽还在
+    // primary 里，但合错了对象（选错 secondary）就没有第二次机会——
+    // 版本历史是唯一的回头路。
+    crate::history::force_snapshot(paths, secondary_id);
+
+    // 顺序：先改 structure、再删文件（反序在 save 失败时会留下指向已删文件
+    // 的悬空引用）
     let structure_path = paths.structure_toml();
     if structure_path.exists() {
         let mut structure = load_structure(paths)?;
@@ -2793,6 +2852,16 @@ pub fn merge_fragments(
         if changed {
             structure.save(&structure_path)?;
         }
+    }
+
+    match std::fs::remove_file(&secondary_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!(
+            "[merge_fragments] 被合并片段文件删除失败（结构已摘除引用，磁盘残留孤儿文件）：\
+             {} → {e}",
+            secondary_path.display()
+        ),
     }
 
     Ok(())
@@ -5190,6 +5259,42 @@ mod tests {
 
         let structure = load_structure(&paths).unwrap();
         assert_eq!(structure.chapter[&id].title, "新标题");
+    }
+
+    /// 回归：级联删除正文前必须留版本快照。
+    ///
+    /// 此前 scene / chapter 级联删除**完全不快照**（单个 `delete_fragment`
+    /// 是快照的），一次误删章节就是不可逆的永久损失。同时锁定删除顺序：
+    /// 先落盘结构、再删文件——反序在保存失败时会留下指向已删文件的悬空引用。
+    #[test]
+    fn cascade_delete_snapshots_fragments_before_removing() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch_id = create_chapter(&paths, "测试章").unwrap();
+        let sc_id = create_scene(&paths, &ch_id, "场景A", None).unwrap();
+        let frag_id = create_fragment(&paths, &sc_id, "要被级联删掉的正文").unwrap();
+
+        delete_scene(&paths, &sc_id).unwrap();
+
+        // 文件已删、结构已摘引用
+        assert!(!paths.fragments_dir().join(format!("{frag_id}.md")).exists());
+        let structure = load_structure(&paths).unwrap();
+        assert!(!structure.scene.contains_key(&sc_id));
+        assert!(structure.chapter.contains_key(&ch_id), "章节本身不应被删");
+
+        // 但正文可从版本历史找回：删除是可逆的
+        let versions = crate::history::list_versions(&paths, &frag_id).unwrap();
+        assert!(
+            !versions.is_empty(),
+            "级联删除前必须 force_snapshot，否则正文不可恢复"
+        );
+        let restored = crate::history::read_version(&paths, &frag_id, versions[0].timestamp)
+            .expect("快照内容应可读回");
+        assert!(
+            restored.contains("要被级联删掉的正文"),
+            "快照应包含被删正文，实得：{restored}"
+        );
     }
 
     #[test]

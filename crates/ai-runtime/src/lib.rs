@@ -24,8 +24,8 @@ pub mod stream_cancel;
 pub mod task;
 
 pub use agent::{
-    clamp_tool_result, Agent, AgentConfig, AgentState, AgentStep, AgentTrace, Scratchpad, SubTask,
-    TaskPlan, Tool, ToolRegistry,
+    clamp_tool_result, is_retryable_error, Agent, AgentConfig, AgentState, AgentStep, AgentTrace,
+    Scratchpad, SubTask, TaskPlan, Tool, ToolRegistry,
 };
 pub use cancel::CancelToken;
 pub use context::ContextBuilder;

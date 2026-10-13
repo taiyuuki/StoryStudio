@@ -36,10 +36,24 @@ pub trait Tool: Send + Sync {
 // ToolRegistry
 // ============================================================================
 
+/// 注册表中的一项：工具本体 + 它对项目的影响面。
+///
+/// 名称在注册时取一次并缓存：`execute` / `is_read_only` 都要按名查找，
+/// 旧实现每次比较都现构造一个 `ToolDef`（含描述字符串与整个 JSON Schema），
+/// 83 个工具的注册表下一次调用要白白构造几十个 `ToolDef`。
+struct RegisteredTool {
+    /// 缓存的定义名（注册时从 `definition()` 取一次）
+    name: String,
+    tool: Box<dyn Tool>,
+    /// 是否只读（不改动项目文档树）。
+    /// 由注册点声明，是读 / 写分类的**唯一真源**。
+    read_only: bool,
+}
+
 /// 工具注册表 — 管理可用工具
 #[derive(Default)]
 pub struct ToolRegistry {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<RegisteredTool>,
 }
 
 impl ToolRegistry {
@@ -47,14 +61,39 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// 注册工具
+    /// 注册工具（默认按"会改动项目"处理）
+    ///
+    /// 读 / 写分类只有一个真源：**注册点**。默认值是"会写"——新增工具若忘了
+    /// 声明只读，代价只是它不参与读锁与只读模式（少一点并发），不会反向出错。
+    /// 只读工具请用 [`ToolRegistry::register_readonly`]。
+    ///
+    /// 此前分类散在 `studio-lib` 的一个名字白名单里，注册表改名或新增工具时
+    /// 不会被编译器或测试发现，MCP 只读模式与闸门读锁都跟着失真。
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.push(tool);
+        self.push(tool, false);
+    }
+
+    /// 注册只读工具：不改动项目文档树，可参与共享读锁与 MCP 只读模式
+    pub fn register_readonly(&mut self, tool: Box<dyn Tool>) {
+        self.push(tool, true);
+    }
+
+    fn push(&mut self, tool: Box<dyn Tool>, read_only: bool) {
+        let name = tool.definition().name;
+        debug_assert!(
+            !self.tools.iter().any(|t| t.name == name),
+            "工具名重复注册：{name}（同名工具会让 execute 只命中第一个）"
+        );
+        self.tools.push(RegisteredTool {
+            name,
+            tool,
+            read_only,
+        });
     }
 
     /// 获取所有工具定义（给 LLM）
     pub fn definitions(&self) -> Vec<ToolDef> {
-        self.tools.iter().map(|t| t.definition()).collect()
+        self.tools.iter().map(|t| t.tool.definition()).collect()
     }
 
     /// 工具数量
@@ -65,6 +104,24 @@ impl ToolRegistry {
     /// 是否为空
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// 该工具是否只读。未知名字按"会写"处理（安全默认）。
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.read_only)
+            .unwrap_or(false)
+    }
+
+    /// 全部只读工具名（保持注册顺序）
+    pub fn read_only_names(&self) -> Vec<&str> {
+        self.tools
+            .iter()
+            .filter(|t| t.read_only)
+            .map(|t| t.name.as_str())
+            .collect()
     }
 
     /// 按名称查找并执行工具
@@ -79,15 +136,29 @@ impl ToolRegistry {
     ) -> Option<Result<String, String>> {
         self.tools
             .iter()
-            .find(|t| t.definition().name == name)
-            .map(|t| t.execute(arguments))
+            .find(|t| t.name == name)
+            .map(|t| t.tool.execute(arguments))
     }
 
     /// 逐工具包装（装饰器入口）：保持注册顺序，`definition()` 由包装器透传。
     /// studio-lib 用它给全部工具套项目并发闸门（读共享 / 写排他）。
-    pub fn map_tools(self, wrap: impl Fn(Box<dyn Tool>) -> Box<dyn Tool>) -> ToolRegistry {
+    ///
+    /// 闭包同时收到该工具的读写分类——装饰器不必自己再翻一遍白名单，
+    /// 分类始终只有注册点一个来源。
+    pub fn map_tools(self, wrap: impl Fn(Box<dyn Tool>, bool) -> Box<dyn Tool>) -> ToolRegistry {
         ToolRegistry {
-            tools: self.tools.into_iter().map(wrap).collect(),
+            tools: self
+                .tools
+                .into_iter()
+                .map(|t| {
+                    let read_only = t.read_only;
+                    RegisteredTool {
+                        name: t.name,
+                        tool: wrap(t.tool, read_only),
+                        read_only,
+                    }
+                })
+                .collect(),
         }
     }
 }
@@ -859,18 +930,34 @@ impl Agent {
         // 连接长时间无数据被中间网络设备掐断。stream_with_cancel 已支持 tool_call
         // 增量解析。仅当 on_delta=None（非交互测试场景）时回退到同步 generate。
         //
-        // 网络重试：最多 MAX_LLM_RETRIES 次，指数退避；API 错误和取消不重试。
+        // 网络重试：最多 MAX_LLM_RETRIES 次，指数退避；永久性错误和取消不重试。
         const MAX_LLM_RETRIES: usize = 10;
 
+        // 本轮是否已经向消费方推送过增量。一旦推过就不再自动重试：重试会
+        // 从头发一遍完整增量，而消费方（前端）是按追加处理的，结果是正文
+        // 出现重复段落。宁可报错让用户决定重发，也不静默产出重复文本。
+        let partial_emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
         for attempt in 0..=MAX_LLM_RETRIES {
+            partial_emitted.store(false, std::sync::atomic::Ordering::Relaxed);
             let result = if let Some(ref delta_cb) = on_delta {
-                self.stream_with_cancel(request.clone(), Arc::clone(delta_cb))
+                let inner = Arc::clone(delta_cb);
+                let flag = Arc::clone(&partial_emitted);
+                let tracked: DeltaCallback = Arc::new(move |delta: String| {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    inner(delta);
+                });
+                self.stream_with_cancel(request.clone(), tracked)
             } else {
                 self.generate_with_cancel(request.clone())
             };
             match result {
                 Ok(r) => return Ok(r),
-                Err(ref e) if attempt < MAX_LLM_RETRIES && is_retryable(e) => {
+                Err(ref e)
+                    if attempt < MAX_LLM_RETRIES
+                        && is_retryable_error(e)
+                        && !partial_emitted.load(std::sync::atomic::Ordering::Relaxed) =>
+                {
                     let backoff = backoff_ms(attempt);
                     let reason = error_display(e);
                     tracing::warn!(
@@ -892,7 +979,21 @@ impl Agent {
                     std::thread::sleep(std::time::Duration::from_millis(backoff));
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // 已推送增量后放弃重试的场合单独记一条，便于区分
+                    // "本来就不该重试"与"为了不重复而忍住了重试"
+                    if partial_emitted.load(std::sync::atomic::Ordering::Relaxed)
+                        && attempt < MAX_LLM_RETRIES
+                        && is_retryable_error(&e)
+                    {
+                        tracing::warn!(
+                            target: "agent::call_llm",
+                            error = %error_display(&e),
+                            "已推送部分增量，放弃重试以避免正文重复（请用户手动重发）"
+                        );
+                    }
+                    return Err(e);
+                }
             }
         }
         // 不可达：循环要么 return Ok，要么 return Err
@@ -1367,29 +1468,63 @@ fn backoff_ms(attempt: usize) -> u64 {
     std::cmp::min(BASE * 2u64.pow(attempt as u32), CAP)
 }
 
+/// 永久性错误线索——**必须先于可重试关键词判断**。
+///
+/// 旧实现用 `message.contains("exceeded")` / `"quota"` 判可重试，于是
+/// `context_length_exceeded`（上下文超限）与 `insufficient_quota`（欠费）
+/// 这两个**重试多少次都不会成功**的错误被判为可重试，白等一串指数退避。
+const PERMANENT_ERROR_HINTS: &[&str] = &[
+    "context_length_exceeded",
+    "context length",
+    "maximum context",
+    "context window",
+    "insufficient_quota",
+    "insufficient quota",
+    "billing",
+    "model_not_found",
+    "invalid_api_key",
+    "invalid api key",
+    "content_policy",
+    "content_filter",
+];
+
+/// 无状态码时可用于判定"限流"的关键词（真正需要退避重试的那一类）
+const RETRYABLE_ERROR_HINTS: &[&str] = &[
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "overloaded",
+    "temporarily unavailable",
+    "quota exceeded",
+];
+
 /// 判断错误是否可重试（速率限制、临时网络问题、服务端错误）。
 ///
-/// 以下情况视为可恢复，应等待后重试：
-/// - `AiError::Network`：网络超时、连接中断等
-/// - `AiError::Api` 状态码 429（速率限制）、500/502/503/504（服务端临时错误）
-/// - `AiError::Api` 消息含 quota/rate_limit/exceeded 等关键词
-fn is_retryable(e: &AiError) -> bool {
+/// 不重试的判断同样重要——上游重试预算 `MAX_LLM_RETRIES = 10`，退避合计
+/// 可达数分钟，把永久性错误当临时错误重试等于让用户白等：
+/// - `AiError::Auth`：Key 无效，重试不可能改变结果
+/// - 4xx（除 408/429）：请求本身有问题（模型名错、参数非法、上下文超限）
+/// - 命中 [`PERMANENT_ERROR_HINTS`] 的消息，即使含 "quota"/"exceeded"
+pub fn is_retryable_error(e: &AiError) -> bool {
     match e {
         AiError::Network(_) => true,
         AiError::Api { status, message } => {
-            // 429 = 速率限制；5xx = 服务端临时错误
-            if *status == 429 || (500..=599).contains(status) {
+            // 429 = 速率限制，408 = 请求超时，5xx = 服务端临时错误
+            if *status == 429 || *status == 408 || (500..=599).contains(status) {
                 return true;
             }
-            // 消息关键词匹配（某些 API 用非标准状态码返回速率限制）
+            // 其余 4xx 是请求侧问题，重试无意义
+            if (400..500).contains(status) {
+                return false;
+            }
             let lower = message.to_lowercase();
-            lower.contains("quota")
-                || lower.contains("rate limit")
-                || lower.contains("rate_limit")
-                || lower.contains("exceeded")
-                || lower.contains("too many requests")
-                || lower.contains("overloaded")
+            // 永久性错误优先排除（"欠费/上下文超限"也含 quota/exceeded 字样）
+            if PERMANENT_ERROR_HINTS.iter().any(|h| lower.contains(h)) {
+                return false;
+            }
+            RETRYABLE_ERROR_HINTS.iter().any(|h| lower.contains(h))
         }
+        AiError::Unavailable(_) => false,
         _ => false,
     }
 }
@@ -1502,6 +1637,50 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    /// 重试分类：临时错误要重试，永久错误必须立刻放弃。
+    ///
+    /// 回归：旧实现用 `message.contains("exceeded")` / `"quota"` 判可重试，
+    /// 于是 `context_length_exceeded`（上下文超限）与 `insufficient_quota`
+    /// （欠费）被判成可重试，白等 10 轮指数退避（合计数分钟）后才报错。
+    #[test]
+    fn retry_classification_separates_transient_from_permanent() {
+        let api = |status: u16, msg: &str| AiError::Api {
+            status,
+            message: msg.to_string(),
+        };
+
+        // —— 可重试：网络抖动、限流、服务端临时故障、请求超时 ——
+        assert!(is_retryable_error(&AiError::Network("连接被重置".into())));
+        assert!(is_retryable_error(&api(429, "Too Many Requests")));
+        assert!(is_retryable_error(&api(408, "Request Timeout")));
+        assert!(is_retryable_error(&api(500, "internal error")));
+        assert!(is_retryable_error(&api(503, "Service Unavailable")));
+        // 非标准状态码 + 限流语义（部分网关如此）
+        assert!(is_retryable_error(&api(0, "rate limit exceeded")));
+        assert!(is_retryable_error(&api(0, "server overloaded")));
+
+        // —— 不可重试：请求侧问题、认证、取消 ——
+        assert!(!is_retryable_error(&AiError::Auth));
+        assert!(!is_retryable_error(&AiError::Cancelled));
+        assert!(!is_retryable_error(&api(400, "invalid model")));
+        assert!(!is_retryable_error(&api(401, "unauthorized")));
+        assert!(!is_retryable_error(&api(404, "model_not_found")));
+
+        // —— 关键词误伤：这两个也含 quota / exceeded，但重试毫无意义 ——
+        assert!(
+            !is_retryable_error(&api(400, "context_length_exceeded")),
+            "上下文超限是永久错误，不该重试"
+        );
+        assert!(
+            !is_retryable_error(&api(0, "insufficient_quota: 账户余额不足")),
+            "欠费是永久错误，不该重试"
+        );
+        assert!(
+            !is_retryable_error(&api(0, "maximum context length is 128000 tokens")),
+            "上下文超限的另一种措辞同样不该重试"
+        );
+    }
 
     #[test]
     fn clamp_tool_result_truncates_and_guides() {

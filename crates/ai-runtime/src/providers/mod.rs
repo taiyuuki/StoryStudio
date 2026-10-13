@@ -881,6 +881,11 @@ impl HttpStreamClient {
         let mut byte_buffer: Vec<u8> = Vec::new();
         // 跨 chunk 维护未结束的 SSE 行。
         let mut line_buffer = String::new();
+        // 累计接收字节数——只用于错误信息，让"一个 chunk 都没收到"与
+        // "收了一半被掐断"在日志里可区分。
+        let mut received_bytes: usize = 0;
+        // 是否见过本协议的"流正常结束"标记。见函数尾部的完整性判定。
+        let mut saw_terminal = false;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = match chunk_result {
@@ -894,6 +899,7 @@ impl HttpStreamClient {
             };
 
             byte_buffer.extend_from_slice(&chunk);
+            received_bytes += chunk.len();
 
             // 只解码到最后一个完整的 UTF-8 字符边界，末尾不完整的字节留在 byte_buffer 里。
             let safe_len = floor_utf8_boundary(&byte_buffer);
@@ -913,28 +919,91 @@ impl HttpStreamClient {
             // Process complete lines from buffer
             while let Some(line_end) = line_buffer.find('\n') {
                 let line = line_buffer[..line_end].trim().to_string();
-                line_buffer = line_buffer[line_end + 1..].to_string();
-
-                if line.is_empty() {
-                    continue;
-                }
-
-                // SSE format: "data: <json>"
-                if let Some(data) = line.strip_prefix("data: ") {
-                    let data = data.trim();
-                    if data == "[DONE]" {
-                        // Stream complete — adapter should have already tracked full_text
-                        continue;
-                    }
-                    for event in adapter.parse_stream_chunks(data) {
-                        on_event(event);
-                    }
-                }
+                // 就地 drain，避免每行重新分配一次整段缓冲（O(n²) 拷贝）
+                line_buffer.drain(..=line_end);
+                saw_terminal |= handle_sse_line(&line, adapter, on_event);
             }
+
+            // 防御：上游一直不发送换行会让行缓冲无限增长
+            if line_buffer.len() > MAX_SSE_LINE_BYTES {
+                let msg =
+                    format!("SSE 单行超过 {MAX_SSE_LINE_BYTES} 字节上限，疑似上游异常，已中止");
+                on_event(StreamEvent::Error {
+                    message: msg.clone(),
+                });
+                return Err(AiError::Network(msg));
+            }
+        }
+
+        // 流结束前 flush 残余行：服务端最后一帧可能不带尾随换行，或连接
+        // 恰好在帧中间断开——不 flush 会把这帧数据永久丢掉。
+        if !line_buffer.trim().is_empty() {
+            let line = line_buffer.trim().to_string();
+            saw_terminal |= handle_sse_line(&line, adapter, on_event);
+        }
+
+        // 完整性判定：EOF 时从未见过"正常结束"标记 = 连接被掐断（或服务端
+        // 截断）。旧实现在这里无条件 Ok(())，于是截断与正常结束无法区分：
+        // provider 会补发一个 stop_reason: None 的 Done，最终被兜底成
+        // EndTurn 当成成功，**半截正文进入会话历史**。宁可报错让上游重试/
+        // 让用户决定，也不要静默把残稿当完稿。
+        if !saw_terminal {
+            let msg = format!(
+                "流在正常结束标记之前中断（已接收 {received_bytes} 字节）：\
+                 内容不完整，已丢弃本次输出"
+            );
+            on_event(StreamEvent::Error {
+                message: msg.clone(),
+            });
+            return Err(AiError::Network(msg));
         }
 
         Ok(())
     }
+}
+
+/// SSE 行缓冲上限：正常一帧远小于此值，超限说明上游在发无换行的垃圾流。
+const MAX_SSE_LINE_BYTES: usize = 4 * 1024 * 1024;
+
+/// 处理一行 SSE：解析 `data:` 载荷并转发事件，返回该行是否为协议的
+/// "流正常结束"标记。
+///
+/// 两种结束形态都要认：
+/// - OpenAI 兼容的 `data: [DONE]`（不产生事件，必须在此单独识别）
+/// - 适配器解析出的 `Done { stop_reason: Some(_) }`——Anthropic 的
+///   `message_delta`、OpenAI/Gemini 的 `finishReason` 都走这条
+///
+/// `data:` 后的空格按规范可有可无，部分网关（Azure 等）不带空格；
+/// 旧实现只认 `"data: "`，会把这类上游的整条流静默吃掉、表现为空输出。
+fn handle_sse_line(
+    line: &str,
+    adapter: &(dyn ProviderAdapter + Sync),
+    on_event: &(dyn Fn(StreamEvent) + Send + Sync),
+) -> bool {
+    let Some(data) = line.strip_prefix("data:") else {
+        return false;
+    };
+    let data = data.trim();
+    if data.is_empty() {
+        return false;
+    }
+    if data == "[DONE]" {
+        return true;
+    }
+    let mut terminal = false;
+    for event in adapter.parse_stream_chunks(data) {
+        if matches!(
+            event,
+            StreamEvent::Done {
+                stop_reason: Some(_),
+                ..
+            }
+        ) {
+            terminal = true;
+        }
+        on_event(event);
+    }
+    terminal
 }
 
 // ============================================================================
@@ -999,7 +1068,9 @@ mod tests {
         apply_overrides, floor_utf8_boundary, round_temperature, with_profile_max_tokens,
         ThinkingConfig,
     };
-    use crate::provider::{AiError, GenerateRequest, GenerateResponse};
+    use crate::provider::{
+        AiError, GenerateRequest, GenerateResponse, StopReason, StreamEvent, TokenUsage,
+    };
 
     /// 测试用的最小 ProviderAdapter 实现
     struct MockAdapter {
@@ -1641,6 +1712,165 @@ mod tests {
         let decoded = std::str::from_utf8(&chunk[..safe]).unwrap();
         assert_eq!(decoded, "铜板酒馆成");
         assert!(!decoded.contains('\u{FFFD}'));
+    }
+    // ========================================================================
+    // SSE 流完整性：截断必须报错，而不是静默当成完整回答
+    // ========================================================================
+
+    /// 只服务一次请求的极简 HTTP 服务器：把给定 body 原样回给客户端后关闭。
+    /// 用于伪造"完整"与"被掐断"的 SSE 流。
+    fn serve_sse_once(body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑定回环端口");
+        let addr = listener.local_addr().expect("取本地地址");
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                // 请求内容与响应无关，读掉即可
+                let mut buf = [0u8; 8192];
+                let _ = sock.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes());
+                let _ = sock.flush();
+            }
+        });
+        format!("http://{addr}/v1/chat/completions")
+    }
+
+    /// 测试适配器：解析 OpenAI 风格的 data 行；`[DONE]` 由
+    /// HttpStreamClient 的行处理负责识别，不在这里产生事件。
+    struct SseProbeAdapter {
+        endpoint: String,
+    }
+
+    impl super::ProviderAdapter for SseProbeAdapter {
+        fn id(&self) -> &str {
+            "sse-probe"
+        }
+        fn endpoint(&self) -> String {
+            self.endpoint.clone()
+        }
+        fn api_key(&self) -> Result<String, AiError> {
+            Ok("test-key".to_string())
+        }
+        fn to_request_body(&self, request: &GenerateRequest) -> serde_json::Value {
+            serde_json::json!({ "model": request.model })
+        }
+        fn extra_headers(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+        fn parse_response(&self, _body: &serde_json::Value) -> Result<GenerateResponse, AiError> {
+            unreachable!("本组测试只走流式路径")
+        }
+        fn parse_stream_chunks(&self, line: &str) -> Vec<StreamEvent> {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                return Vec::new();
+            };
+            let Some(choice) = v.pointer("/choices/0") else {
+                return Vec::new();
+            };
+            if let Some(fr) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                let stop_reason = match fr {
+                    "length" => StopReason::MaxTokens,
+                    "tool_calls" => StopReason::ToolUse,
+                    _ => StopReason::EndTurn,
+                };
+                return vec![StreamEvent::Done {
+                    full_text: String::new(),
+                    usage: TokenUsage::default(),
+                    stop_reason: Some(stop_reason),
+                }];
+            }
+            match choice.pointer("/delta/content").and_then(|c| c.as_str()) {
+                Some(delta) => vec![StreamEvent::Delta {
+                    delta: delta.to_string(),
+                }],
+                None => Vec::new(),
+            }
+        }
+    }
+
+    /// 跑一次流式请求，返回（结果，回调收到的增量拼接）
+    fn run_stream(endpoint: String) -> (Result<(), AiError>, String) {
+        let adapter = SseProbeAdapter { endpoint };
+        let request = GenerateRequest::new("system", "user");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let seen_cb = std::sync::Arc::clone(&seen);
+        let result = tokio::runtime::Runtime::new()
+            .expect("建 runtime")
+            .block_on(super::HttpStreamClient::stream(
+                &adapter,
+                &request,
+                &move |event: StreamEvent| {
+                    if let StreamEvent::Delta { delta } = event {
+                        if let Ok(mut s) = seen_cb.lock() {
+                            s.push_str(&delta);
+                        }
+                    }
+                },
+            ));
+        let text = seen.lock().map(|s| s.clone()).unwrap_or_default();
+        (result, text)
+    }
+
+    /// 回归：没有 `[DONE]` / `finish_reason` 的流是**被掐断**，不是完成。
+    /// 旧实现无条件返回 Ok，上游补发 stop_reason=None 的 Done 被兜底成
+    /// EndTurn，半截正文就这样进了会话历史。
+    #[test]
+    fn stream_without_terminal_marker_is_an_error() {
+        let endpoint =
+            serve_sse_once("data: {\"choices\":[{\"delta\":{\"content\":\"半截正文\"}}]}\n\n");
+        let (result, text) = run_stream(endpoint);
+        assert_eq!(text, "半截正文", "截断前已收到的增量仍应转发给回调");
+        let err = result.expect_err("缺少结束标记的流必须报错，而不是静默成功");
+        assert!(
+            matches!(err, AiError::Network(_)),
+            "截断应归类为可重试的网络错误，实得 {err:?}"
+        );
+    }
+
+    #[test]
+    fn stream_with_finish_reason_is_complete() {
+        let endpoint = serve_sse_once(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"完整正文\"}}]}\n\n\
+             data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n\
+             data: [DONE]\n\n",
+        );
+        let (result, text) = run_stream(endpoint);
+        assert!(
+            result.is_ok(),
+            "带 finish_reason 的流应判定为完整：{result:?}"
+        );
+        assert_eq!(text, "完整正文");
+    }
+
+    /// `data:` 后的空格规范上可有可无；旧实现只认 `"data: "`，
+    /// 会把这类网关的整条流静默吃掉，表现为"模型返回空响应"。
+    #[test]
+    fn stream_accepts_data_prefix_without_space() {
+        let endpoint = serve_sse_once(
+            "data:{\"choices\":[{\"delta\":{\"content\":\"无空格\"}}]}\n\n\
+             data:{\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n",
+        );
+        let (result, text) = run_stream(endpoint);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(text, "无空格", "data: 后无空格也应解析");
+    }
+
+    /// 最后一帧没有尾随换行时不能丢：EOF 前必须 flush 残余行。
+    #[test]
+    fn stream_flushes_final_frame_without_trailing_newline() {
+        let endpoint = serve_sse_once(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"尾帧\"}}]}\n\n\
+             data: {\"choices\":[{\"finish_reason\":\"stop\"}]}",
+        );
+        let (result, text) = run_stream(endpoint);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(text, "尾帧");
     }
 }
 

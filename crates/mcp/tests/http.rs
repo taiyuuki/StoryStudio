@@ -204,6 +204,13 @@ fn http_read_only_mode() {
         !tools.iter().any(|t| t["name"] == "create_character"),
         "只读模式不应暴露写工具"
     );
+    // 回归：get_story_recap 会把现场生成的场景摘要写回 structure.toml，
+    // 属于项目 SoT 的读-改-写，只读模式下必须不可见（否则 --read-only
+    // 服务会改稿件，闸门还会按读锁放行，形成读写并发）
+    assert!(
+        !tools.iter().any(|t| t["name"] == "get_story_recap"),
+        "只读模式不应暴露会写回 structure.toml 的 get_story_recap"
+    );
     handle.stop();
 }
 

@@ -349,9 +349,15 @@ pub(super) fn get_index(args: &serde_json::Value, key: &str) -> Result<usize, St
     Ok(value)
 }
 
+/// 按**字符**预算截断，超出时追加省略号。
+///
+/// 判据与截断必须同量纲：此前用 `text.len()`（字节）判、`chars().take()`（字符）截，
+/// 中文下必然误判——20 个汉字是 60 字节，配 `max_len=40` 时判据成立但 `take(40)`
+/// 只拿得到 20 个字符，于是**没被截断的文本也被追加了 "..."**；反过来输出长度
+/// 还可以超出预算近 3 倍（40 字符预算 → 120 字节）。调用点全部传的是字数。
 pub(super) fn format_brief(text: &str, max_len: usize) -> String {
-    if text.len() > max_len {
-        // 按字符边界截断，避免在 UTF-8 多字节字符中间切断（会 panic）
+    if text.chars().count() > max_len {
+        // 按字符边界截断，避免在 UTF-8 多字节字符中间切断
         let truncated: String = text.chars().take(max_len).collect();
         format!("{truncated}...")
     } else {
@@ -460,8 +466,11 @@ pub(super) fn retry_generate(
             Err(e) => {
                 let err_str = format!("{e}");
                 last_error = err_str.clone();
-                // 判断是否可重试
-                let retryable = is_retryable_error(&e);
+                // 判断是否可重试。用 ai-runtime 的唯一实现：此前这里另有一份
+                // 关键词匹配，把 context_length_exceeded / insufficient_quota
+                // 这类永久性错误也判成可重试（"exceeded"/"quota" 命中），
+                // 白等 5 轮退避。
+                let retryable = story_ai_runtime::is_retryable_error(&e);
                 if !retryable || attempt == MAX_RETRIES {
                     return Err(err_str);
                 }
@@ -478,27 +487,6 @@ pub(super) fn retry_generate(
         }
     }
     Err(last_error)
-}
-
-/// 判断 AiError 是否可重试（速率限制、网络错误、服务端临时错误）
-fn is_retryable_error(e: &story_ai_runtime::provider::AiError) -> bool {
-    use story_ai_runtime::provider::AiError;
-    match e {
-        AiError::Network(_) => true,
-        AiError::Api { status, message } => {
-            if *status == 429 || (500..=599).contains(status) {
-                return true;
-            }
-            let lower = message.to_lowercase();
-            lower.contains("quota")
-                || lower.contains("rate limit")
-                || lower.contains("rate_limit")
-                || lower.contains("exceeded")
-                || lower.contains("too many requests")
-                || lower.contains("overloaded")
-        }
-        _ => false,
-    }
 }
 
 mod entities;
@@ -539,6 +527,26 @@ pub use agent::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// format_brief 按字符预算截断：判据与截断同量纲。
+    /// 回归：此前判据用字节，中文短文本会被误加 "..."。
+    #[test]
+    fn format_brief_budgets_in_characters_not_bytes() {
+        // 20 个汉字 = 60 字节 > 40，但只有 20 字符：不该被截断
+        let twenty = "字".repeat(20);
+        assert_eq!(format_brief(&twenty, 40), twenty);
+        assert!(!format_brief(&twenty, 40).ends_with("..."));
+
+        // 真正超预算才截断，且结果长度受字符预算约束
+        let fifty = "字".repeat(50);
+        assert_eq!(format_brief(&fifty, 40), format!("{}...", "字".repeat(40)));
+        assert_eq!(format_brief(&fifty, 40).chars().count(), 43);
+
+        // 恰好等于预算：不截断
+        assert_eq!(format_brief(&"字".repeat(40), 40), "字".repeat(40));
+        // 英文按字符数同样成立
+        assert_eq!(format_brief("abcdef", 3), "abc...");
+    }
 
     #[test]
     fn get_str_array_opt_accepts_three_forms() {
