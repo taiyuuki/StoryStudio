@@ -1505,7 +1505,7 @@ pub fn rename_chapter(
 pub fn delete_chapter(
     paths: &ProjectPaths,
     chapter_id: &str,
-) -> Result<Option<String>, StudioError> {
+) -> Result<Option<(String, Option<String>)>, StudioError> {
     let structure_path = paths.structure_toml();
     let mut structure = load_structure(paths)?;
 
@@ -1530,10 +1530,20 @@ pub fn delete_chapter(
     Ok(unlinked)
 }
 
-/// 删除物理章节后，把脉络表里指向它的 chapter_id 清除（退回虚拟章）。
+/// 删除物理章节后，把脉络表里指向它的 chapter_id 清除（退回虚拟章），
+/// 并把进度回退到 planned。
 ///
-/// 返回被解除关联的脉络标题；无关联或读写失败（best-effort）返回 None。
-fn unlink_chapter_outline(paths: &ProjectPaths, chapter_id: &str) -> Option<String> {
+/// 状态描述的是"这章正文写到哪了"：writing/completed 的依据是物理章节
+/// 下的场景与片段，物理章节被级联删除后正文不复存在，进度若不回退，
+/// get_project_stats 的「脉络进度 X/Y 完成」与「进行中章节」会指向一段
+/// 已被删掉的内容；而 update_chapter_outline 的状态单向校验又让用户
+/// 无法手工回退——形成只能手改 TOML 解锁的死锁。
+///
+/// 返回 (脉络标题, 回退前状态)；无关联或读写失败（best-effort）返回 None。
+fn unlink_chapter_outline(
+    paths: &ProjectPaths,
+    chapter_id: &str,
+) -> Option<(String, Option<String>)> {
     let mut file = load_chapters_file(paths).ok()?;
     let entry = file
         .chapters
@@ -1541,8 +1551,15 @@ fn unlink_chapter_outline(paths: &ProjectPaths, chapter_id: &str) -> Option<Stri
         .find(|c| c.chapter_id.as_deref() == Some(chapter_id))?;
     entry.chapter_id = None;
     let title = entry.title.clone();
+    let reverted = if entry.status != story_project_format::chapters_file::STATUS_PLANNED {
+        let prev = entry.status.clone();
+        entry.status = story_project_format::chapters_file::STATUS_PLANNED.to_string();
+        Some(prev)
+    } else {
+        None
+    };
     save_chapters_file(paths, &file).ok()?;
-    Some(title)
+    Some((title, reverted))
 }
 
 /// 创建场景
@@ -6970,10 +6987,60 @@ mod tests {
 
         // 删除物理章节：脉络条目保留但退回虚拟态，返回被解除的标题
         let unlinked = delete_chapter(&paths, &ch_id).unwrap();
-        assert_eq!(unlinked.as_deref(), Some("上山"));
+        assert_eq!(unlinked.as_ref().map(|(t, r)| (t.as_str(), r.clone())), Some(("上山", None)));
         let file = load_chapters_file(&paths).unwrap();
         assert_eq!(file.chapters.len(), 1, "设计记录应保留");
         assert!(file.chapters[0].chapter_id.is_none(), "chapter_id 应被清除");
+    }
+
+    #[test]
+    fn delete_chapter_reverts_outline_status() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // 脉络已关联物理章且进度 writing（首次写入正文时自动推进）
+        let ch_id = create_chapter(&paths, "冲突章").unwrap();
+        let mut outline = ChaptersFile::default();
+        outline.chapters.push(ChapterOutlineDef {
+            chapter_id: Some(ch_id.clone()),
+            title: "冲突章".into(),
+            status: "writing".into(),
+            ..Default::default()
+        });
+        save_chapters_file(&paths, &outline).unwrap();
+
+        let unlinked = delete_chapter(&paths, &ch_id).unwrap();
+        let (title, reverted) = unlinked.expect("已关联脉络应返回解除信息");
+        assert_eq!(title, "冲突章");
+        assert_eq!(reverted.as_deref(), Some("writing"), "应报告回退前状态");
+
+        let file = load_chapters_file(&paths).unwrap();
+        assert_eq!(file.chapters[0].status, "planned", "正文已删，进度应回退 planned");
+        assert!(file.chapters[0].chapter_id.is_none());
+    }
+
+    #[test]
+    fn delete_chapter_reverts_completed_status_too() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch_id = create_chapter(&paths, "成章").unwrap();
+        let mut outline = ChaptersFile::default();
+        outline.chapters.push(ChapterOutlineDef {
+            chapter_id: Some(ch_id.clone()),
+            title: "成章".into(),
+            status: "completed".into(),
+            ..Default::default()
+        });
+        save_chapters_file(&paths, &outline).unwrap();
+
+        delete_chapter(&paths, &ch_id).unwrap();
+        let file = load_chapters_file(&paths).unwrap();
+        assert_eq!(
+            file.chapters[0].status, "planned",
+            "正文随章节删除不复存在，completed 同样应回退，\
+             否则「脉络进度 X/Y 完成」会对着不存在的正文计数"
+        );
     }
 
     #[test]

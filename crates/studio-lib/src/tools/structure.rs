@@ -365,7 +365,8 @@ impl Tool for DeleteChapterTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "delete_chapter".into(),
-            description: "删除章节及其下所有场景和片段（级联删除，不可恢复）。".into(),
+            description: "删除章节及其下所有场景和片段（级联删除，不可恢复）。\
+            已关联的章节脉络自动解除关联（退回虚拟章），进度 writing/completed 随正文删除回退 planned。".into(),
             parameters: object_schema(vec![(
                 "chapter_id",
                 "string",
@@ -381,10 +382,15 @@ impl Tool for DeleteChapterTool {
         let unlinked =
             crate::mutations::delete_chapter(&paths, &chapter_id).map_err(|e| e.to_string())?;
         let mut msg = format!("章节 {chapter_id} 及其下所有场景、片段已删除");
-        if let Some(outline_title) = unlinked {
+        if let Some((outline_title, reverted)) = unlinked {
             msg.push_str(&format!(
                 "；已解除脉络「{outline_title}」的关联（设计记录保留，退回虚拟章）"
             ));
+            if let Some(prev) = reverted {
+                msg.push_str(&format!(
+                    "，进度 {prev} → planned（正文已删，进度随正文回退；重新动笔时会再次自动推进）"
+                ));
+            }
         }
         Ok(msg)
     }
