@@ -3416,10 +3416,50 @@ pub struct RepairReport {
     pub evidence_skipped: usize,
     /// 清除悬空 chapter_id（指向已不存在的物理章节）的脉络条目（标题）
     pub outline_links_cleared: Vec<String>,
+    /// 进度回退 planned 的脉络条目（格式「标题（writing → planned）」）——
+    /// 状态非 planned 但对应正文已不存在（虚拟章/悬空关联/物理章无片段）
+    pub outline_status_reverted: Vec<String>,
+    /// 清除悬空叙事锚点（planted_at/revealed_at/resolved_at 指向已删除的
+    /// 场景/片段）的线索（格式「标题：埋设 sc_04_01」）
+    pub thread_anchors_cleared: Vec<String>,
     /// 回填 revealed_at（已 resolved 但缺揭示锚）的线索（标题）
     pub threads_revealed_backfilled: Vec<String>,
     /// 删除的孤儿证据条目（不再被任何断言引用的 ev_XXXX）
     pub evidence_orphans_removed: Vec<String>,
+}
+
+/// 收集项目中现存的可锚定对象 ID：场景 ID + 片段 ID。
+///
+/// 片段除结构树（阅读序）外也计入磁盘上仍在的 .md 文件——结构树暂时
+/// 摘除但文件还在（如级联删除失败留痕）的不算消失，避免误清可找回的锚点。
+fn existing_anchor_ids(paths: &ProjectPaths) -> std::collections::HashSet<String> {
+    let mut ids: std::collections::HashSet<String> = load_structure(paths)
+        .map(|s| {
+            s.scene
+                .keys()
+                .cloned()
+                .chain(s.scene.values().flat_map(|sc| sc.fragments.iter().cloned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Ok(entries) = std::fs::read_dir(paths.fragments_dir()) {
+        for e in entries.flatten() {
+            if let Ok(name) = e.file_name().into_string() {
+                if let Some(stem) = name.strip_suffix(".md") {
+                    ids.insert(stem.to_string());
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// 判断锚点值是否为 ID 形态（sc_ / f_ 前缀）。
+///
+/// 锚点也允许自由文本（如历法标签），非 ID 形态的值无法验证存在性，
+/// 不在本工具的处理范围内。
+fn anchor_id_shaped(v: &str) -> bool {
+    v.starts_with("sc_") || v.starts_with("f_")
 }
 
 /// 一次性数据修复（历史脏数据兜底）：
@@ -3548,23 +3588,54 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
         }
     }
 
-    // —— 3. 脉络 chapter_id 悬空引用：清除（条目退回虚拟章） ——
+    // —— 3. 脉络双轨一致性：悬空 chapter_id 清除 + 孤儿进度回退 ——
     if paths.chapters_toml().exists() {
         // structure.toml 缺失/解析失败视为无物理章节：所有指向都算悬空
-        let physical: std::collections::HashSet<String> = load_structure(&paths)
+        let structure = load_structure(&paths);
+        let physical: std::collections::HashSet<String> = structure
+            .as_ref()
             .map(|s| s.chapter.keys().cloned().collect())
             .unwrap_or_default();
+        // 有正文的物理章节：至少一个场景挂着片段。进度状态的依据是正文，
+        // 指向无正文章节（或虚拟章）的 writing/completed 都是对不存在
+        // 内容的错误断言。
+        let contentful: std::collections::HashSet<String> = structure
+            .as_ref()
+            .map(|s| {
+                s.chapter
+                    .iter()
+                    .filter(|(_, ch)| {
+                        ch.scenes
+                            .iter()
+                            .any(|sc| s.scene.get(sc).is_some_and(|d| !d.fragments.is_empty()))
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut file = load_chapters_file(&paths)?;
+        let mut links_cleared = Vec::new();
         for entry in &mut file.chapters {
-            let Some(id) = &entry.chapter_id else {
-                continue;
-            };
-            if !physical.contains(id) {
-                entry.chapter_id = None;
-                report.outline_links_cleared.push(entry.title.clone());
+            if let Some(id) = &entry.chapter_id {
+                if !physical.contains(id) {
+                    entry.chapter_id = None;
+                    links_cleared.push(entry.title.clone());
+                }
+            }
+            // 孤儿进度：非 planned 但无正文支撑（虚拟章 / 关联悬空 / 物理章无片段）
+            if entry.status != story_project_format::chapters_file::STATUS_PLANNED
+                && !entry
+                    .chapter_id
+                    .as_deref()
+                    .is_some_and(|id| contentful.contains(id))
+            {
+                let note = format!("{}（{} → planned）", entry.title, entry.status);
+                entry.status = story_project_format::chapters_file::STATUS_PLANNED.to_string();
+                report.outline_status_reverted.push(note);
             }
         }
-        if !report.outline_links_cleared.is_empty() {
+        if !links_cleared.is_empty() || !report.outline_status_reverted.is_empty() {
+            report.outline_links_cleared = links_cleared;
             save_chapters_file(&paths, &file)?;
         }
     }
@@ -3584,6 +3655,30 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
                 t.revealed_at = t.resolved_at.clone();
                 report.threads_revealed_backfilled.push(t.title.clone());
                 changed = true;
+            }
+        }
+
+        // —— 5. 线索叙事锚点悬空：指向不存在的场景/片段时清除 ——
+        // 锚点是线索状态的唯一真相源（状态由锚点推导），指向已删除对象
+        // 的锚点会让状态对着不存在的正文计数；清除后状态自动回退。
+        // 仅处理 ID 形态的锚点，自由文本（历法标签等）不验证存在性。
+        let existing = existing_anchor_ids(&paths);
+        for t in &mut file.threads {
+            let title = t.title.clone();
+            for (label, anchor) in [
+                ("埋设", &mut t.planted_at),
+                ("揭示", &mut t.revealed_at),
+                ("回收", &mut t.resolved_at),
+            ] {
+                let clear = anchor
+                    .as_deref()
+                    .is_some_and(|v| anchor_id_shaped(v) && !existing.contains(v));
+                if clear {
+                    let note = format!("{title}：{label} {}", anchor.as_deref().unwrap_or_default());
+                    report.thread_anchors_cleared.push(note);
+                    *anchor = None;
+                    changed = true;
+                }
             }
         }
         if changed {
@@ -7076,33 +7171,126 @@ mod tests {
     }
 
     #[test]
+    fn repair_project_reverts_orphan_writing_status() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // 三种状态：有正文的 writing（不动）/ 空章的 writing（回退）/ 虚拟章的 completed（回退）
+        let real = create_chapter(&paths, "有正文章").unwrap();
+        let sc = create_scene(&paths, &real, "场景", None).unwrap();
+        create_fragment(&paths, &sc, "正文").unwrap();
+        let empty = create_chapter(&paths, "空章").unwrap();
+
+        let mut outline = ChaptersFile::default();
+        outline.chapters.push(ChapterOutlineDef {
+            chapter_id: Some(real.clone()),
+            title: "有正文章".into(),
+            status: "writing".into(),
+            ..Default::default()
+        });
+        outline.chapters.push(ChapterOutlineDef {
+            chapter_id: Some(empty.clone()),
+            title: "空章".into(),
+            status: "writing".into(),
+            ..Default::default()
+        });
+        outline.chapters.push(ChapterOutlineDef {
+            chapter_id: None,
+            title: "虚拟章".into(),
+            status: "completed".into(),
+            ..Default::default()
+        });
+        save_chapters_file(&paths, &outline).unwrap();
+
+        let report = repair_project(tmp.path()).unwrap();
+        assert_eq!(
+            report.outline_status_reverted,
+            vec![
+                "空章（writing → planned）".to_string(),
+                "虚拟章（completed → planned）".to_string(),
+            ],
+            "孤儿进度应回退并报告"
+        );
+
+        let file = load_chapters_file(&paths).unwrap();
+        assert_eq!(
+            file.chapters[0].status, "writing",
+            "有正文支撑的进度不应回退"
+        );
+        assert_eq!(file.chapters[1].status, "planned");
+        assert_eq!(file.chapters[2].status, "planned");
+    }
+
+    #[test]
+    fn repair_project_clears_dangling_thread_anchors() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+
+        // 悬空 / 有效 / 自由文本三种锚点
+        let t1 = create_thread(&paths, "悬空锚点", "", "main", Some("sc_99_99"), None, None).unwrap();
+        let t2 = create_thread(&paths, "有效锚点", "", "minor", Some(&sc), None, None).unwrap();
+        let t3 =
+            create_thread(&paths, "自由文本锚点", "", "minor", Some("第三卷末"), None, None)
+                .unwrap();
+
+        let report = repair_project(tmp.path()).unwrap();
+        assert_eq!(
+            report.thread_anchors_cleared,
+            vec![
+                "悬空锚点：埋设 sc_99_99".to_string(),
+            ],
+            "只有指向不存在对象的 ID 形态锚点应被清除"
+        );
+
+        let file = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
+        let by_id = |id: &str| file.threads.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(by_id(&t1).planted_at, None, "悬空锚点应被清除");
+        assert_eq!(by_id(&t2).planted_at.as_deref(), Some(sc.as_str()));
+        assert_eq!(
+            by_id(&t3).planted_at.as_deref(),
+            Some("第三卷末"),
+            "自由文本锚点不验证存在性，不应被清除"
+        );
+    }
+
+    #[test]
     fn repair_project_backfills_revealed_for_resolved_threads() {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
         // 三条线索：缺揭示的已终态（应回填）、已有揭示（不动）、pov 暗线（豁免）
-        let fixture = r#"
+        // 锚点用真实场景（否则会被悬空锚点清理误伤）
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc1 = create_scene(&paths, &ch, "场景一", None).unwrap();
+        let sc2 = create_scene(&paths, &ch, "场景二", None).unwrap();
+        let sc3 = create_scene(&paths, &ch, "场景三", None).unwrap();
+        let fixture = format!(
+            r#"
 [[thread]]
 id = "t_001"
 title = "明线已终态"
-planted_at = "sc_01_01"
-resolved_at = "sc_03_01"
+planted_at = "{sc1}"
+resolved_at = "{sc3}"
 
 [[thread]]
 id = "t_002"
 title = "已有揭示"
-planted_at = "sc_01_01"
-revealed_at = "sc_02_01"
-resolved_at = "sc_03_01"
+planted_at = "{sc1}"
+revealed_at = "{sc2}"
+resolved_at = "{sc3}"
 
 [[thread]]
 id = "t_003"
 title = "暗线豁免"
-planted_at = "sc_01_01"
-resolved_at = "sc_03_01"
+planted_at = "{sc1}"
+resolved_at = "{sc3}"
 scope = "pov"
-"#;
-        let file = ThreadsFile::from_toml_str(fixture).unwrap();
+"#
+        );
+        let file = ThreadsFile::from_toml_str(&fixture).unwrap();
         file.save(&paths.threads_toml()).unwrap();
 
         let report = repair_project(tmp.path()).unwrap();
@@ -7112,8 +7300,8 @@ scope = "pov"
         );
 
         let file = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
-        assert_eq!(file.threads[0].revealed_at.as_deref(), Some("sc_03_01"));
-        assert_eq!(file.threads[1].revealed_at.as_deref(), Some("sc_02_01"));
+        assert_eq!(file.threads[0].revealed_at.as_deref(), Some(sc3.as_str()));
+        assert_eq!(file.threads[1].revealed_at.as_deref(), Some(sc2.as_str()));
         assert!(file.threads[2].revealed_at.is_none(), "pov 暗线不应回填");
     }
 

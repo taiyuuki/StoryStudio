@@ -373,10 +373,15 @@ fn cmd_repair(dir: &str) -> Result<(), StudioError> {
     let _gate =
         story_studio_lib::project_lock::ProjectLock::for_root(std::path::Path::new(dir)).write();
     let report = story_studio_lib::repair_project(std::path::Path::new(dir))?;
-    if report.fragments_cleaned.is_empty()
-        && report.assertions_fixed == 0
-        && report.evidence_skipped == 0
-    {
+    let repaired = !report.fragments_cleaned.is_empty()
+        || report.assertions_fixed > 0
+        || report.evidence_skipped > 0
+        || !report.outline_links_cleared.is_empty()
+        || !report.outline_status_reverted.is_empty()
+        || !report.thread_anchors_cleared.is_empty()
+        || !report.threads_revealed_backfilled.is_empty()
+        || !report.evidence_orphans_removed.is_empty();
+    if !repaired {
         println!("数据一致，无需修复。");
         return Ok(());
     }
@@ -392,6 +397,41 @@ fn cmd_repair(dir: &str) -> Result<(), StudioError> {
     }
     if report.evidence_skipped > 0 {
         println!("{} 条证据指向不存在的片段，已保留", report.evidence_skipped);
+    }
+    if !report.evidence_orphans_removed.is_empty() {
+        println!(
+            "删除孤儿证据条目 {} 个: {}",
+            report.evidence_orphans_removed.len(),
+            report.evidence_orphans_removed.join("、")
+        );
+    }
+    if !report.outline_links_cleared.is_empty() {
+        println!(
+            "清除悬空 chapter_id 的脉络 {} 条（退回虚拟章）: {}",
+            report.outline_links_cleared.len(),
+            report.outline_links_cleared.join("、")
+        );
+    }
+    if !report.outline_status_reverted.is_empty() {
+        println!(
+            "回退孤儿进度 {} 条（正文已不存在）: {}",
+            report.outline_status_reverted.len(),
+            report.outline_status_reverted.join("、")
+        );
+    }
+    if !report.thread_anchors_cleared.is_empty() {
+        println!(
+            "清除悬空叙事锚点 {} 处: {}",
+            report.thread_anchors_cleared.len(),
+            report.thread_anchors_cleared.join("、")
+        );
+    }
+    if !report.threads_revealed_backfilled.is_empty() {
+        println!(
+            "回填 revealed_at 的已终态线索 {} 条: {}",
+            report.threads_revealed_backfilled.len(),
+            report.threads_revealed_backfilled.join("、")
+        );
     }
     Ok(())
 }

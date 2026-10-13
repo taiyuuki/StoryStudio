@@ -796,6 +796,8 @@ impl Tool for RepairProjectTool {
             && report.assertions_fixed == 0
             && report.evidence_skipped == 0
             && report.outline_links_cleared.is_empty()
+            && report.outline_status_reverted.is_empty()
+            && report.thread_anchors_cleared.is_empty()
             && report.threads_revealed_backfilled.is_empty()
             && report.evidence_orphans_removed.is_empty()
         {
@@ -834,6 +836,20 @@ impl Tool for RepairProjectTool {
                 "  清除悬空 chapter_id 的脉络 {} 条（退回虚拟章）: {}\n",
                 report.outline_links_cleared.len(),
                 report.outline_links_cleared.join("、")
+            ));
+        }
+        if !report.outline_status_reverted.is_empty() {
+            out.push_str(&format!(
+                "  回退孤儿进度 {} 条（正文已不存在，状态随正文回退；重新动笔时会再次自动推进）: {}\n",
+                report.outline_status_reverted.len(),
+                report.outline_status_reverted.join("、")
+            ));
+        }
+        if !report.thread_anchors_cleared.is_empty() {
+            out.push_str(&format!(
+                "  清除悬空叙事锚点 {} 处（指向已删除的场景/片段，状态自动回退；如仍需要请重新 advance_thread 锚定）: {}\n",
+                report.thread_anchors_cleared.len(),
+                report.thread_anchors_cleared.join("、")
             ));
         }
         if !report.threads_revealed_backfilled.is_empty() {
