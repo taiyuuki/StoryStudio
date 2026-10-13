@@ -22,6 +22,10 @@ use super::{get_str, get_str_opt, get_u32_opt, object_schema, ToolContext};
 /// 名册上限：超出的实体不参与本次锚定
 const ROSTER_CAP: usize = 40;
 
+/// 锚定 LLM 调用的输出上限（含思考 token）：容纳思考 + 小 JSON。
+/// 见 comprehension_anchor 内注释的取舍说明
+const ANCHOR_MAX_TOKENS: usize = 16384;
+
 /// 实体名册条目
 struct RosterEntry {
     id: String,
@@ -130,7 +134,7 @@ fn build_roster(
 }
 
 /// 理解锚定结果
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AnchorOutcome {
     /// 已落锚：(实体 ID, 角色, 指代原文)
     pub anchored: Vec<(String, String, String)>,
@@ -143,7 +147,8 @@ pub struct AnchorOutcome {
 /// MCP 客户端普遍有 30 秒左右的调用时限，超时即向调用方报错——而服务端
 /// 仍会执行完；调用方误以为失败而重试会造成正文重复追加等假失败危害。
 /// 锚定只是写入回执的增强信息（正文已先行落盘），不值得把整个写工具
-/// 拖过时限。
+/// 拖过时限。转后台的结果经回执接力送达（[`AnchorDeliveryState`]），
+/// 调用方无需也无法主动查询。
 pub const ANCHOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// 带时限锚定的执行结果
@@ -154,10 +159,185 @@ pub enum AnchorRun {
     Deferred,
 }
 
+// ============================================================================
+// 后台锚定回执接力 — Deferred 结果的确定性送达
+// ============================================================================
+//
+// MCP 等调用方是请求-响应模型：工具回执一旦返回，就没有任何通道把
+// 后台完成的结果"推"给 Agent。回执里"稍后查看"的指引对没有定时器的
+// Agent 是死信；若它立刻去查，后台往往还没写完台账，list_unresolved_refs
+// 会答"台账为空"，反而确认了无事可做（false-empty）。
+//
+// 解法：后台 worker 完成后把结果记入待送达队列（本状态，随 ToolContext
+// 在注册表内共享），GatedTool 包装层在下一次任意工具调用的回执尾部统一
+// 追加——送达从"靠 Agent 自觉"变成确定性保证。anchoring.toml 台账仍是
+// 持久层真源，这里只做进程内的一次性送达。
+
+/// 送达回执中逐片段详述的上限：其余只报数量（台账可查），
+/// 防止批量后台锚定把回执撑爆
+const DELIVERY_DETAIL_CAP: usize = 8;
+
+/// 后台锚定的在途登记与待送达结果（进程内，随 ToolContext 共享）
+#[derive(Default)]
+pub struct AnchorDeliveryState {
+    /// 在途片段（转后台尚未完成；同一片段连续写/追加会出现重复）
+    in_flight: Vec<String>,
+    /// 已完成、尚未随回执送达的结果（完成序）
+    undelivered: Vec<UndeliveredAnchor>,
+}
+
+struct UndeliveredAnchor {
+    fragment_id: String,
+    /// 已格式化的结果详情（落锚/待处置行，或失败原因）
+    detail: String,
+    /// 是否含待处置指代（决定送达回执是否附处置引导）
+    had_pending: bool,
+}
+
+fn lock_delivery(
+    state: &std::sync::Arc<std::sync::Mutex<AnchorDeliveryState>>,
+) -> std::sync::MutexGuard<'_, AnchorDeliveryState> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 登记一个在途的后台锚定（worker spawn 时调用）
+fn register_anchor_in_flight(
+    state: &std::sync::Arc<std::sync::Mutex<AnchorDeliveryState>>,
+    fragment_id: &str,
+) {
+    lock_delivery(state).in_flight.push(fragment_id.to_string());
+}
+
+/// 调用方在时限内拿到结果（Done）或线程异常退出：在途登记撤销
+fn clear_anchor_in_flight(
+    state: &std::sync::Arc<std::sync::Mutex<AnchorDeliveryState>>,
+    fragment_id: &str,
+) {
+    let mut s = lock_delivery(state);
+    if let Some(pos) = s.in_flight.iter().position(|f| f == fragment_id) {
+        s.in_flight.remove(pos);
+    }
+}
+
+/// 后台锚定完成且调用方已先行返回：移出在途，结果入待送达队列。
+///
+/// 空结果（无锚点也无待处置）不入队——"没有消息"即"无需处置"，
+/// 避免批量锚定产生回执噪音；失败入队并附补锚指引（此前只进 stderr，
+/// Agent 与前端都看不见）。
+pub(crate) fn finish_deferred_anchor(
+    state: &std::sync::Arc<std::sync::Mutex<AnchorDeliveryState>>,
+    fragment_id: &str,
+    res: &Result<AnchorOutcome, String>,
+) {
+    let item = match res {
+        Ok(o) if o.anchored.is_empty() && o.unresolved.is_empty() => None,
+        Ok(o) => Some(UndeliveredAnchor {
+            fragment_id: fragment_id.to_string(),
+            detail: anchor_detail(o),
+            had_pending: !o.unresolved.is_empty(),
+        }),
+        Err(e) => Some(UndeliveredAnchor {
+            fragment_id: fragment_id.to_string(),
+            detail: format!(
+                "后台锚定失败：{e}（正文不受影响，可稍后用 anchor_fragments 对该片段补锚）"
+            ),
+            had_pending: false,
+        }),
+    };
+    let mut s = lock_delivery(state);
+    if let Some(pos) = s.in_flight.iter().position(|f| f == fragment_id) {
+        s.in_flight.remove(pos);
+    }
+    if let Some(item) = item {
+        s.undelivered.push(item);
+    }
+}
+
+/// 取走待送达内容，格式化为追加到下一次工具回执尾部的送达段。
+///
+/// 1. 已完成待送达：逐片段详述（上限 [`DELIVERY_DETAIL_CAP`]，其余报数量），
+///    有待处置指代时附一次处置引导；
+/// 2. 仍在途：报片段清单，声明结果将随后续调用自动送达——这一句同时
+///    消除 list_unresolved_refs 在锚定在途时的 false-empty 误报。
+pub fn take_anchor_delivery_note(
+    state: &std::sync::Arc<std::sync::Mutex<AnchorDeliveryState>>,
+) -> String {
+    let mut s = lock_delivery(state);
+    let mut note = String::new();
+    if !s.undelivered.is_empty() {
+        let items = std::mem::take(&mut s.undelivered);
+        note.push_str("\n📬 后台锚定完成（此前超时转后台的锚定，结果送达）：");
+        for item in items.iter().take(DELIVERY_DETAIL_CAP) {
+            note.push_str(&format!("\n· 片段 {}：{}", item.fragment_id, item.detail));
+        }
+        if items.len() > DELIVERY_DETAIL_CAP {
+            note.push_str(&format!(
+                "\n  …另有 {} 个片段的结果从略（锚点已落盘，待处置指代可用 list_unresolved_refs 查看）",
+                items.len() - DELIVERY_DETAIL_CAP
+            ));
+        }
+        if items.iter().any(|i| i.had_pending) {
+            note.push_str(&format!("\n{UNRESOLVED_GUIDANCE}"));
+        }
+    }
+    if !s.in_flight.is_empty() {
+        let mut seen: Vec<&String> = Vec::new();
+        for f in &s.in_flight {
+            if !seen.contains(&f) {
+                seen.push(f);
+            }
+        }
+        let fids = seen
+            .iter()
+            .map(|f| f.as_str())
+            .collect::<Vec<_>>()
+            .join("、");
+        note.push_str(&format!(
+            "\n⏳ 后台锚定仍在进行中（{fids}）：完成后将随后续工具调用的回执自动送达，\
+             无需主动查询；这些片段落盘前台账查询暂时为空属正常"
+        ));
+    }
+    note
+}
+
+/// 单片段锚定结果的紧凑描述（后台送达回执用；处置引导整批只附一次，
+/// 不在片段详情里）
+fn anchor_detail(outcome: &AnchorOutcome) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !outcome.anchored.is_empty() {
+        let anchors: Vec<String> = outcome
+            .anchored
+            .iter()
+            .map(|(id, role, quote)| format!("{id}（{role}：\"{quote}\"）"))
+            .collect();
+        parts.push(format!(
+            "落锚 {} 处：{}",
+            outcome.anchored.len(),
+            anchors.join("、")
+        ));
+    }
+    if !outcome.unresolved.is_empty() {
+        let refs: Vec<String> = outcome
+            .unresolved
+            .iter()
+            .map(|(quote, hint)| format!("\"{quote}\"（{hint}）"))
+            .collect();
+        parts.push(format!(
+            "待处置指代 {} 条：{}",
+            outcome.unresolved.len(),
+            refs.join("、")
+        ));
+    }
+    parts.join("；")
+}
+
 /// [`anchor_and_apply`] 的带时限版本，供写入类工具（write/append/split）使用。
 ///
 /// 无 provider 时直接返回空结果（与调用方原有语义一致）。超时后工作线程
-/// detach 继续跑完落盘——调用方回执应提示「已保存、勿重试、稍后查看」。
+/// detach 继续跑完落盘，结果经回执接力送达（见 [`AnchorDeliveryState`]）
+/// ——调用方回执应提示「已保存、勿重试、结果将随下一次工具回执自动送达」。
 pub fn anchor_and_apply_bounded(ctx: &ToolContext, fragment_id: &str) -> Result<AnchorRun, String> {
     anchor_and_apply_with_budget(ctx, fragment_id, ANCHOR_BUDGET)
 }
@@ -173,28 +353,66 @@ pub(crate) fn anchor_and_apply_with_budget(
     };
     let fid = fragment_id.to_string();
     let worker_ctx = ctx.clone();
+    let delivery = ctx.anchor_delivery().clone();
     let (tx, rx) = std::sync::mpsc::channel();
+    // 在途登记：时限内完成（Done）或线程异常由调用方撤销；
+    // 超时先行返回后由 worker 完成时收尾
+    register_anchor_in_flight(&delivery, &fid);
+    let worker_delivery = delivery.clone();
+    let worker_fid = fid.clone();
     let worker = std::thread::Builder::new()
         .name("story-anchor-bounded".into())
         .spawn(move || {
-            let res = anchor_and_apply(&worker_ctx, &provider, &fid);
-            // 接收端已放弃（超时先行返回）：锚点仍会落盘，仅回执不可见
-            let err_note = res.as_ref().err().cloned();
-            if tx.send(res).is_err() {
-                match err_note {
-                    Some(e) => eprintln!("[tool] 后台锚定失败（调用方已先行返回）: {e}"),
-                    None => eprintln!("[tool] 后台锚定已完成（调用方已先行返回）: {fid}"),
+            let delivery = worker_delivery;
+            let fid = worker_fid;
+            // 送达守卫（Drop 实现）：正常收尾按 send 结果分流，worker 主体
+            // panic 时也能撤销在途登记——否则一个永久"仍在进行中"的假状态
+            // 会跟着每一条回执走
+            struct AnchorRunGuard<'a> {
+                delivery: &'a std::sync::Arc<std::sync::Mutex<AnchorDeliveryState>>,
+                fid: &'a str,
+                /// Some：接收端已放弃，结果需转送达队列
+                deferred: Option<Result<AnchorOutcome, String>>,
+                /// 是否需要兜底撤销在途登记（已同步送达时由调用方负责）
+                needs_clear: bool,
+            }
+            impl Drop for AnchorRunGuard<'_> {
+                fn drop(&mut self) {
+                    if let Some(res) = self.deferred.take() {
+                        finish_deferred_anchor(self.delivery, self.fid, &res);
+                    } else if self.needs_clear {
+                        clear_anchor_in_flight(self.delivery, self.fid);
+                    }
                 }
+            }
+            let mut guard = AnchorRunGuard {
+                delivery: &delivery,
+                fid: &fid,
+                deferred: None,
+                needs_clear: true,
+            };
+            let res = anchor_and_apply(&worker_ctx, &provider, &fid);
+            if tx.send(res.clone()).is_ok() {
+                // 调用方在时限内等到了结果（回执已含锚定信息），无需接力
+                guard.needs_clear = false;
+            } else {
+                // 接收端已放弃（超时先行返回）：结果进送达队列，
+                // 随下一次工具回执带回
+                guard.deferred = Some(res);
             }
         })
         .map_err(|e| format!("创建锚定线程失败：{e}"))?;
     match rx.recv_timeout(budget) {
-        Ok(res) => res.map(AnchorRun::Done),
+        Ok(res) => {
+            clear_anchor_in_flight(&delivery, &fid);
+            res.map(AnchorRun::Done)
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            drop(worker); // detach：后台继续完成台账与锚点落盘
+            drop(worker); // detach：后台继续完成台账与锚点落盘，结果经回执接力送达
             Ok(AnchorRun::Deferred)
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            clear_anchor_in_flight(&delivery, &fid);
             Err("锚定线程异常退出（正文不受影响，可稍后用 anchor_fragments 补锚）".to_string())
         }
     }
@@ -276,16 +494,18 @@ role 取值：appears（指代对象在场有言行）/ mentioned（被谈起）
         messages: vec![Message::user(user)],
         model: String::new(),
         temperature: 0.1,
-        // 思考型模型的 reasoning 计入配额；输出 JSON 本身不大，
-        // 上限只需容纳思考 + 完整 JSON（档案级「输出上限」可覆盖）
-        max_tokens: 65536,
+        // 锚定的输出上限只需容纳思考 + 小 JSON。思考型模型偶尔长考：
+        // 上限过小会把"慢但正确"变成截断硬失败（该片段锚定缺失），
+        // 因此留足思考余量；更极端的长考在 20 秒时限处转后台、经回执
+        // 接力送达，不会丢结果（档案级「输出上限」可覆盖本值）
+        max_tokens: ANCHOR_MAX_TOKENS,
         tools: Vec::new(),
     };
 
     let response =
         super::retry_generate(provider, &request).map_err(|e| format!("锚定调用失败: {e}"))?;
     // 截断的锚定 JSON 会整体解析失败；提前报错让调用方调参重试
-    crate::llm_json::ensure_not_truncated(response.stop_reason, 65536)
+    crate::llm_json::ensure_not_truncated(response.stop_reason, ANCHOR_MAX_TOKENS as u32)
         .map_err(|e| format!("锚定结果{e}"))?;
 
     let mut outcome = parse_anchor_response(&response.text, &roster)?;
@@ -389,6 +609,28 @@ fn parse_anchor_response(text: &str, roster: &[RosterEntry]) -> Result<AnchorOut
     Ok(outcome)
 }
 
+/// 项目级锚定落盘互斥（进程内、按项目根共享——含同进程多会话的 MCP HTTP）。
+///
+/// 转后台的锚定 worker 在工具 execute 返回之后才跑落盘段，不持项目闸门
+/// （ProjectLock 已随工具返回释放）；多个 worker 并发对台账做读-改-写
+/// 会互相覆盖丢更新。锚定的落盘段（台账同步 + 锚点写回）在此排队，
+/// LLM 调用段不持锁。跨进程并发（桌面端 + 外部 CLI 同时锚定）不在此
+/// 管辖——与 ai_check 台账同一取舍：写入自身原子，极端并发至多丢一条
+/// 台账记录，稿件不受影响。
+fn anchor_disk_lock(root: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<std::path::PathBuf, std::sync::Arc<std::sync::Mutex<()>>>,
+        >,
+    > = std::sync::OnceLock::new();
+    let map = LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = map.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard
+        .entry(root.to_path_buf())
+        .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+        .clone()
+}
+
 /// 执行锚定并落盘（合并 helper：供 write/append 工具与批量工具共用）
 ///
 /// 除 LLM 锚点外还会：
@@ -403,6 +645,9 @@ pub fn anchor_and_apply(
 ) -> Result<AnchorOutcome, String> {
     let paths = ctx.paths();
     let mut outcome = comprehension_anchor(ctx, provider, fragment_id)?;
+    // LLM 段结束；落盘段在项目级锚定锁内串行（见 anchor_disk_lock）
+    let disk = anchor_disk_lock(&ctx.project_dir);
+    let _guard = disk.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let body = fragment_body(&paths, fragment_id)?;
 
     // 台账同步（best-effort：失败不阻断锚定）
@@ -448,6 +693,9 @@ pub fn anchor_fragment_merge(
 ) -> Result<AnchorOutcome, String> {
     let paths = ctx.paths();
     let mut outcome = comprehension_anchor(ctx, provider, fragment_id)?;
+    // LLM 段结束；落盘段同样在项目级锚定锁内串行（见 anchor_disk_lock）
+    let disk = anchor_disk_lock(&ctx.project_dir);
+    let _guard = disk.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let body = fragment_body(&paths, fragment_id)?;
 
     // 台账同步（best-effort：失败不阻断锚定），与 anchor_and_apply 一致
@@ -479,6 +727,15 @@ pub fn anchor_fragment_merge(
     Ok(outcome)
 }
 
+/// 未锚定指代的处置引导（写入回执与后台送达回执共用；一次回执只出现一遍）
+const UNRESOLVED_GUIDANCE: &str =
+    "处置方式：resolve_unresolved_ref 建档（匿名指代可用占位名如「九一真凶」）、\
+     归拢到已有实体或忽略；已处置的后续不再提示。\
+     多条指代若指向同一实体，可在一次调用中用 refs 批量处置。\n\
+     💡 若是已稳定出场、真名未揭的代称角色（如「刻印匠」），更优路径是\
+     create_character 传 placeholder 建档（正文继续用代称），\
+     真名揭露当章调 reveal_character_name 切换。";
+
 /// 把锚定结果格式化为回执片段（无内容返回空串）
 pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) -> String {
     let _ = roster_paths;
@@ -494,14 +751,7 @@ pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) 
         for (quote, hint) in &outcome.unresolved {
             note.push_str(&format!("\n  - \"{quote}\"（{hint}）"));
         }
-        note.push_str(
-            "\n处置方式：resolve_unresolved_ref 建档（匿名指代可用占位名如「九一真凶」）、\
-             归拢到已有实体或忽略；已处置的后续不再提示。\
-             多条指代若指向同一实体，可在一次调用中用 refs 批量处置。\n\
-             💡 若是已稳定出场、真名未揭的代称角色（如「刻印匠」），更优路径是\
-             create_character 传 placeholder 建档（正文继续用代称），\
-             真名揭露当章调 reveal_character_name 切换。",
-        );
+        note.push_str(&format!("\n{UNRESOLVED_GUIDANCE}"));
     }
     note
 }
@@ -526,7 +776,8 @@ impl Tool for AnchorFragmentsTool {
             description: "对片段执行理解锚定：用 AI 做指代消解，把\"那人\"\"佣兵\"这类\
 文字匹配认不到的出场落为显式锚点（名字/别名已自动识别，无需重跑）。\
 省略 fragment_id 则批量处理全书（每次最多 60 个片段，超出请分章执行）。\
-导入旧书稿后跑一遍即可建立完整出场索引。"
+耗时超过时限的部分自动转后台，结果随你后续任意工具调用的回执自动送达\
+（无需主动查询）。导入旧书稿后跑一遍即可建立完整出场索引。"
                 .into(),
             parameters: object_schema(vec![(
                 "fragment_id",
@@ -544,20 +795,25 @@ impl Tool for AnchorFragmentsTool {
             .as_ref()
             .ok_or_else(|| "anchor_fragments 需要 provider，当前未配置".to_string())?;
 
-        let mut summary = String::new();
         if let Some(fid) = get_str_opt(arguments, "fragment_id") {
-            let outcome = anchor_and_apply(&self.ctx, provider, &fid)?;
-            summary.push_str(&format!(
-                "片段 {fid}：{}",
-                if outcome.anchored.is_empty() && outcome.unresolved.is_empty() {
-                    "无需指代锚定".to_string()
-                } else {
-                    format_anchor_note(&outcome, &self.ctx.paths())
-                        .trim()
-                        .to_string()
-                }
-            ));
-            return Ok(summary);
+            // 单片段：与写入工具同一时限语义——快则当场出结果，
+            // 慢则转后台、经回执接力送达
+            let paths = self.ctx.paths();
+            return match anchor_and_apply_bounded(&self.ctx, &fid)? {
+                AnchorRun::Done(o) => Ok(format!(
+                    "片段 {fid}：{}",
+                    if o.anchored.is_empty() && o.unresolved.is_empty() {
+                        "无需指代锚定".to_string()
+                    } else {
+                        format_anchor_note(&o, &paths).trim().to_string()
+                    }
+                )),
+                AnchorRun::Deferred => Ok(format!(
+                    "片段 {fid}：指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
+                     结果将随你下一次工具调用的回执自动送达，无需主动查询。",
+                    ANCHOR_BUDGET.as_secs()
+                )),
+            };
         }
 
         // 全书批量
@@ -577,23 +833,79 @@ impl Tool for AnchorFragmentsTool {
             names.truncate(BATCH_CAP);
         }
 
-        let mut anchored_count = 0usize;
-        let mut pending_count = 0usize;
-        let mut failed: Vec<String> = Vec::new();
-        for fid in &names {
-            match anchor_and_apply(&self.ctx, provider, fid) {
-                Ok(o) => {
-                    anchored_count += o.anchored.len();
-                    pending_count += o.unresolved.len();
-                }
-                Err(e) => failed.push(format!("{fid}: {e}")),
+        Ok(anchor_fragments_batch(
+            &self.ctx,
+            provider,
+            &names,
+            total,
+            BATCH_CAP,
+            ANCHOR_BUDGET,
+        ))
+    }
+}
+
+/// 批量锚定（可指定总时限，测试用小预算触发转后台路径）。
+///
+/// 总时限内逐片段同步完成——小批量（如一章的几个片段）一步拿到全部
+/// 结果；时限耗尽或某片段自身超时（该片段已带后台线程）后，余下片段
+/// 交给一个后台线程串行处理（避免 60 路并发把 provider 打限流），
+/// 每片完成即经回执接力送达。
+fn anchor_fragments_batch(
+    ctx: &ToolContext,
+    provider: &Arc<dyn AiProvider>,
+    names: &[String],
+    total: usize,
+    batch_cap: usize,
+    budget: std::time::Duration,
+) -> String {
+    let deadline = std::time::Instant::now() + budget;
+    let mut anchored_count = 0usize;
+    let mut pending_count = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    let mut completed = 0usize;
+    let mut rest: Option<&[String]> = None;
+    for (i, fid) in names.iter().enumerate() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            // 时限耗尽：本片起全部转后台
+            rest = Some(&names[i..]);
+            break;
+        }
+        match anchor_and_apply_with_budget(ctx, fid, remaining) {
+            Ok(AnchorRun::Done(o)) => {
+                completed += 1;
+                anchored_count += o.anchored.len();
+                pending_count += o.unresolved.len();
+            }
+            Ok(AnchorRun::Deferred) => {
+                // 第 i 片已自带后台线程；余下片段交给后台串
+                rest = Some(&names[i + 1..]);
+                break;
+            }
+            Err(e) => {
+                completed += 1;
+                failed.push(format!("{fid}: {e}"));
             }
         }
+    }
 
+    if let Some(rest) = rest {
+        let rest = rest.to_vec();
+        if !rest.is_empty() {
+            spawn_anchor_batch_worker(ctx.clone(), provider.clone(), rest);
+        }
         let mut out = format!(
-            "批量锚定完成：处理 {} 个片段（共 {total} 个{}），落锚 {anchored_count} 处，待处置指代 {pending_count} 条（list_unresolved_refs 可查看）",
-            names.len(),
-            if total > BATCH_CAP { "，达单次上限，请分批" } else { "" },
+            "批量锚定：{} 个片段已在时限内完成（落锚 {anchored_count} 处，待处置指代 {pending_count} 条），\
+             其余 {} 个转后台串行处理（共 {total} 个{}）。\
+             后台结果将随你后续工具调用的回执自动送达，无需主动查询；\
+             台账可随时用 list_unresolved_refs 查看",
+            completed,
+            names.len() - completed,
+            if total > batch_cap {
+                "，达单次上限，请分批"
+            } else {
+                ""
+            },
         );
         if !failed.is_empty() {
             out.push_str(&format!(
@@ -602,7 +914,39 @@ impl Tool for AnchorFragmentsTool {
                 failed.join("；")
             ));
         }
-        Ok(out)
+        return out;
+    }
+
+    let mut out = format!(
+        "批量锚定完成：处理 {} 个片段（共 {total} 个{}），落锚 {anchored_count} 处，待处置指代 {pending_count} 条（list_unresolved_refs 可查看）",
+        names.len(),
+        if total > batch_cap { "，达单次上限，请分批" } else { "" },
+    );
+    if !failed.is_empty() {
+        out.push_str(&format!(
+            "\n失败 {} 个：{}",
+            failed.len(),
+            failed.join("；")
+        ));
+    }
+    out
+}
+
+/// 批量后台串行 worker：逐片段执行理解锚定，完成即经回执接力送达
+/// （空结果不送——"没有消息"即"无需处置"；失败送原因与补锚提示）
+fn spawn_anchor_batch_worker(ctx: ToolContext, provider: Arc<dyn AiProvider>, fids: Vec<String>) {
+    let delivery = ctx.anchor_delivery().clone();
+    let spawn_res = std::thread::Builder::new()
+        .name("story-anchor-batch".into())
+        .spawn(move || {
+            for fid in &fids {
+                register_anchor_in_flight(&delivery, fid);
+                let res = anchor_and_apply(&ctx, &provider, fid);
+                finish_deferred_anchor(&delivery, fid, &res);
+            }
+        });
+    if let Err(e) = spawn_res {
+        eprintln!("[tool] 批量锚定后台线程创建失败（正文与既有锚点不受影响，可重跑 anchor_fragments）: {e}");
     }
 }
 
@@ -1705,6 +2049,221 @@ status = "ignored"
             matches!(&run, AnchorRun::Done(o) if o.anchored.is_empty() && o.unresolved.is_empty()),
             "无 provider 时空结果，与调用方原有语义一致"
         );
+    }
+
+    // —— 回执接力：转后台的锚定结果随下一次工具回执送达 ——
+
+    /// 慢且带结果的 provider：模拟"超时转后台、后台完成并有产出"
+    #[derive(Debug)]
+    struct SlowResultProvider {
+        delay_ms: u64,
+        response: String,
+    }
+    impl AiProvider for SlowResultProvider {
+        fn id(&self) -> &str {
+            "mock-slow-result"
+        }
+        fn generate(&self, _request: &GenerateRequest) -> Result<GenerateResponse, AiError> {
+            std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+            Ok(GenerateResponse {
+                text: self.response.clone(),
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                },
+                stop_reason: StopReason::EndTurn,
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    /// 慢且失败的 provider（Unavailable 不可重试，无退避等待）
+    #[derive(Debug)]
+    struct SlowErrProvider {
+        delay_ms: u64,
+    }
+    impl AiProvider for SlowErrProvider {
+        fn id(&self) -> &str {
+            "mock-slow-err"
+        }
+        fn generate(&self, _request: &GenerateRequest) -> Result<GenerateResponse, AiError> {
+            std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+            Err(AiError::Unavailable("模拟后台失败".into()))
+        }
+    }
+
+    const DELIVERY_RESPONSE: &str = "{\"anchors\": [{\"entity\": \"c_0001\", \"role\": \"referenced\", \"quote\": \"他\"}], \"unresolved\": [{\"quote\": \"灰袍女人\", \"hint\": \"疑似新角色\"}]}";
+
+    /// 轮询取送达段，直到包含目标串（超时 panic）
+    fn poll_delivery_note(ctx: &ToolContext, needle: &str, timeout: std::time::Duration) -> String {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let note = take_anchor_delivery_note(ctx.anchor_delivery());
+            if note.contains(needle) {
+                return note;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("轮询送达段超时（等待「{needle}）」，最后取到：{note}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+    }
+
+    /// 转后台的锚定完成后结果进入送达队列：先报"仍在进行中"（消除
+    /// list_unresolved_refs 的 false-empty 误报），完成后带结果与处置
+    /// 引导送达一次，随即清空
+    #[test]
+    fn deferred_anchor_result_delivered_via_receipt_relay() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"洛恩\"\n",
+        )
+        .unwrap();
+        let ch = crate::mutations::create_chapter(&paths, "章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        // 正文须包含上报的指代原文（台账同步会清掉不在正文中的记录）
+        let fid =
+            crate::mutations::create_fragment(&paths, &sc, "他推门进来。灰袍女人没抬头。").unwrap();
+        let ctx = ToolContext::with_provider(
+            tmp.path().to_path_buf(),
+            Arc::new(SlowResultProvider {
+                delay_ms: 300,
+                response: DELIVERY_RESPONSE.to_string(),
+            }),
+        );
+        let run =
+            anchor_and_apply_with_budget(&ctx, &fid, std::time::Duration::from_millis(50)).unwrap();
+        assert!(matches!(run, AnchorRun::Deferred));
+
+        // 在途提示先行出现
+        let in_flight = take_anchor_delivery_note(ctx.anchor_delivery());
+        assert!(in_flight.contains("仍在进行中"), "{in_flight}");
+        assert!(in_flight.contains(&fid), "{in_flight}");
+
+        let note = poll_delivery_note(&ctx, "后台锚定完成", std::time::Duration::from_secs(3));
+        assert!(note.contains(&fid), "{note}");
+        assert!(note.contains("c_0001"), "{note}");
+        assert!(note.contains("灰袍女人"), "{note}");
+        assert!(note.contains("处置方式"), "{note}");
+
+        // 送达一次即清空
+        let drained = take_anchor_delivery_note(ctx.anchor_delivery());
+        assert!(!drained.contains("后台锚定完成"), "{drained}");
+        assert!(!drained.contains("仍在进行中"), "{drained}");
+    }
+
+    /// 时限内完成（Done）：结果已在写入回执里，不进入送达队列
+    #[test]
+    fn fast_anchor_leaves_no_delivery_trace() {
+        let tmp = setup_test_project();
+        let fid = budget_fixture(tmp.path());
+        let ctx = ToolContext::with_provider(
+            tmp.path().to_path_buf(),
+            Arc::new(MockAnchorProvider {
+                response: DELIVERY_RESPONSE.to_string(),
+            }),
+        );
+        let run =
+            anchor_and_apply_with_budget(&ctx, &fid, std::time::Duration::from_secs(5)).unwrap();
+        assert!(matches!(run, AnchorRun::Done(_)));
+        let note = take_anchor_delivery_note(ctx.anchor_delivery());
+        assert!(note.is_empty(), "Done 的结果无需接力：{note}");
+    }
+
+    /// 后台失败的锚定也送达：附失败原因与补锚指引（此前只进 stderr）
+    #[test]
+    fn failed_background_anchor_delivers_error_hint() {
+        let tmp = setup_test_project();
+        let fid = budget_fixture(tmp.path());
+        let ctx = ToolContext::with_provider(
+            tmp.path().to_path_buf(),
+            Arc::new(SlowErrProvider { delay_ms: 300 }),
+        );
+        let run =
+            anchor_and_apply_with_budget(&ctx, &fid, std::time::Duration::from_millis(50)).unwrap();
+        assert!(matches!(run, AnchorRun::Deferred));
+
+        let note = poll_delivery_note(&ctx, "后台锚定失败", std::time::Duration::from_secs(3));
+        assert!(note.contains("模拟后台失败"), "{note}");
+        assert!(note.contains("anchor_fragments"), "{note}");
+    }
+
+    /// 批量锚定超时：时限内完成的部分出汇总，余下转后台串行，
+    /// 逐片送达且锚点确已落盘
+    #[test]
+    fn batch_anchor_defers_rest_and_delivers() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+        // 内联 fixture（同 budget_fixture，但要拿回场景 ID 建多个片段）
+        std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
+        std::fs::write(
+            dir.join("entities/characters/c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"洛恩\"\n",
+        )
+        .unwrap();
+        let ch = crate::mutations::create_chapter(&paths, "章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let fid1 =
+            crate::mutations::create_fragment(&paths, &sc, "他推门进来，把伞收在了门边。").unwrap();
+        let fid2 =
+            crate::mutations::create_fragment(&paths, &sc, "他坐下，灰袍女人看着他。").unwrap();
+        let fid3 =
+            crate::mutations::create_fragment(&paths, &sc, "他没说话，灰袍女人也没说话。").unwrap();
+        let fids = vec![fid1.clone(), fid2.clone(), fid3.clone()];
+
+        let provider: Arc<dyn AiProvider> = Arc::new(SlowResultProvider {
+            delay_ms: 120,
+            response: DELIVERY_RESPONSE.to_string(),
+        });
+        let ctx = ToolContext::with_provider(tmp.path().to_path_buf(), provider.clone());
+
+        let out = anchor_fragments_batch(
+            &ctx,
+            &provider,
+            &fids,
+            fids.len(),
+            60,
+            std::time::Duration::from_millis(60),
+        );
+        assert!(out.contains("转后台"), "{out}");
+        assert!(out.contains("自动送达"), "{out}");
+
+        // 逐片送达（只认"已完成"送达段——在途提示也列片段 ID，不能算数）
+        let mut seen = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while std::time::Instant::now() < deadline {
+            let note = take_anchor_delivery_note(ctx.anchor_delivery());
+            if note.contains("后台锚定完成") {
+                seen.push_str(&note);
+            }
+            if fids.iter().all(|f| seen.contains(f)) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        for f in &fids {
+            assert!(seen.contains(f), "片段 {f} 未送达：{seen}");
+        }
+        assert!(seen.contains("c_0001"), "{seen}");
+
+        // 等送达队列完全清空（在途登记撤销）再查落盘，避免与 worker 竞态
+        let quiet = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < quiet {
+            if take_anchor_delivery_note(ctx.anchor_delivery()).is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        for f in &fids {
+            let content =
+                std::fs::read_to_string(tmp.path().join(format!("fragments/{f}.md"))).unwrap();
+            assert!(content.contains("entity: c_0001"), "{f}: {content}");
+        }
     }
 }
 

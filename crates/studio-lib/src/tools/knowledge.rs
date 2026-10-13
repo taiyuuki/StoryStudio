@@ -1536,9 +1536,9 @@ impl Tool for WriteFragmentTextTool {
                 msg.push_str(&super::format_anchor_note(&o, &paths))
             }
             Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
-                "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（完成后自动生效）。\
+                "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
                  正文已保存——请勿因本提示重试本次写入。\
-                 稍后可用 read_fragment_text / list_unresolved_refs 查看锚定结果",
+                 结果将随你下一次工具调用的回执自动送达，无需主动查询",
                 super::anchoring::ANCHOR_BUDGET.as_secs()
             )),
             Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
@@ -2390,9 +2390,9 @@ impl Tool for AppendFragmentTextTool {
                 msg.push_str(&super::format_anchor_note(&o, &paths))
             }
             Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
-                "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（完成后自动生效）。\
+                "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
                  正文已保存——请勿因本提示重试本次追加。\
-                 稍后可用 read_fragment_text / list_unresolved_refs 查看锚定结果",
+                 结果将随你下一次工具调用的回执自动送达，无需主动查询",
                 super::anchoring::ANCHOR_BUDGET.as_secs()
             )),
             Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
@@ -2894,9 +2894,9 @@ impl Tool for SplitFragmentTool {
                 msg.push_str(&super::format_anchor_note(&o, &paths))
             }
             Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
-                "\n⏳ 后半段指代锚定超过 {} 秒时限，已转入后台继续（完成后自动生效）。\
+                "\n⏳ 后半段指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
                  拆分已完成——请勿因本提示重试。\
-                 稍后可用 read_fragment_text / list_unresolved_refs 查看锚定结果",
+                 结果将随你下一次工具调用的回执自动送达，无需主动查询",
                 super::anchoring::ANCHOR_BUDGET.as_secs()
             )),
             Err(e) => msg.push_str(&format!("\n（后半段指代锚定跳过：{e}）")),

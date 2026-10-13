@@ -24,6 +24,11 @@ pub struct ToolContext {
     /// 项目解析缓存（Arc 共享：同一工具注册表内的所有 ctx.clone() 复用一份）。
     /// 长篇下妙笔一轮对话几十次工具调用，每次全量重读全书文件是主要耗时。
     parse_state: Arc<Mutex<ParseState>>,
+    /// 后台锚定回执接力状态（Arc 共享：同一工具注册表内复用一份，与
+    /// parse_state 同一模式）。转后台的锚定结果记入待送达队列，由
+    /// GatedTool 包装层随下一次工具回执带给调用方 Agent——MCP 等
+    /// 请求-响应调用方没有服务端推送通道，这是唯一确定性送达路径。
+    anchor_delivery: Arc<Mutex<anchoring::AnchorDeliveryState>>,
 }
 
 /// 解析缓存状态：上次解析结果 + 文件 hash 缓存
@@ -56,6 +61,7 @@ impl Clone for ToolContext {
             project_dir: self.project_dir.clone(),
             provider: self.provider.clone(),
             parse_state: Arc::clone(&self.parse_state),
+            anchor_delivery: Arc::clone(&self.anchor_delivery),
         }
     }
 }
@@ -70,6 +76,7 @@ impl ToolContext {
                 output: None,
                 extra_hashes: [None; 2],
             })),
+            anchor_delivery: Arc::new(Mutex::new(anchoring::AnchorDeliveryState::default())),
         }
     }
 
@@ -83,7 +90,13 @@ impl ToolContext {
                 output: None,
                 extra_hashes: [None; 2],
             })),
+            anchor_delivery: Arc::new(Mutex::new(anchoring::AnchorDeliveryState::default())),
         }
+    }
+
+    /// 后台锚定送达队列句柄（GatedTool 回执接力与锚定 worker 共用）
+    pub(crate) fn anchor_delivery(&self) -> &Arc<Mutex<anchoring::AnchorDeliveryState>> {
+        &self.anchor_delivery
     }
 
     pub(super) fn paths(&self) -> ProjectPaths {

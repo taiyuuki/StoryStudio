@@ -140,10 +140,16 @@ impl Tool for AskUserTool {
 ///
 /// 闸门只覆盖工具执行本身；Agent 的 LLM 思考阶段不持锁，妙笔长对话
 /// 不会把整个项目的写入口堵死。
+///
+/// 回执接力：execute 成功后把待送达的后台锚定结果 / 在途状态追加到
+/// 回执尾部（见 `anchoring::AnchorDeliveryState`）。MCP 等请求-响应
+/// 调用方没有服务端推送通道，这是超时转后台的锚定结果唯一的确定性
+/// 送达路径——任何工具的下一次调用都会带回。
 struct GatedTool {
     inner: Box<dyn Tool>,
     lock: crate::project_lock::ProjectLock,
     is_read: bool,
+    anchor_delivery: Arc<std::sync::Mutex<crate::tools::anchoring::AnchorDeliveryState>>,
 }
 
 impl Tool for GatedTool {
@@ -162,7 +168,15 @@ impl Tool for GatedTool {
         } else {
             None
         };
-        self.inner.execute(arguments)
+        let mut result = self.inner.execute(arguments);
+        // 失败的回执不附送达段（保持错误聚焦；结果留到下一次成功调用）
+        if let Ok(text) = &mut result {
+            let note = crate::tools::anchoring::take_anchor_delivery_note(&self.anchor_delivery);
+            if !note.is_empty() {
+                text.push_str(&note);
+            }
+        }
+        result
     }
 }
 
@@ -176,6 +190,8 @@ impl Tool for GatedTool {
 /// 漏标的代价是"少一点并发"（默认按会写处理），不会反向出错。
 pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRegistry {
     let ctx = ToolContext::with_provider(dir.to_path_buf(), provider);
+    // GatedTool 回执接力与锚定 worker 共用同一送达队列（ctx 内 Arc）
+    let anchor_delivery = ctx.anchor_delivery().clone();
     let mut registry = ToolRegistry::new();
     registry.register_readonly(Box::new(AskUserTool));
     registry.register_readonly(Box::new(PrepareWritingTool::new(ctx.clone())));
@@ -272,6 +288,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
             inner: t,
             lock: lock.clone(),
             is_read,
+            anchor_delivery: anchor_delivery.clone(),
         })
     })
 }
@@ -581,5 +598,102 @@ mod tests {
         assert_eq!(resolve_max_tool_turns(Some(200)), 200, "上边界");
         assert_eq!(resolve_max_tool_turns(Some(0)), 1, "0 拉回下边界");
         assert_eq!(resolve_max_tool_turns(Some(9999)), 200, "超上限拉回 200");
+    }
+
+    /// 回执接力：GatedTool 把待送达的后台锚定结果追加到成功回执尾部，
+    /// 一次送达即清空；失败回执不带走结果，留到下一次成功调用
+    #[test]
+    fn gated_tool_relays_anchor_delivery_note() {
+        struct EchoTool;
+        impl story_ai_runtime::Tool for EchoTool {
+            fn definition(&self) -> story_ai_runtime::ToolDef {
+                story_ai_runtime::ToolDef {
+                    name: "echo".into(),
+                    description: "测试桩".into(),
+                    parameters: serde_json::json!({}),
+                }
+            }
+            fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+                Ok("echo-ok".to_string())
+            }
+        }
+        struct FailTool;
+        impl story_ai_runtime::Tool for FailTool {
+            fn definition(&self) -> story_ai_runtime::ToolDef {
+                story_ai_runtime::ToolDef {
+                    name: "fail".into(),
+                    description: "测试桩".into(),
+                    parameters: serde_json::json!({}),
+                }
+            }
+            fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+                Err("工具失败".to_string())
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "relay-test").unwrap();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        // 塞一条待送达的后台锚定结果
+        crate::tools::anchoring::finish_deferred_anchor(
+            ctx.anchor_delivery(),
+            "f_0001",
+            &Ok(crate::tools::anchoring::AnchorOutcome {
+                anchored: vec![(
+                    "c_0001".to_string(),
+                    "referenced".to_string(),
+                    "他".to_string(),
+                )],
+                unresolved: vec![("灰袍女人".to_string(), "疑似新角色".to_string())],
+            }),
+        );
+
+        let make_gated = |inner: Box<dyn story_ai_runtime::Tool>| GatedTool {
+            inner,
+            lock: crate::project_lock::ProjectLock::for_root(tmp.path()),
+            is_read: true,
+            anchor_delivery: ctx.anchor_delivery().clone(),
+        };
+
+        // 成功回执：尾部追加送达段（结果 + 处置引导）
+        let out = make_gated(Box::new(EchoTool))
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(out.contains("echo-ok"), "{out}");
+        assert!(out.contains("后台锚定完成"), "{out}");
+        assert!(out.contains("f_0001"), "{out}");
+        assert!(out.contains("c_0001"), "{out}");
+        assert!(out.contains("处置方式"), "{out}");
+
+        // 一次送达即清空
+        let out2 = make_gated(Box::new(EchoTool))
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(!out2.contains("后台锚定完成"), "{out2}");
+
+        // 失败回执不带走待送达结果（空结果不入队，此处给非空结果）
+        crate::tools::anchoring::finish_deferred_anchor(
+            ctx.anchor_delivery(),
+            "f_0002",
+            &Ok(crate::tools::anchoring::AnchorOutcome {
+                anchored: vec![(
+                    "c_0002".to_string(),
+                    "appears".to_string(),
+                    "那人".to_string(),
+                )],
+                unresolved: Vec::new(),
+            }),
+        );
+        let err = make_gated(Box::new(FailTool))
+            .execute(&serde_json::json!({}))
+            .unwrap_err();
+        assert_eq!(err, "工具失败");
+
+        // 结果留到下一次成功调用送达
+        let out3 = make_gated(Box::new(EchoTool))
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(out3.contains("f_0002"), "{out3}");
     }
 }
