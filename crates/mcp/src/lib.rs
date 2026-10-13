@@ -22,7 +22,7 @@ pub use http::{
     load_or_create_token, load_or_create_token_at, regenerate_token, start_server_http,
     HttpServerOptions, McpHttpHandle,
 };
-pub use server::{build_tool_descriptors, is_exposed, READ_ONLY_TOOLS};
+pub use server::{build_tool_descriptors, is_exposed, HIDDEN_TOOLS, READ_ONLY_TOOLS};
 
 /// HTTP 传输的默认端口
 pub const DEFAULT_HTTP_PORT: u16 = 27520;

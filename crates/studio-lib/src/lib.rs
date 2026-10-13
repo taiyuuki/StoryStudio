@@ -23,6 +23,7 @@ pub mod journal;
 pub mod llm_json;
 pub mod mutations;
 pub mod project;
+pub mod project_lock;
 pub mod prompt_custom;
 mod prompts;
 pub mod search;

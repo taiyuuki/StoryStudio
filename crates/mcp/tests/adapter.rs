@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use story_mcp::{build_tool_descriptors, is_exposed, READ_ONLY_TOOLS};
+use story_mcp::{build_tool_descriptors, is_exposed, HIDDEN_TOOLS, READ_ONLY_TOOLS};
 use story_studio_lib::{create_project, create_provider, create_tool_registry};
 
 /// 临时项目 + 完整工具注册表（占位 provider，测试只走确定性工具）
@@ -89,7 +89,13 @@ fn read_only_mode_exposes_only_whitelist() {
     let (_tmp, registry) = temp_registry();
     let defs = registry.definitions();
     let descriptors = build_tool_descriptors(defs, true);
-    assert_eq!(descriptors.len(), READ_ONLY_TOOLS.len());
+    // 白名单 ∖ 隐藏工具（ask_user 无项目副作用、在闸门分类中属读端，
+    // 但 MCP 无宿主 UI 不暴露）
+    let expected = READ_ONLY_TOOLS
+        .iter()
+        .filter(|n| !HIDDEN_TOOLS.contains(n))
+        .count();
+    assert_eq!(descriptors.len(), expected);
     for tool in &descriptors {
         assert!(READ_ONLY_TOOLS.contains(&tool.name.as_ref()));
     }

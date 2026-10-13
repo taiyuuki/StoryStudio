@@ -22,6 +22,17 @@ fn e<T: std::fmt::Display>(err: T) -> String {
     err.to_string()
 }
 
+/// 写入口并发闸门：与外部 Agent（MCP）及妙笔工具的写操作在同一把项目锁
+/// 上排队（进程内 RwLock + 跨进程 `.novelstudio/tool-gate.lock`，详见
+/// `story_studio_lib::project_lock`）。守卫存活到命令返回——变更整体
+/// 持锁，扫描→分配→落盘因此原子。
+///
+/// 读命令不加闸：外部 Agent 持锁期间 UI 读取不应被长时间阻塞，且写入
+/// 已是原子替换，读到的永远是完整一代数据。
+fn write_gate(root: &str) -> lib::project_lock::ProjectWriteGuard {
+    lib::project_lock::ProjectLock::for_root(Path::new(root)).write()
+}
+
 // ============================================================================
 // 项目
 // ============================================================================
@@ -62,17 +73,20 @@ pub async fn peek_projects(roots: Vec<String>) -> R<Vec<lib::PeekEntry>> {
 
 #[tauri::command]
 pub fn create_chapter(root: String, title: String) -> R<ChapterDto> {
+    let _gate = write_gate(&root);
     let id = mutations::create_chapter(&paths(&root), title.trim()).map_err(e)?;
     refresh_chapter(&root, &id)
 }
 
 #[tauri::command]
 pub fn rename_chapter(root: String, chapter_id: String, title: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::rename_chapter(&paths(&root), &chapter_id, title.trim()).map_err(e)
 }
 
 #[tauri::command]
 pub fn delete_chapter(root: String, chapter_id: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::delete_chapter(&paths(&root), &chapter_id)
         .map(|_| ())
         .map_err(e)
@@ -85,6 +99,7 @@ pub fn create_scene(
     title: String,
     pov: Option<String>,
 ) -> R<SceneDetailDto> {
+    let _gate = write_gate(&root);
     let id = mutations::create_scene(&paths(&root), &chapter_id, title.trim(), pov.as_deref())
         .map_err(e)?;
     get_scene(root, id)
@@ -92,17 +107,20 @@ pub fn create_scene(
 
 #[tauri::command]
 pub fn rename_scene(root: String, scene_id: String, title: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::rename_scene(&paths(&root), &scene_id, title.trim()).map_err(e)
 }
 
 #[tauri::command]
 pub fn delete_scene(root: String, scene_id: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::delete_scene(&paths(&root), &scene_id).map_err(e)
 }
 
 /// 场景属性补丁（三态语义：缺省=不改 / null=清空 / 值=设置）
 #[tauri::command]
 pub fn update_scene(root: String, scene_id: String, patch: ScenePatchDto) -> R<Vec<String>> {
+    let _gate = write_gate(&root);
     let title = patch.title.flatten();
     let update = SceneUpdate {
         title: title.as_deref(),
@@ -213,6 +231,7 @@ pub fn insert_fragment(
     after_id: Option<String>,
     text: String,
 ) -> R<FragmentDto> {
+    let _gate = write_gate(&root);
     let p = paths(&root);
     let new_id = mutations::create_fragment(&p, &scene_id, &text).map_err(e)?;
 
@@ -242,11 +261,13 @@ pub fn insert_fragment(
 
 #[tauri::command]
 pub fn write_fragment(root: String, fragment_id: String, text: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::write_fragment_text(&paths(&root), &fragment_id, &text).map_err(e)
 }
 
 #[tauri::command]
 pub fn delete_fragment(root: String, scene_id: String, fragment_id: String) -> R<()> {
+    let _gate = write_gate(&root);
     let _ = scene_id;
     mutations::delete_fragment(&paths(&root), &fragment_id).map_err(e)
 }
@@ -258,6 +279,7 @@ pub fn move_fragment(
     fragment_id: String,
     new_index: usize,
 ) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::move_fragment(&paths(&root), &scene_id, &fragment_id, new_index).map_err(e)
 }
 
@@ -277,6 +299,7 @@ pub fn set_fragment_anchor(
     entity_id: String,
     role: String,
 ) -> R<Vec<AnchorDto>> {
+    let _gate = write_gate(&root);
     mutations::set_fragment_anchor(&paths(&root), &fragment_id, &entity_id, &role).map_err(e)?;
     read_fragment_anchors(&root, &fragment_id)
 }
@@ -288,6 +311,7 @@ pub fn remove_fragment_anchor(
     fragment_id: String,
     entity_id: String,
 ) -> R<Vec<AnchorDto>> {
+    let _gate = write_gate(&root);
     mutations::remove_fragment_anchor(&paths(&root), &fragment_id, &entity_id).map_err(e)?;
     read_fragment_anchors(&root, &fragment_id)
 }
@@ -316,6 +340,7 @@ pub fn fragment_restore_version(
     fragment_id: String,
     timestamp: u64,
 ) -> R<FragmentDto> {
+    let _gate = write_gate(&root);
     let p = paths(&root);
     lib::history::restore_version(&p, &fragment_id, timestamp).map_err(e)?;
     let ff = load_fragment_file(std::path::Path::new(&root), &fragment_id)?;
@@ -373,6 +398,7 @@ pub fn ai_ledger_summary(root: String) -> R<lib::ai_ledger::AiLedgerSummary> {
 
 #[tauri::command]
 pub fn create_entity(root: String, kind: String, name: String) -> R<EntityDto> {
+    let _gate = write_gate(&root);
     let k = EntityKind::from_type_str(&kind).map_err(e)?;
     let id = mutations::create_entity(&paths(&root), k, name.trim()).map_err(e)?;
     let p = paths(&root);
@@ -386,17 +412,20 @@ pub fn create_entity(root: String, kind: String, name: String) -> R<EntityDto> {
 
 #[tauri::command]
 pub fn delete_entity(root: String, entity_id: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::delete_entity(&paths(&root), &entity_id).map_err(e)
 }
 
 #[tauri::command]
 pub fn save_entity(root: String, entity: EntityDto) -> R<EntityDto> {
+    let _gate = write_gate(&root);
     save_entity_file(std::path::Path::new(&root), &entity)?;
     Ok(entity)
 }
 
 #[tauri::command]
 pub fn add_relation(root: String, from: String, to: String, relation: String) -> R<RelationDto> {
+    let _gate = write_gate(&root);
     let id = mutations::add_relation(&paths(&root), &from, &to, &relation).map_err(e)?;
     let p = paths(&root);
     let file = load_toml::<story_project_format::RelationsFile>(&p.relations_toml())?;
@@ -410,6 +439,7 @@ pub fn add_relation(root: String, from: String, to: String, relation: String) ->
 
 #[tauri::command]
 pub fn remove_relation(root: String, relation_id: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::remove_relation(&paths(&root), &relation_id).map_err(e)
 }
 
@@ -424,6 +454,7 @@ pub fn update_relation(
     valid_from_scene: Option<String>,
     valid_until_scene: Option<String>,
 ) -> R<RelationDto> {
+    let _gate = write_gate(&root);
     let from = valid_from_scene
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
@@ -450,6 +481,7 @@ pub fn update_relation(
 
 #[tauri::command]
 pub fn merge_entities(root: String, from_entity_id: String, into_entity_id: String) -> R<String> {
+    let _gate = write_gate(&root);
     let report =
         mutations::merge_entities(&paths(&root), &from_entity_id, &into_entity_id).map_err(e)?;
     Ok(report.summary(&from_entity_id, &into_entity_id))
@@ -465,6 +497,7 @@ pub fn resolve_unresolved(
     name: Option<String>,
     kind: Option<String>,
 ) -> R<String> {
+    let _gate = write_gate(&root);
     mutations::resolve_unresolved_ref(
         &paths(&root),
         &fragment_id,
@@ -481,6 +514,7 @@ pub fn resolve_unresolved(
 /// 批量忽略未锚定指代（一次性背景人物等低价值代称）
 #[tauri::command]
 pub fn ignore_unresolved_refs(root: String, refs: Vec<(String, String)>) -> R<String> {
+    let _gate = write_gate(&root);
     mutations::resolve_unresolved_refs(&paths(&root), &refs, "ignore", None, None, None, None)
         .map_err(e)
 }
@@ -498,6 +532,7 @@ pub fn create_thread(
     due_volume: Option<u32>,
     scope: Option<String>,
 ) -> R<ThreadDto> {
+    let _gate = write_gate(&root);
     let id = mutations::create_thread(
         &paths(&root),
         title.trim(),
@@ -525,6 +560,7 @@ pub fn update_thread(
     // 计划埋设卷号：不传 = 不变；0 = 清除（恢复全书长线）；n = 设为第 n 卷
     due_volume: Option<u32>,
 ) -> R<()> {
+    let _gate = write_gate(&root);
     // Tauri IPC 的 JSON null 与缺省不可区分，用 0 表示清除
     let due: Option<Option<u32>> = match due_volume {
         None => None,
@@ -548,6 +584,7 @@ pub fn update_thread(
 
 #[tauri::command]
 pub fn delete_thread(root: String, thread_id: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::delete_thread(&paths(&root), &thread_id).map_err(e)
 }
 
@@ -560,6 +597,7 @@ pub fn set_thread_knowledge(
     state: String,
     scene_id: String,
 ) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::set_thread_knowledge(&paths(&root), &thread_id, &observer, &state, &scene_id)
         .map_err(e)
 }
@@ -572,6 +610,7 @@ pub fn remove_thread_knowledge(
     observer: String,
     scene_id: Option<String>,
 ) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::remove_thread_knowledge(&paths(&root), &thread_id, &observer, scene_id.as_deref())
         .map_err(e)
         .map(|_| ())
@@ -589,6 +628,7 @@ pub fn advance_thread(
     status: String,
     scene_id: Option<String>,
 ) -> R<ThreadDto> {
+    let _gate = write_gate(&root);
     mutations::advance_thread(&paths(&root), &thread_id, &status, scene_id.as_deref())
         .map_err(e)?;
     load_thread(&root, &thread_id)
@@ -612,6 +652,7 @@ pub fn add_assertion(
     object: String,
     evidence_fragment: Option<String>,
 ) -> R<AssertionOutcomeDto> {
+    let _gate = write_gate(&root);
     mutations::add_assertion(
         &paths(&root),
         &subject,
@@ -631,11 +672,13 @@ pub fn add_assertion(
 /// 修改断言状态：active / superseded / contradicted
 #[tauri::command]
 pub fn set_assertion_status(root: String, assertion_id: String, status: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::set_assertion_status(&paths(&root), &assertion_id, &status).map_err(e)
 }
 
 #[tauri::command]
 pub fn delete_assertion(root: String, assertion_id: String) -> R<()> {
+    let _gate = write_gate(&root);
     mutations::delete_assertion(&paths(&root), &assertion_id)
         .map_err(e)
         .map(|_| ())
@@ -661,6 +704,7 @@ pub fn get_worldview(root: String) -> R<WorldviewDto> {
 
 #[tauri::command]
 pub fn save_worldview(root: String, worldview: WorldviewDto) -> R<()> {
+    let _gate = write_gate(&root);
     crate::dto::save_worldview(Path::new(&root), &worldview)
 }
 
@@ -679,6 +723,7 @@ pub fn get_book_meta(root: String) -> R<BookMetaDto> {
 /// 保存书籍信息（仅替换表单字段，title/setting/time_span 与其它段保留）
 #[tauri::command]
 pub fn save_book_meta(root: String, meta: BookMetaDto) -> R<()> {
+    let _gate = write_gate(&root);
     lib::save_book_meta(Path::new(&root), &meta.into()).map_err(e)
 }
 
@@ -698,12 +743,14 @@ pub fn list_prompts(root: String) -> R<Vec<PromptDto>> {
 /// 保存项目覆盖（校验 id 在册、内容非空、必需占位符齐全）
 #[tauri::command]
 pub fn save_prompt(root: String, id: String, content: String) -> R<()> {
+    let _gate = write_gate(&root);
     lib::prompt_custom::save(Path::new(&root), &id, &content).map_err(e)
 }
 
 /// 删除项目覆盖恢复内置；返回覆盖文件是否原本存在
 #[tauri::command]
 pub fn reset_prompt(root: String, id: String) -> R<bool> {
+    let _gate = write_gate(&root);
     lib::prompt_custom::reset(Path::new(&root), &id).map_err(e)
 }
 
@@ -718,6 +765,7 @@ pub fn get_chapter_outline(root: String) -> R<ChaptersOutlineDto> {
 
 #[tauri::command]
 pub fn save_chapter_outline(root: String, outline: ChaptersOutlineDto) -> R<()> {
+    let _gate = write_gate(&root);
     crate::dto::save_chapters_outline(Path::new(&root), &outline)
 }
 
@@ -919,6 +967,8 @@ pub async fn ai_write_scene(
         )
         .map_err(e)?;
 
+        // 落盘进项目锁（LLM 流式阶段不持锁，只有写入瞬间排队）
+        let _gate = write_gate(&root);
         let ids = lib::save_write_result(Path::new(&root), &scene_id, &result).map_err(e)?;
 
         // 完成信号走 Channel（带结果），命令返回值作兜底——两条通路谁先到都生效
@@ -1150,6 +1200,8 @@ pub struct AnchorApplyDto {
 #[tauri::command]
 pub async fn ai_anchor_fragment(root: String, fragment_id: String) -> R<AnchorApplyDto> {
     let task = tauri::async_runtime::spawn_blocking(move || {
+        // 写入口：锚定会改写片段文件，与外部 Agent / 妙笔的写操作同闸排队
+        let _gate = write_gate(&root);
         let provider = active_provider(lib::purpose::AGENT)?;
         let ctx = lib::tools::ToolContext::new(std::path::PathBuf::from(&root));
         let outcome = lib::tools::anchor_fragment_merge(&ctx, &provider, &fragment_id)?;
@@ -1525,6 +1577,7 @@ pub async fn ai_book_world(
 /// 第 3 步确认：保存设定草稿（确定性落盘）
 #[tauri::command]
 pub fn save_book_world(root: String, draft: lib::WorldDraft) -> R<lib::WorldSaveReport> {
+    let _gate = write_gate(&root);
     lib::save_book_world(Path::new(&root), &draft).map_err(e)
 }
 
@@ -1541,6 +1594,7 @@ pub async fn ai_book_outline_batch(root: String, count: u32) -> R<lib::OutlineBa
 /// 第 4 步确认 / 续排保存：追加章节脉络到 chapters.toml
 #[tauri::command]
 pub fn save_book_outline_batch(root: String, draft: lib::OutlineBatchDraft) -> R<usize> {
+    let _gate = write_gate(&root);
     lib::save_book_outline_batch(Path::new(&root), &draft).map_err(e)
 }
 

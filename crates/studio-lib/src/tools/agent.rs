@@ -118,6 +118,80 @@ impl Tool for AskUserTool {
 }
 
 // ============================================================================
+// 工具并发闸门（读共享 / 写排他）
+// ============================================================================
+
+/// 查询 / 分析类工具白名单——不修改项目，执行期间共享读锁。
+/// 刻意用白名单而非黑名单：registry 新增工具默认按变更处理（安全默认），
+/// 确认无副作用后才手工加入。MCP 的只读模式暴露表与此同源。
+pub const READ_ONLY_TOOLS: &[&str] = &[
+    // 结构 / 实体 / 知识 / 线索 / 正文 / 大纲 / 世界观查询
+    "get_structure",
+    "get_project_stats",
+    "search_entities",
+    "get_entity_detail",
+    "profile_check",
+    "get_relations",
+    "query_assertions",
+    "get_character_state",
+    "find_mentions",
+    "search_text",
+    "get_scene_context",
+    "get_threads",
+    "get_thread_detail",
+    "read_fragment_text",
+    "read_scene_full_text",
+    "list_fragment_versions",
+    "get_outline",
+    "get_chapter_outline",
+    "get_worldview",
+    "get_writing_guide",
+    "prepare_writing",
+    "list_unresolved_refs",
+    // 校验 / 分析（不改项目，但 ai_check_* / get_story_recap 会调用 AI 服务）
+    "compile_check",
+    "ai_check_fragment",
+    "ai_check_scene",
+    "ai_check_chapter",
+    "ai_check_pov",
+    "get_story_recap",
+    // 交互工具：不改项目，但会阻塞等待用户回答——绝不能持写锁
+    "ask_user",
+];
+
+/// 带项目闸门的工具包装：查询类共享读锁，其余（默认）整体持写锁——
+/// 扫描→分配→落盘因此原子，并发的 ID 分配竞态（多路 create_* 分到同一
+/// ID 互相覆盖）与流水线乱序（改名跑在建档之前）都被闸住。
+///
+/// 闸门只覆盖工具执行本身；Agent 的 LLM 思考阶段不持锁，妙笔长对话
+/// 不会把整个项目的写入口堵死。
+struct GatedTool {
+    inner: Box<dyn Tool>,
+    lock: crate::project_lock::ProjectLock,
+    is_read: bool,
+}
+
+impl Tool for GatedTool {
+    fn definition(&self) -> ToolDef {
+        self.inner.definition()
+    }
+
+    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let _read = if self.is_read {
+            Some(self.lock.read())
+        } else {
+            None
+        };
+        let _write = if _read.is_none() {
+            Some(self.lock.write())
+        } else {
+            None
+        };
+        self.inner.execute(arguments)
+    }
+}
+
+// ============================================================================
 pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRegistry {
     let ctx = ToolContext::with_provider(dir.to_path_buf(), provider);
     let mut registry = ToolRegistry::new();
@@ -205,7 +279,18 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(SetTimelineErasTool::new(ctx.clone())));
     registry.register(Box::new(UpdateWorldviewItemTool::new(ctx.clone())));
     registry.register(Box::new(DeleteWorldviewItemTool::new(ctx.clone())));
-    registry
+    // 全部工具套项目闸门：桌面端妙笔、MCP（stdio / 内嵌 HTTP）、CLI
+    // 的每一次工具调用都经同一把 ProjectLock（进程内 RwLock + 跨进程
+    // 文件锁）排队，读写分类见 READ_ONLY_TOOLS
+    let lock = crate::project_lock::ProjectLock::for_root(dir);
+    registry.map_tools(move |t| {
+        let is_read = READ_ONLY_TOOLS.contains(&t.definition().name.as_str());
+        Box::new(GatedTool {
+            inner: t,
+            lock: lock.clone(),
+            is_read,
+        })
+    })
 }
 
 // ============================================================================

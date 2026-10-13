@@ -82,6 +82,14 @@ impl ToolRegistry {
             .find(|t| t.definition().name == name)
             .map(|t| t.execute(arguments))
     }
+
+    /// 逐工具包装（装饰器入口）：保持注册顺序，`definition()` 由包装器透传。
+    /// studio-lib 用它给全部工具套项目并发闸门（读共享 / 写排他）。
+    pub fn map_tools(self, wrap: impl Fn(Box<dyn Tool>) -> Box<dyn Tool>) -> ToolRegistry {
+        ToolRegistry {
+            tools: self.tools.into_iter().map(wrap).collect(),
+        }
+    }
 }
 
 // ============================================================================
