@@ -314,6 +314,13 @@ pub fn chapter_completion_hint(paths: &ProjectPaths, scene_or_fragment_id: &str)
         .chapters
         .iter()
         .position(|c| c.chapter_id.as_deref() == Some(ch_id))?;
+    // 脉络带节拍时，场景数未覆盖节拍数说明骨架尚未建全（逐场增建的写法），
+    // 此时"所有已有场景均有正文"不等于"本章写完"，不提示。
+    if !chapters.chapters[index].beats.is_empty()
+        && chapter.scenes.len() < chapters.chapters[index].beats.len()
+    {
+        return None;
+    }
     if chapters.chapters[index].status == story_project_format::chapters_file::STATUS_COMPLETED {
         return None;
     }
@@ -5173,6 +5180,38 @@ mod tests {
         chapters.chapters[0].status = "completed".into();
         save_chapters_file(&paths, &chapters).unwrap();
         assert!(chapter_completion_hint(&paths, &sc1).is_none());
+    }
+
+    #[test]
+    fn chapter_completion_hint_suppressed_when_scenes_fewer_than_beats() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch_id = create_chapter(&paths, "第一章").unwrap();
+        // 脉络带 3 个节拍，但作者逐场增建：目前只建了 1 个场景并写了正文。
+        let mut chapters = load_chapters_file(&paths).unwrap();
+        chapters.chapters.push(ChapterOutlineDef {
+            chapter_id: Some(ch_id.clone()),
+            title: "第一章".into(),
+            volume_order: 1,
+            status: "planned".into(),
+            beats: vec!["节拍一".into(), "节拍二".into(), "节拍三".into()],
+            ..Default::default()
+        });
+        save_chapters_file(&paths, &chapters).unwrap();
+
+        let sc1 = create_scene(&paths, &ch_id, "场景一", None).unwrap();
+        let f1 = create_fragment(&paths, &sc1, "第一场正文。").unwrap();
+        // 已有场景均有正文，但 1 < 3 节拍 → 不提示
+        assert!(chapter_completion_hint(&paths, &f1).is_none());
+
+        // 建齐 3 个场景且都有正文 → 提示
+        let sc2 = create_scene(&paths, &ch_id, "场景二", None).unwrap();
+        let sc3 = create_scene(&paths, &ch_id, "场景三", None).unwrap();
+        assert!(chapter_completion_hint(&paths, &f1).is_none());
+        create_fragment(&paths, &sc2, "第二场正文。").unwrap();
+        create_fragment(&paths, &sc3, "第三场正文。").unwrap();
+        assert!(chapter_completion_hint(&paths, &f1).is_some());
     }
 
     #[test]
