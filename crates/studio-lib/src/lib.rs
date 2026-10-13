@@ -11,6 +11,7 @@
 pub mod ai;
 pub mod ai_check;
 pub mod ai_ledger;
+mod atomic;
 pub mod book_studio;
 pub mod compile;
 pub mod error;

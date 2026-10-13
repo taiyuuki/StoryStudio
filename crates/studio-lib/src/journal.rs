@@ -71,9 +71,12 @@ pub fn record(root: &Path, op: &str, target: &Path, bytes: usize, ok: bool, note
     }
 }
 
-/// 写入并回读校验：fs::write 后按字节读回比对，不一致视同写入失败。
+/// 原子写入并回读校验：写 `.tmp` → fsync → 回读比对 → rename 到位。
 ///
-/// 这是片段正文的唯一写出口——杜绝"写入返回成功但磁盘上不是这份内容"
+/// 这是片段正文的唯一写出口——杜绝两种事故：
+/// - "写入返回成功但磁盘上不是这份内容"（回读对不上）
+/// - 半截写入（先截断后写，中途崩溃/断电）——rename 之前原文件分毫未动，
+///   即使回读校验失败，磁盘上留的也是完整的旧版本
 pub fn write_verified(
     root: &Path,
     op: &str,
@@ -84,15 +87,26 @@ pub fn write_verified(
         let _ = std::fs::create_dir_all(parent);
     }
     let bytes = content.len();
-    if let Err(e) = std::fs::write(target, content) {
-        record(root, op, target, bytes, false, Some(&e.to_string()));
-        return Err(StudioError::Io(format!(
-            "写入 {} 失败: {e}",
-            target.display()
-        )));
-    }
-    match std::fs::read(target) {
+    // 回读校验对暂存文件做：通过后才 rename，原文件只在验证通过后被替换
+    let staged = match crate::atomic::write_staged(target, content) {
+        Ok(tmp) => tmp,
+        Err(e) => {
+            record(root, op, target, bytes, false, Some(&e.to_string()));
+            return Err(StudioError::Io(format!(
+                "写入 {} 失败: {e}",
+                target.display()
+            )));
+        }
+    };
+    match std::fs::read(&staged) {
         Ok(readback) if readback == content.as_bytes() => {
+            if let Err(e) = crate::atomic::commit(&staged, target) {
+                record(root, op, target, bytes, false, Some(&e.to_string()));
+                return Err(StudioError::Io(format!(
+                    "写入 {} 失败: {e}",
+                    target.display()
+                )));
+            }
             record(root, op, target, bytes, true, None);
             Ok(())
         }
@@ -101,7 +115,8 @@ pub fn write_verified(
                 Ok(b) => format!("回读 {} 字节，与写入的 {} 字节不一致", b.len(), bytes),
                 Err(e) => format!("回读失败: {e}"),
             };
-            // 回读不一致是最高级别的事故信号，单独标记
+            let _ = std::fs::remove_file(&staged);
+            // 回读不一致是最高级别的事故信号，单独标记（此时原文件未被触碰）
             record(
                 root,
                 op,

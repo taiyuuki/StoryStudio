@@ -93,7 +93,7 @@ where
         .map_err(|e| StudioError::Config(format!("解析 {} 失败: {e}", path.display())))
 }
 
-/// 写入 TOML 文件，先序列化再写入。
+/// 写入 TOML 文件：先序列化，再原子写入（`.tmp` → fsync → rename）。
 pub(crate) trait SaveToml {
     fn save(&self, path: &Path) -> Result<(), StudioError>;
 }
@@ -103,7 +103,7 @@ impl SaveToml for StructureFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 structure.toml 失败: {e}")))?;
-        std::fs::write(path, s)?;
+        crate::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -113,7 +113,7 @@ impl SaveToml for AssertionsFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 assertions.toml 失败: {e}")))?;
-        std::fs::write(path, s)?;
+        crate::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -123,7 +123,7 @@ impl SaveToml for EvidenceFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 evidence.toml 失败: {e}")))?;
-        std::fs::write(path, s)?;
+        crate::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -133,7 +133,7 @@ impl SaveToml for ThreadsFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 threads.toml 失败: {e}")))?;
-        std::fs::write(path, s)?;
+        crate::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -143,7 +143,7 @@ impl SaveToml for OutlineFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 outline.toml 失败: {e}")))?;
-        std::fs::write(path, s)?;
+        crate::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -159,7 +159,7 @@ impl SaveToml for ChaptersFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 chapters.toml 失败: {e}")))?;
-        std::fs::write(path, s)?;
+        crate::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -169,7 +169,7 @@ impl SaveToml for RelationsFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 relations.toml 失败: {e}")))?;
-        std::fs::write(path, s)?;
+        crate::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -179,7 +179,7 @@ impl SaveToml for AnchoringFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 anchoring.toml 失败: {e}")))?;
-        std::fs::write(path, s)?;
+        crate::atomic::write(path, &s)?;
         Ok(())
     }
 }
