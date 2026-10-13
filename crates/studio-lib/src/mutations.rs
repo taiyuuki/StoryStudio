@@ -509,7 +509,7 @@ pub fn set_chapter_outline_status(
     let item = chapter_outline_at(&mut file, index)?;
     if order(status) < order(&item.status) {
         return Err(StudioError::Config(format!(
-            "状态只能单向推进，当前为 {}，不能回退到 {}",
+            "状态仅允许单向推进（planned → writing → completed）：当前为 {}，不能改为 {}",
             item.status, status
         )));
     }

@@ -576,8 +576,8 @@ impl Tool for UpdateChapterOutlineTool {
             };
             if order(&v) < order(&item.status) {
                 return Err(format!(
-                    "状态只能单向推进（{} → {}），当前为 {}，不能回退到 {}",
-                    item.status, v, item.status, v
+                    "状态仅允许单向推进（planned → writing → completed）：当前为 {}，不能改为 {}",
+                    item.status, v
                 ));
             }
             item.status = v;
