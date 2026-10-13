@@ -609,7 +609,8 @@ impl Tool for DeleteSceneTool {
         ToolDef {
             name: "delete_scene".into(),
             description: "删除场景及其下所有片段（级联删除，不可恢复）。\
-            指向被删场景/片段的线索叙事锚点会一并清除（线索状态自动回退，回执会列出）。".into(),
+            指向被删场景/片段的线索叙事锚点会一并清除（线索状态自动回退，回执会列出）。"
+                .into(),
             parameters: object_schema(vec![(
                 "scene_id",
                 "string",
@@ -622,8 +623,7 @@ impl Tool for DeleteSceneTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let scene_id = get_str(arguments, "scene_id")?;
         let paths = self.ctx.paths();
-        let notes =
-            crate::mutations::delete_scene(&paths, &scene_id).map_err(|e| e.to_string())?;
+        let notes = crate::mutations::delete_scene(&paths, &scene_id).map_err(|e| e.to_string())?;
         let mut msg = format!("场景 {scene_id} 及其下所有片段已删除");
         for note in notes {
             msg.push_str(&format!("\n{note}"));

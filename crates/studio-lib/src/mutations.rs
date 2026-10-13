@@ -1590,8 +1590,7 @@ pub fn clear_thread_anchor_refs(paths: &ProjectPaths, removed_ids: &[String]) ->
     if removed_ids.is_empty() {
         return Vec::new();
     }
-    let removed: std::collections::HashSet<&str> =
-        removed_ids.iter().map(String::as_str).collect();
+    let removed: std::collections::HashSet<&str> = removed_ids.iter().map(String::as_str).collect();
     let threads_path = paths.root().join("threads.toml");
     let Ok(mut file) = ThreadsFile::load_or_default(&threads_path) else {
         return Vec::new();
@@ -1618,9 +1617,7 @@ pub fn clear_thread_anchor_refs(paths: &ProjectPaths, removed_ids: &[String]) ->
         return notes;
     }
     if file.save(&threads_path).is_err() {
-        eprintln!(
-            "[delete] 线索悬空锚点清理落盘失败（锚点保留，可稍后 repair_project 处理）"
-        );
+        eprintln!("[delete] 线索悬空锚点清理落盘失败（锚点保留，可稍后 repair_project 处理）");
         return Vec::new();
     }
     notes
@@ -3747,7 +3744,8 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
                     .as_deref()
                     .is_some_and(|v| anchor_id_shaped(v) && !existing.contains(v));
                 if clear {
-                    let note = format!("{title}：{label} {}", anchor.as_deref().unwrap_or_default());
+                    let note =
+                        format!("{title}：{label} {}", anchor.as_deref().unwrap_or_default());
                     report.thread_anchors_cleared.push(note);
                     *anchor = None;
                     changed = true;
@@ -5559,13 +5557,16 @@ mod tests {
         // 两条线索：分别锚在被删场景与被删片段上；一条锚在保留场景（不动）
         let t1 = create_thread(&paths, "场景锚", "", "main", Some(&sc), None, None).unwrap();
         let t2 = create_thread(&paths, "片段锚", "", "minor", Some(&frag), None, None).unwrap();
-        let t3 =
-            create_thread(&paths, "保留锚", "", "minor", Some(&keep_sc), None, None).unwrap();
+        let t3 = create_thread(&paths, "保留锚", "", "minor", Some(&keep_sc), None, None).unwrap();
 
         let notes = delete_scene(&paths, &sc).unwrap();
         assert_eq!(notes.len(), 2, "场景锚与片段锚都应被清除: {notes:?}");
-        assert!(notes.iter().any(|n| n.contains("场景锚") && n.contains("埋设")));
-        assert!(notes.iter().any(|n| n.contains("片段锚") && n.contains("埋设")));
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("场景锚") && n.contains("埋设")));
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("片段锚") && n.contains("埋设")));
 
         let file = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
         let by_id = |id: &str| file.threads.iter().find(|t| t.id == id).unwrap();
@@ -5608,8 +5609,7 @@ mod tests {
         let keep_sc = create_scene(&paths, &keep_ch, "保留场景", None).unwrap();
 
         let t1 = create_thread(&paths, "被删锚", "", "main", Some(&sc), None, None).unwrap();
-        let t2 =
-            create_thread(&paths, "保留锚", "", "minor", Some(&keep_sc), None, None).unwrap();
+        let t2 = create_thread(&paths, "保留锚", "", "minor", Some(&keep_sc), None, None).unwrap();
 
         let outcome = delete_chapter(&paths, &ch).unwrap();
         assert_eq!(outcome.thread_notes.len(), 1);
@@ -7264,7 +7264,10 @@ mod tests {
         assert_eq!(reverted.as_deref(), Some("writing"), "应报告回退前状态");
 
         let file = load_chapters_file(&paths).unwrap();
-        assert_eq!(file.chapters[0].status, "planned", "正文已删，进度应回退 planned");
+        assert_eq!(
+            file.chapters[0].status, "planned",
+            "正文已删，进度应回退 planned"
+        );
         assert!(file.chapters[0].chapter_id.is_none());
     }
 
@@ -7384,18 +7387,24 @@ mod tests {
         let sc = create_scene(&paths, &ch, "场景", None).unwrap();
 
         // 悬空 / 有效 / 自由文本三种锚点
-        let t1 = create_thread(&paths, "悬空锚点", "", "main", Some("sc_99_99"), None, None).unwrap();
+        let t1 =
+            create_thread(&paths, "悬空锚点", "", "main", Some("sc_99_99"), None, None).unwrap();
         let t2 = create_thread(&paths, "有效锚点", "", "minor", Some(&sc), None, None).unwrap();
-        let t3 =
-            create_thread(&paths, "自由文本锚点", "", "minor", Some("第三卷末"), None, None)
-                .unwrap();
+        let t3 = create_thread(
+            &paths,
+            "自由文本锚点",
+            "",
+            "minor",
+            Some("第三卷末"),
+            None,
+            None,
+        )
+        .unwrap();
 
         let report = repair_project(tmp.path()).unwrap();
         assert_eq!(
             report.thread_anchors_cleared,
-            vec![
-                "悬空锚点：埋设 sc_99_99".to_string(),
-            ],
+            vec!["悬空锚点：埋设 sc_99_99".to_string(),],
             "只有指向不存在对象的 ID 形态锚点应被清除"
         );
 
