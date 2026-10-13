@@ -22,11 +22,12 @@ const allSelected = computed(
   () => pending.value.length > 0 && pending.value.every((r) => selected.value.has(keyOf(r))),
 )
 
-function toggleSelect(r: UnresolvedRefDto) {
-  const key = keyOf(r)
+/** 勾选走 change 事件：WebKit 里 label 转发的合成 click 会让 label 上的 click handler 双触发，勾选被来回翻转 */
+function onSelectToggle(r: UnresolvedRefDto, e: Event) {
+  const checked = (e.target as HTMLInputElement).checked
   const next = new Set(selected.value)
-  if (next.has(key)) next.delete(key)
-  else next.add(key)
+  if (checked) next.add(keyOf(r))
+  else next.delete(keyOf(r))
   selected.value = next
 }
 
@@ -176,8 +177,12 @@ const kindOptions: { value: EntityKind; label: string }[] = [
       :class="{ 'is-done': r.status !== 'pending', 'is-selected': selected.has(keyOf(r)) }"
     >
       <div class="ap-quote">
-        <label v-if="r.status === 'pending'" class="ap-check" @click.prevent.stop="toggleSelect(r)">
-          <input type="checkbox" :checked="selected.has(keyOf(r))" />
+        <label v-if="r.status === 'pending'" class="ap-check">
+          <input
+            type="checkbox"
+            :checked="selected.has(keyOf(r))"
+            @change="onSelectToggle(r, $event)"
+          />
         </label>
         <i class="fa-solid fa-quote-left" />
         {{ r.quote }}
