@@ -1419,8 +1419,9 @@ impl Tool for WriteFragmentTextTool {
                 "写入或覆盖场景的正文片段。创建新片段时省略 fragment_id（自动生成新 ID）。\
             传入已有 fragment_id 则覆盖该片段的全部内容。\
             ⚠️ 要追加内容到已有片段请用 append_fragment_text，不要用此工具。\
-            正文一般应达 800 字以上、包含完整叙事；刻意的短片段（收尾/过渡/暗线视角）\
-            传 short=true 声明，跳过字数下限警示。注意：正文不要以 --- 分隔线起笔。\
+            正文一般应达 800 字以上、包含完整叙事；字数为全工作区统一口径：\
+            中文按字、英文按词计，不含标点与空白（网文平台计数含标点，会比此处高两三成）；\
+            刻意的短片段（收尾/过渡/暗线视角）传 short=true 声明，跳过字数下限警示。注意：正文不要以 --- 分隔线起笔。\
             顺手机制：scene_summary / scene_time 同步写场景元数据，advance_threads\
             同步推进线索状态（当前场景自动作叙事锚点），均省一次单独调用。"
                     .into(),
@@ -1429,7 +1430,7 @@ impl Tool for WriteFragmentTextTool {
                 (
                     "text",
                     "string",
-                    "完整的故事正文内容（至少 800 字，包含对话、动作、环境、心理描写）",
+                    "完整的故事正文内容（至少 800 字（不含标点与空白），包含对话、动作、环境、心理描写）",
                     true,
                 ),
                 (
@@ -1521,7 +1522,8 @@ impl Tool for WriteFragmentTextTool {
             format!("片段已{action}: id={fragment_id}, scene={scene_id}, 字数={word_count}");
         if word_count < 800 && !declared_short {
             msg.push_str(
-                " ⚠ 低于建议下限 800 字，如非刻意留短（如收尾短章），建议扩写完整叙事；\
+                " ⚠ 低于建议下限 800 字（口径：中文按字、英文按词，不含标点与空白；\
+            网文平台计数含标点会更高），如非刻意留短（如收尾短章），建议扩写完整叙事；\
             刻意短片段（收尾/过渡/暗线视角）可传 short=true 声明，跳过此警示",
             );
         }
@@ -2326,8 +2328,8 @@ impl Tool for AppendFragmentTextTool {
         ToolDef {
             name: "append_fragment_text".into(),
             description: "向已有片段追加续写内容（不覆盖原有正文）。\
-            用于扩写、继续创作、加长篇幅。追加内容一般应达 500 字以上，\
-            过短会收到警示提示；局部修改请改用 edit_fragment_text。\
+            用于扩写、继续创作、加长篇幅。追加内容一般应达 500 字以上（口径：中文按字、英文按词计，\
+            不含标点与空白），过短会收到警示提示；局部修改请改用 edit_fragment_text。\
             建议先 read_fragment_text 了解当前内容，再决定续写方向。\
             顺手机制：advance_threads 同步推进线索状态（当前片段自动作叙事锚点），\
             省一次 advance_thread 往返。"
@@ -2342,7 +2344,7 @@ impl Tool for AppendFragmentTextTool {
                 (
                     "text",
                     "string",
-                    "要追加的故事正文（至少 500 字，自然衔接已有内容）",
+                    "要追加的故事正文（至少 500 字（不含标点与空白），自然衔接已有内容）",
                     true,
                 ),
                 (
@@ -2367,7 +2369,9 @@ impl Tool for AppendFragmentTextTool {
         let word_count = crate::workflow::count_words(&text) as usize;
         let mut msg = format!("已向片段 {fragment_id} 追加 {word_count} 字内容");
         if word_count < 500 {
-            msg.push_str(" ⚠ 低于建议下限 500 字，如非刻意短续，建议续写完整段落");
+            msg.push_str(
+                " ⚠ 低于建议下限 500 字（口径：不含标点与空白），如非刻意短续，建议续写完整段落",
+            );
         }
         let briefs = super::mentioned_entity_briefs(&paths, &text, 8);
         if !briefs.is_empty() {
