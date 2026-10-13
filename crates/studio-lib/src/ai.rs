@@ -1762,9 +1762,11 @@ mod dynamic_provider_tests {
     fn refresh_keeps_old_provider_when_config_broken() {
         // 会话中途配置写坏：refresh 失败应沿用旧 provider，不丢状态
         let dynp = bare(purpose::AGENT);
-        let mut state = DynamicProfileState::default();
-        state.inner = Some(dynp.resolve_from(&config_with_active("p1")).unwrap());
-        state.config_hash = 42; // 与任何真实哈希都不同 → 强制走重建分支
+        let mut state = DynamicProfileState {
+            inner: Some(dynp.resolve_from(&config_with_active("p1")).unwrap()),
+            // 与任何真实哈希都不同 → 强制走重建分支
+            config_hash: 42,
+        };
 
         // 无 HOME 下 read_global_ai_config 兜底空配置，resolve 仍应成功；
         // 真正写坏的场景（Err 分支）以 eprintln + 保留旧值为准，

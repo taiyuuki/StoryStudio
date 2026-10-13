@@ -7,8 +7,12 @@ on:
 
 jobs:
   rust:
-    name: Rust 库测试
-    runs-on: windows-latest
+    name: Rust 库测试 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -18,7 +22,23 @@ jobs:
         run: >
           cargo test -p story-ir -p story-project-format -p story-parser
           -p story-compiler -p story-knowledge -p story-exporter
-          -p story-ai-runtime -p story-studio-lib -p story-mcp
+          -p story-ai-runtime -p story-studio-lib -p story-mcp -p story-studio
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy 检查（警告即失败）
+        run: >
+          cargo clippy -p story-ir -p story-project-format -p story-parser
+          -p story-compiler -p story-knowledge -p story-exporter
+          -p story-ai-runtime -p story-studio-lib -p story-mcp -p story-studio
+          --all-targets -- -D warnings
 
   frontend:
     name: 前端检查
