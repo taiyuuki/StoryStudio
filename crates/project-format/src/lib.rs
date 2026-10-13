@@ -4,6 +4,7 @@
 //! 每种信息只有一个 Source of Truth（§3）。
 
 pub mod anchoring_file;
+pub mod atomic;
 pub mod chapters_file;
 pub mod compiler_toml;
 pub mod entity_file;

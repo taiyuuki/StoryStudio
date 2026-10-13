@@ -88,7 +88,7 @@ pub fn write_verified(
     }
     let bytes = content.len();
     // 回读校验对暂存文件做：通过后才 rename，原文件只在验证通过后被替换
-    let staged = match crate::atomic::write_staged(target, content) {
+    let staged = match story_project_format::atomic::write_staged(target, content) {
         Ok(tmp) => tmp,
         Err(e) => {
             record(root, op, target, bytes, false, Some(&e.to_string()));
@@ -100,7 +100,7 @@ pub fn write_verified(
     };
     match std::fs::read(&staged) {
         Ok(readback) if readback == content.as_bytes() => {
-            if let Err(e) = crate::atomic::commit(&staged, target) {
+            if let Err(e) = story_project_format::atomic::commit(&staged, target) {
                 record(root, op, target, bytes, false, Some(&e.to_string()));
                 return Err(StudioError::Io(format!(
                     "写入 {} 失败: {e}",

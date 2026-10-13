@@ -138,11 +138,11 @@ pub fn load_chapters_unified(paths: &ProjectPaths) -> (ChaptersFile, Vec<VolumeG
     let threads_dirty = remap_due_volumes(&mut threads, &remap);
 
     if let (Ok(c), Ok(o)) = (chapters.to_toml_string(), outline.to_toml_string()) {
-        let written = std::fs::write(paths.chapters_toml(), c).is_ok()
-            && std::fs::write(paths.outline_toml(), o).is_ok();
+        let written = crate::atomic::write(paths.chapters_toml(), &c).is_ok()
+            && crate::atomic::write(paths.outline_toml(), &o).is_ok();
         if written && threads_dirty {
             if let Ok(t) = threads.to_toml_string() {
-                let _ = std::fs::write(paths.threads_toml(), t);
+                let _ = crate::atomic::write(paths.threads_toml(), &t);
             }
         }
     }
@@ -173,7 +173,7 @@ pub fn save_outline_volumes(
         })
         .collect();
 
-    std::fs::write(paths.outline_toml(), outline.to_toml_string()?)?;
+    crate::atomic::write(paths.outline_toml(), &outline.to_toml_string()?)?;
     Ok(())
 }
 

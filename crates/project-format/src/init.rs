@@ -52,11 +52,11 @@ pub fn init_project(root: &Path, project_name: &str) -> Result<ProjectPaths, Ini
 
     // project.toml
     let config = ProjectConfig::new(project_name);
-    fs::write(paths.project_toml(), config.to_toml_string()?)?;
+    crate::atomic::write(paths.project_toml(), &config.to_toml_string()?)?;
 
     // structure.toml（空结构，只有 Book）
     let structure = StructureFile::new(project_name);
-    fs::write(paths.structure_toml(), structure.to_toml_string()?)?;
+    crate::atomic::write(paths.structure_toml(), &structure.to_toml_string()?)?;
 
     // chapters.toml（空章节脉络，附引导注释）
     let chapters_header = "# 章节脉络 (Chapter Outline)\n\
@@ -65,13 +65,13 @@ pub fn init_project(root: &Path, project_name: &str) -> Result<ProjectPaths, Ini
         # 通常由 AI 调用 design_chapters 工具生成，也可手动编辑。\n\
         # 不参与编译检查。\n\
         # 用 get_chapter_outline / update_chapter_outline / delete_chapter_outline 工具维护。\n\n";
-    fs::write(paths.chapters_toml(), chapters_header)?;
+    crate::atomic::write(paths.chapters_toml(), chapters_header)?;
 
     // config/compiler.toml（默认规则）
     let compiler_config = crate::compiler_toml::CompilerConfigFile::default();
-    fs::write(
+    crate::atomic::write(
         paths.config_dir().join("compiler.toml"),
-        compiler_config.to_toml_string()?,
+        &compiler_config.to_toml_string()?,
     )?;
 
     // .gitignore
@@ -80,7 +80,7 @@ pub fn init_project(root: &Path, project_name: &str) -> Result<ProjectPaths, Ini
         /.novelstudio/\n\n\
         # 临时文件\n\
         *.tmp\n*.bak\n";
-    fs::write(paths.gitignore(), gitignore)?;
+    crate::atomic::write(paths.gitignore(), gitignore)?;
 
     Ok(paths)
 }

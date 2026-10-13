@@ -103,7 +103,7 @@ impl SaveToml for StructureFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 structure.toml 失败: {e}")))?;
-        crate::atomic::write(path, &s)?;
+        story_project_format::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -113,7 +113,7 @@ impl SaveToml for AssertionsFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 assertions.toml 失败: {e}")))?;
-        crate::atomic::write(path, &s)?;
+        story_project_format::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -123,7 +123,7 @@ impl SaveToml for EvidenceFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 evidence.toml 失败: {e}")))?;
-        crate::atomic::write(path, &s)?;
+        story_project_format::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -133,7 +133,7 @@ impl SaveToml for ThreadsFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 threads.toml 失败: {e}")))?;
-        crate::atomic::write(path, &s)?;
+        story_project_format::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -143,7 +143,7 @@ impl SaveToml for OutlineFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 outline.toml 失败: {e}")))?;
-        crate::atomic::write(path, &s)?;
+        story_project_format::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -159,7 +159,7 @@ impl SaveToml for ChaptersFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 chapters.toml 失败: {e}")))?;
-        crate::atomic::write(path, &s)?;
+        story_project_format::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -169,7 +169,7 @@ impl SaveToml for RelationsFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 relations.toml 失败: {e}")))?;
-        crate::atomic::write(path, &s)?;
+        story_project_format::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -179,7 +179,7 @@ impl SaveToml for AnchoringFile {
         let s = self
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 anchoring.toml 失败: {e}")))?;
-        crate::atomic::write(path, &s)?;
+        story_project_format::atomic::write(path, &s)?;
         Ok(())
     }
 }
@@ -624,7 +624,7 @@ fn next_entity_id(paths: &ProjectPaths, dir: &Path, prefix: &str) -> String {
         Some(slot) => *slot = entry.clone(),
         None => lines.push(entry.clone()),
     }
-    let _ = std::fs::write(&watermark_path, lines.join("\n"));
+    let _ = story_project_format::atomic::write(&watermark_path, &lines.join("\n"));
 
     entry
 }
@@ -683,7 +683,7 @@ pub(crate) fn next_fragment_id(paths: &ProjectPaths) -> String {
 
     let next = max + 1;
     let _ = std::fs::create_dir_all(paths.root().join(".novelstudio"));
-    let _ = std::fs::write(&watermark_path, format!("{next:04X}"));
+    let _ = story_project_format::atomic::write(&watermark_path, &format!("{next:04X}"));
 
     format!("f_{next:04X}")
 }
@@ -816,7 +816,7 @@ pub fn create_entity(
         .to_toml_string()
         .map_err(|e| StudioError::Config(format!("序列化实体失败: {e}")))?;
     let file_path = dir.join(format!("{new_id}.toml"));
-    std::fs::write(&file_path, toml_content)?;
+    story_project_format::atomic::write(&file_path, &toml_content)?;
 
     Ok(new_id)
 }
@@ -882,7 +882,7 @@ fn apply_character_profile(
     let toml_content = entity
         .to_toml_string()
         .map_err(|e| StudioError::Config(format!("序列化实体失败: {e}")))?;
-    std::fs::write(&path, toml_content)?;
+    story_project_format::atomic::write(&path, &toml_content)?;
     Ok(())
 }
 
@@ -1082,7 +1082,7 @@ pub fn merge_entities(
         let toml_content = into_entity
             .to_toml_string()
             .map_err(|e| StudioError::Config(format!("序列化 {into_id} 失败: {e}")))?;
-        std::fs::write(&into_path, toml_content)?;
+        story_project_format::atomic::write(&into_path, &toml_content)?;
     }
 
     // 2. 片段锚点重定向（同实体去重，保留高优先级 role）
@@ -2775,7 +2775,7 @@ pub fn merge_fragments(
     }
 
     // 写回 primary
-    std::fs::write(&primary_path, primary.to_markdown())?;
+    story_project_format::atomic::write(&primary_path, &primary.to_markdown())?;
 
     // 删除 secondary（文件 + structure 引用）
     std::fs::remove_file(&secondary_path)?;
@@ -3387,7 +3387,7 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
             };
 
             if cleaned != content {
-                std::fs::write(&path, &cleaned)?;
+                story_project_format::atomic::write(&path, &cleaned)?;
                 report.fragments_cleaned.push(fragment_id.to_string());
             }
         }

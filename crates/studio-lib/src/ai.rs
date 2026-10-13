@@ -1006,7 +1006,8 @@ pub fn write_global_ai_config(config: &GlobalAiConfig) -> Result<(), StudioError
     let path = global_config_path()?;
     let json = serde_json::to_string_pretty(config)
         .map_err(|e| StudioError::Config(format!("序列化全局配置失败: {e}")))?;
-    std::fs::write(&path, json).map_err(|e| StudioError::Io(format!("写入全局配置失败: {e}")))
+    story_project_format::atomic::write(&path, &json)
+        .map_err(|e| StudioError::Io(format!("写入全局配置失败: {e}")))
 }
 
 /// 从全局配置创建 AI Provider（合并激活档案的 api_key/api_url）

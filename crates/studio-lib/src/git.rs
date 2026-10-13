@@ -185,7 +185,7 @@ fn ensure_gitignore(dir: &Path) {
         cache\nchats\nentity_id_watermark\nfragment_id_watermark\nhistory\nlogs\nstats.json\nai-ledger.json\nworkflow\n\n\
         # 临时文件\n\
         *.tmp\n*.bak\n";
-    let _ = std::fs::write(path, content);
+    let _ = story_project_format::atomic::write(path, content);
 }
 
 /// 全书正文字数（与前端展示同口径：story_ir::count_words）

@@ -30,7 +30,8 @@ fn staged_path(target: &Path) -> PathBuf {
 }
 
 /// 第一步：内容写入暂存文件并 fsync，返回暂存路径。原文件不受任何影响。
-pub(crate) fn write_staged(target: &Path, content: &str) -> std::io::Result<PathBuf> {
+pub fn write_staged(target: impl AsRef<Path>, content: &str) -> std::io::Result<PathBuf> {
+    let target = target.as_ref();
     let tmp = staged_path(target);
     let mut f = File::create(&tmp)?;
     f.write_all(content.as_bytes())?;
@@ -39,7 +40,8 @@ pub(crate) fn write_staged(target: &Path, content: &str) -> std::io::Result<Path
 }
 
 /// 第二步：暂存文件 rename 到位并同步父目录（unix）。失败时清理暂存文件。
-pub(crate) fn commit(staged: &Path, target: &Path) -> std::io::Result<()> {
+pub fn commit(staged: &Path, target: impl AsRef<Path>) -> std::io::Result<()> {
+    let target = target.as_ref();
     match fs::rename(staged, target) {
         Ok(()) => {
             sync_parent_dir(target);
@@ -53,8 +55,8 @@ pub(crate) fn commit(staged: &Path, target: &Path) -> std::io::Result<()> {
 }
 
 /// 原子写入整份内容（= [`write_staged`] + [`commit`]）。
-pub(crate) fn write(target: &Path, content: &str) -> std::io::Result<()> {
-    match write_staged(target, content) {
+pub fn write(target: impl AsRef<Path>, content: &str) -> std::io::Result<()> {
+    match write_staged(&target, content) {
         Ok(staged) => commit(&staged, target),
         Err(e) => Err(e),
     }
