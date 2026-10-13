@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use story_project_format::{slugify, InitError, OutlineFile, ProjectConfig, ProjectPaths, StoryMeta, StructureFile};
+use story_project_format::{
+    slugify, InitError, OutlineFile, ProjectConfig, ProjectPaths, StoryMeta, StructureFile,
+};
 
 use crate::error::StudioError;
 
@@ -200,9 +202,9 @@ pub fn peek(dir: &Path) -> Result<ProjectPeek, StudioError> {
                 continue;
             };
             fragment_count += 1;
-            let body = story_exporter::strip_anchor_comments(crate::fragment::strip_leading_frontmatter(
-                &content,
-            ));
+            let body = story_exporter::strip_anchor_comments(
+                crate::fragment::strip_leading_frontmatter(&content),
+            );
             word_count += story_ir::count_words(&body) as u64;
         }
     }
@@ -283,9 +285,9 @@ pub fn save_book_meta(dir: &Path, meta: &StoryMeta) -> Result<(), StudioError> {
     next.chapter_words = next.chapter_words.map(|w| w.clamp(1000, 10000));
 
     file.story = next;
-    let content = file.to_toml_string().map_err(|e| {
-        StudioError::Config(format!("outline.toml 序列化失败: {e}"))
-    })?;
+    let content = file
+        .to_toml_string()
+        .map_err(|e| StudioError::Config(format!("outline.toml 序列化失败: {e}")))?;
     crate::journal::write_verified(dir, "save_book_meta", &paths.outline_toml(), &content)
 }
 
@@ -418,14 +420,15 @@ mod tests {
 
         let next = StoryMeta {
             genre: Some("玄幻".into()),
-            target_words: Some(0), // 0 → 未设置
+            target_words: Some(0),    // 0 → 未设置
             chapter_words: Some(500), // clamp 到 1000
             ..Default::default()
         };
         save_book_meta(&root, &next).unwrap();
 
-        let file = OutlineFile::from_toml_str(&std::fs::read_to_string(paths.outline_toml()).unwrap())
-            .unwrap();
+        let file =
+            OutlineFile::from_toml_str(&std::fs::read_to_string(paths.outline_toml()).unwrap())
+                .unwrap();
         // 表单字段生效
         assert_eq!(file.story.genre.as_deref(), Some("玄幻"));
         assert_eq!(file.story.target_words, None);

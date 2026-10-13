@@ -164,12 +164,20 @@ fn execute_gated(
     // 锁中毒（持锁工具 panic）时强制恢复而非拒服务：
     // 临界区内没有需要守护的不变量（工具自己保证文件一致性）
     let _read_guard = if READ_ONLY_TOOLS.contains(&name) {
-        Some(TOOL_GATE.read().unwrap_or_else(std::sync::PoisonError::into_inner))
+        Some(
+            TOOL_GATE
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     } else {
         None
     };
     let _write_guard = if _read_guard.is_none() {
-        Some(TOOL_GATE.write().unwrap_or_else(std::sync::PoisonError::into_inner))
+        Some(
+            TOOL_GATE
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     } else {
         None
     };
@@ -281,7 +289,13 @@ impl ServerHandler for StoryMcpServer {
         // 因此安全——包括 App 内嵌 HTTP 与外部 stdio CLI 同时服务同一
         // 项目的场景
         let outcome = tokio::task::spawn_blocking(move || {
-            execute_gated(&registry, read_only, &name, &arguments, gate_path.as_deref())
+            execute_gated(
+                &registry,
+                read_only,
+                &name,
+                &arguments,
+                gate_path.as_deref(),
+            )
         })
         .await
         .map_err(|e| McpError::internal_error(format!("工具执行线程异常：{e}"), None))?;
@@ -349,10 +363,7 @@ mod tests {
         drop((r1, r2));
 
         let w = TOOL_GATE.write().unwrap();
-        assert!(
-            TOOL_GATE.try_read().is_err(),
-            "写锁持有期间读应被拒绝"
-        );
+        assert!(TOOL_GATE.try_read().is_err(), "写锁持有期间读应被拒绝");
         assert!(TOOL_GATE.try_write().is_err(), "写锁不可重入");
         drop(w);
         assert!(TOOL_GATE.try_read().is_ok(), "释放后应恢复");
@@ -426,9 +437,7 @@ mod tests {
         let files: Vec<_> = std::fs::read_dir(tmp.path().join("entities/characters"))
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name().to_string_lossy().starts_with("c_")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("c_"))
             .collect();
         assert_eq!(files.len(), N, "每个实体应有自己的文件: {files:?}");
 

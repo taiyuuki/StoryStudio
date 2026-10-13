@@ -214,10 +214,7 @@ pub fn save_chapters_file(paths: &ProjectPaths, file: &ChaptersFile) -> Result<(
 /// - 恰是存在的线索 ID → 原样保留
 /// - 命中线索标题（精确匹配）→ 换成对应 ID
 /// - 都不是 → 保留原值并返回警告（不静默丢数据，回执推动补建或修正）
-pub fn resolve_thread_refs(
-    paths: &ProjectPaths,
-    refs: &[String],
-) -> (Vec<String>, Vec<String>) {
+pub fn resolve_thread_refs(paths: &ProjectPaths, refs: &[String]) -> (Vec<String>, Vec<String>) {
     if refs.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -243,10 +240,7 @@ pub fn resolve_thread_refs(
 /// 与 [`resolve_thread_refs`] 同理：消费侧（prepare_writing 的涉及角色速查）
 /// 按 ID 匹配，名字引用会被静默跳过。匹配 display_name 与 aliases（精确匹配）；
 /// 角色目录扫不到引用对应的实体时保留原值并返回警告。
-pub fn resolve_character_refs(
-    paths: &ProjectPaths,
-    refs: &[String],
-) -> (Vec<String>, Vec<String>) {
+pub fn resolve_character_refs(paths: &ProjectPaths, refs: &[String]) -> (Vec<String>, Vec<String>) {
     if refs.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -290,10 +284,7 @@ pub fn resolve_character_refs(
 /// 都已有正文片段、且章节脉络状态未到 completed 时，返回提示行。
 ///
 /// 场景"有正文"以 fragments 列表非空为准（与 parse.empty_scene 同口径）。
-pub fn chapter_completion_hint(
-    paths: &ProjectPaths,
-    scene_or_fragment_id: &str,
-) -> Option<String> {
+pub fn chapter_completion_hint(paths: &ProjectPaths, scene_or_fragment_id: &str) -> Option<String> {
     let scene_id = if scene_or_fragment_id.starts_with("f_") {
         scene_of_fragment_id(paths, scene_or_fragment_id)?
     } else {
@@ -608,7 +599,10 @@ fn next_entity_id(paths: &ProjectPaths, dir: &Path, prefix: &str) -> String {
     }
 
     // 持久高水位（每前缀一行）
-    let watermark_path = paths.root().join(".novelstudio").join("entity_id_watermark");
+    let watermark_path = paths
+        .root()
+        .join(".novelstudio")
+        .join("entity_id_watermark");
     if let Ok(content) = std::fs::read_to_string(&watermark_path) {
         for line in content.lines() {
             if let Some(value) = line.strip_prefix(&scan_prefix) {
@@ -862,8 +856,8 @@ fn apply_character_profile(
 ) -> Result<(), StudioError> {
     let path = paths.characters_dir().join(format!("{entity_id}.toml"));
     let content = std::fs::read_to_string(&path)?;
-    let mut entity =
-        EntityFile::from_toml_str(&content).map_err(|e| StudioError::Config(format!("解析实体失败: {e}")))?;
+    let mut entity = EntityFile::from_toml_str(&content)
+        .map_err(|e| StudioError::Config(format!("解析实体失败: {e}")))?;
     {
         let p = entity.profile.get_or_insert_with(Default::default);
         if let Some(v) = &profile.gender {
@@ -979,7 +973,10 @@ impl MergeReport {
         if self.relation_edges > 0 {
             let mut s = format!("关系边 {} 条", self.relation_edges);
             if self.self_loops_removed > 0 {
-                s.push_str(&format!("（合并产生自环，删除 {} 条）", self.self_loops_removed));
+                s.push_str(&format!(
+                    "（合并产生自环，删除 {} 条）",
+                    self.self_loops_removed
+                ));
             }
             parts.push(s);
         }
@@ -996,7 +993,10 @@ impl MergeReport {
             parts.push(format!("场景 POV {} 处", self.povs));
         }
         if self.chapter_character_lists > 0 {
-            parts.push(format!("章节脉络出场表 {} 章", self.chapter_character_lists));
+            parts.push(format!(
+                "章节脉络出场表 {} 章",
+                self.chapter_character_lists
+            ));
         }
         if self.thread_refs > 0 {
             parts.push(format!("线索观察者/关系成员 {} 处", self.thread_refs));
@@ -1047,9 +1047,9 @@ pub fn merge_entities(
             "跨类型实体不能合并（{from_id} 是 {from_kind:?}，{into_id} 是 {into_kind:?}）"
         )));
     }
-    let from_path = paths.file_for_id(from_id).unwrap_or_else(|| {
-        Path::new("/nonexistent").to_path_buf()
-    });
+    let from_path = paths
+        .file_for_id(from_id)
+        .unwrap_or_else(|| Path::new("/nonexistent").to_path_buf());
     let into_path = paths
         .file_for_id(into_id)
         .ok_or_else(|| StudioError::Config(format!("无效的实体 ID: {into_id}")))?;
@@ -1108,8 +1108,7 @@ pub fn merge_entities(
             }
             if changed {
                 // 同实体去重：保留 role 优先级高的条目
-                let mut merged: Vec<story_project_format::fragment_file::AnchorEntry> =
-                    Vec::new();
+                let mut merged: Vec<story_project_format::fragment_file::AnchorEntry> = Vec::new();
                 for anchor in fragment.frontmatter.anchors {
                     match merged.iter_mut().find(|a| a.entity == anchor.entity) {
                         Some(existing) => {
@@ -1153,9 +1152,9 @@ pub fn merge_entities(
     report.self_loops_removed = before_dedup - relations.relations.len();
     // 按 (from, to, relation) 去重（保序，保留首个）
     let mut seen = std::collections::BTreeSet::new();
-    relations.relations.retain(|r| {
-        seen.insert((r.from.clone(), r.to.clone(), r.relation.clone()))
-    });
+    relations
+        .relations
+        .retain(|r| seen.insert((r.from.clone(), r.to.clone(), r.relation.clone())));
     if report.relation_edges > 0 || report.self_loops_removed > 0 {
         relations.save(&relations_path)?;
     }
@@ -1436,9 +1435,10 @@ fn link_chapter_outline_by_title(
     if normalized.is_empty() {
         return OutlineLinkOutcome::NoCandidate;
     }
-    let matched = file.chapters.iter().position(|c| {
-        c.chapter_id.is_none() && normalize_chapter_title(&c.title) == normalized
-    });
+    let matched = file
+        .chapters
+        .iter()
+        .position(|c| c.chapter_id.is_none() && normalize_chapter_title(&c.title) == normalized);
     if let Some(index) = matched {
         file.chapters[index].chapter_id = Some(chapter_id.to_string());
         let linked_title = file.chapters[index].title.clone();
@@ -1495,7 +1495,10 @@ pub fn rename_chapter(
 ///
 /// 脉络联动：chapters.toml 中指向该章的 chapter_id 被清除（设计记录
 /// 保留、退回虚拟章），避免悬空引用。返回被解除关联的脉络标题。
-pub fn delete_chapter(paths: &ProjectPaths, chapter_id: &str) -> Result<Option<String>, StudioError> {
+pub fn delete_chapter(
+    paths: &ProjectPaths,
+    chapter_id: &str,
+) -> Result<Option<String>, StudioError> {
     let structure_path = paths.structure_toml();
     let mut structure = load_structure(paths)?;
 
@@ -1767,11 +1770,7 @@ pub fn split_scene(
         .unwrap()
         .fragments
         .split_off(pos);
-    structure
-        .scene
-        .get_mut(&new_id)
-        .unwrap()
-        .fragments = tail;
+    structure.scene.get_mut(&new_id).unwrap().fragments = tail;
     let chapter = structure.chapter.get_mut(&ch_id).unwrap();
     chapter.scenes.retain(|s| s != &new_id);
     let at = chapter.scenes.iter().position(|s| s == scene_id).unwrap();
@@ -1779,15 +1778,12 @@ pub fn split_scene(
     structure.save(&paths.structure_toml())?;
 
     // 脉络 scenes 引用同步（best-effort）
-    if let Some(index) = load_chapters_file(paths)
-        .ok()
-        .and_then(|f| {
-            f.chapters
-                .iter()
-                .position(|c| c.scenes.iter().any(|s| s == scene_id))
-                .map(|i| i + 1)
-        })
-    {
+    if let Some(index) = load_chapters_file(paths).ok().and_then(|f| {
+        f.chapters
+            .iter()
+            .position(|c| c.scenes.iter().any(|s| s == scene_id))
+            .map(|i| i + 1)
+    }) {
         let _ = append_chapter_outline_scene(paths, index, &new_id);
     }
     Ok(new_id)
@@ -1824,7 +1820,9 @@ pub fn merge_scenes(
         )));
     }
 
-    let moved: Vec<String> = structure.scene.remove(secondary_id)
+    let moved: Vec<String> = structure
+        .scene
+        .remove(secondary_id)
         .ok_or_else(|| StudioError::NotFound(format!("场景 '{secondary_id}' 不存在")))?
         .fragments;
     structure
@@ -2155,8 +2153,12 @@ pub fn set_fragment_anchor(
     entity_id: &str,
     role: &str,
 ) -> Result<(), StudioError> {
-    set_fragment_anchors(paths, fragment_id, &[(entity_id.to_string(), role.to_string())])
-        .map(|_| ())
+    set_fragment_anchors(
+        paths,
+        fragment_id,
+        &[(entity_id.to_string(), role.to_string())],
+    )
+    .map(|_| ())
 }
 
 /// 批量为片段设置显式锚点：一次读盘、合并全部、一次写盘。
@@ -2222,7 +2224,10 @@ pub fn replace_fragment_anchors(
             "referenced" => story_ir::AnchorRole::Referenced,
             _ => story_ir::AnchorRole::Appears,
         };
-        if !parsed.iter().any(|a: &story_ir::EntityAnchor| a.entity == entity) {
+        if !parsed
+            .iter()
+            .any(|a: &story_ir::EntityAnchor| a.entity == entity)
+        {
             parsed.push(story_ir::EntityAnchor { entity, role: r });
         }
     }
@@ -2489,7 +2494,11 @@ pub fn resolve_unresolved_refs(
             _ => format!(
                 "已为 \"{quote}\" 建档 {target}「{}」并补锚点{}",
                 name.unwrap_or(""),
-                if profile_applied { "，档案字段已写入" } else { "" }
+                if profile_applied {
+                    "，档案字段已写入"
+                } else {
+                    ""
+                }
             ),
         });
     }
@@ -2501,7 +2510,11 @@ pub fn resolve_unresolved_refs(
             "已建档 {target}「{}」，{} 条指代全部归拢并补锚点{}",
             name.unwrap_or(""),
             found.len(),
-            if profile_applied { "，档案字段已写入" } else { "" }
+            if profile_applied {
+                "，档案字段已写入"
+            } else {
+                ""
+            }
         ),
     };
     if !missing.is_empty() {
@@ -2516,9 +2529,9 @@ pub fn resolve_unresolved_refs(
 
 /// 校验实体文件存在（按 ID 前缀路由）。
 fn validate_entity_exists(paths: &ProjectPaths, entity_id: &str) -> Result<(), StudioError> {
-    let path = paths.file_for_id(entity_id).ok_or_else(|| {
-        StudioError::Config(format!("无效的实体 ID: {entity_id}"))
-    })?;
+    let path = paths
+        .file_for_id(entity_id)
+        .ok_or_else(|| StudioError::Config(format!("无效的实体 ID: {entity_id}")))?;
     if !path.exists() {
         return Err(StudioError::NotFound(format!("实体 '{entity_id}' 不存在")));
     }
@@ -2534,7 +2547,9 @@ fn read_fragment_with_anchors(
         .file_for_id(fragment_id)
         .ok_or_else(|| StudioError::Config(format!("无效的片段 ID: {fragment_id}")))?;
     if !path.exists() {
-        return Err(StudioError::NotFound(format!("片段 '{fragment_id}' 不存在")));
+        return Err(StudioError::NotFound(format!(
+            "片段 '{fragment_id}' 不存在"
+        )));
     }
     let content = std::fs::read_to_string(&path)?;
 
@@ -2921,12 +2936,11 @@ pub fn add_assertion_windowed(
         day: None,
         scene: Some(scene.to_string()),
     };
-    let valid = (valid_from_scene.is_some() || valid_until_scene.is_some()).then(|| {
-        AssertionValidityDef {
+    let valid =
+        (valid_from_scene.is_some() || valid_until_scene.is_some()).then(|| AssertionValidityDef {
             from: valid_from_scene.map(scene_def),
             until: valid_until_scene.map(scene_def),
-        }
-    });
+        });
     add_assertions_valid(
         paths,
         &[(
@@ -3059,9 +3073,9 @@ fn apply_assertion(
 /// 同一片段已有条目时直接复用；片段文件不存在时报错，避免产生指向
 /// 不存在片段的证据。
 fn register_evidence(paths: &ProjectPaths, fragment_id: &str) -> Result<String, StudioError> {
-    let frag_path = paths.file_for_id(fragment_id).ok_or_else(|| {
-        StudioError::Config(format!("无效的片段 ID: {fragment_id}"))
-    })?;
+    let frag_path = paths
+        .file_for_id(fragment_id)
+        .ok_or_else(|| StudioError::Config(format!("无效的片段 ID: {fragment_id}")))?;
     if !frag_path.exists() {
         return Err(StudioError::NotFound(format!(
             "证据片段 '{fragment_id}' 不存在，请先写正文再挂证据"
@@ -3174,9 +3188,9 @@ pub fn refresh_evidence(
         if !matched {
             continue;
         }
-        let frag_path = paths.file_for_id(&entry.loc).ok_or_else(|| {
-            StudioError::Config(format!("无效的片段 ID: {}", entry.loc))
-        })?;
+        let frag_path = paths
+            .file_for_id(&entry.loc)
+            .ok_or_else(|| StudioError::Config(format!("无效的片段 ID: {}", entry.loc)))?;
         let (quote, quote_mid, quote_tail) = std::fs::read_to_string(&frag_path)
             .map(|content| evidence_excerpt_set(crate::fragment::fragment_body(&content)))
             .unwrap_or_default();
@@ -3360,15 +3374,13 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
                 continue;
             };
 
-            let (clean_body, body_changed) =
-                crate::fragment::strip_residue_blocks(body);
+            let (clean_body, body_changed) = crate::fragment::strip_residue_blocks(body);
             let head_has_id = frontmatter.lines().any(|l| {
                 l.trim().starts_with("id:") && l["id:".len()..].trim_start().starts_with("f_")
             });
 
             let cleaned = if body_changed || !head_has_id {
-                let normalized_body =
-                    crate::fragment::strip_all_leading_frontmatter(&clean_body);
+                let normalized_body = crate::fragment::strip_all_leading_frontmatter(&clean_body);
                 render_fragment_file(fragment_id, normalized_body)
             } else {
                 continue;
@@ -3423,8 +3435,11 @@ pub fn repair_project(dir: &Path) -> Result<RepairReport, StudioError> {
         //        未级联、手工编辑等留下的死数据）→ 删除 ——
         let evidence_path = paths.knowledge_dir().join("evidence.toml");
         if evidence_path.exists() {
-            let referenced: std::collections::HashSet<&String> =
-                file.assertions.iter().flat_map(|a| a.evidence.iter()).collect();
+            let referenced: std::collections::HashSet<&String> = file
+                .assertions
+                .iter()
+                .flat_map(|a| a.evidence.iter())
+                .collect();
             let mut evidence = EvidenceFile::load_or_default(&evidence_path)?;
             let orphans: Vec<String> = evidence
                 .evidence
@@ -3523,7 +3538,8 @@ pub fn remove_evidence(
     let assertions_path = paths.knowledge_dir().join("assertions.toml");
 
     // 片段 ID → 该片段的所有证据 ID（兼容直接传 ev_ ID 的调用方）
-    let evidence_file = EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml"))?;
+    let evidence_file =
+        EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml"))?;
     let ev_ids: Vec<String> = if fragment_id.starts_with("ev_") {
         vec![fragment_id.to_string()]
     } else {
@@ -3583,8 +3599,11 @@ pub fn delete_assertion(
 
     // 级联：证据条目按片段登记、可共享（多条断言引同一 ev_XXXX），
     // 只删独占引用的；仍被其他断言引用的保留
-    let still_used: std::collections::HashSet<&String> =
-        file.assertions.iter().flat_map(|a| a.evidence.iter()).collect();
+    let still_used: std::collections::HashSet<&String> = file
+        .assertions
+        .iter()
+        .flat_map(|a| a.evidence.iter())
+        .collect();
     let orphaned: Vec<String> = removed_evidence
         .into_iter()
         .filter(|ev| !still_used.contains(ev))
@@ -3861,7 +3880,8 @@ pub fn update_relation_valid(
         valid.until = bound.map(scene_def);
     }
     edge.valid = (valid.from.is_some() || valid.until.is_some()).then_some(valid);
-    let (rel_kind, edge_from, edge_to) = (edge.relation.clone(), edge.from.clone(), edge.to.clone());
+    let (rel_kind, edge_from, edge_to) =
+        (edge.relation.clone(), edge.from.clone(), edge.to.clone());
 
     // 对称孪生边同步（同类型、from/to 互换）：窗口是这一对边共同的事实
     let twin_id = file
@@ -4027,7 +4047,11 @@ fn scene_observers(
                 observers.push(pov.clone());
             }
             let fragment_ids: Vec<&String> = match only_fragment {
-                Some(fid) => scene.fragments.iter().filter(|f| f.as_str() == fid).collect(),
+                Some(fid) => scene
+                    .fragments
+                    .iter()
+                    .filter(|f| f.as_str() == fid)
+                    .collect(),
                 None => scene.fragments.iter().collect(),
             };
             for fid in fragment_ids {
@@ -4155,7 +4179,11 @@ pub fn advance_thread(
 ) -> Result<&'static str, StudioError> {
     advance_threads(
         paths,
-        &[(thread_id.to_string(), status.to_string(), scene_id.map(str::to_string))],
+        &[(
+            thread_id.to_string(),
+            status.to_string(),
+            scene_id.map(str::to_string),
+        )],
     )
     .map(|mut v| v.remove(0))
 }
@@ -4599,13 +4627,25 @@ mod tests {
         assert_eq!(reverse.from, "c_0002", "反向边方向应互换");
         for edge in [forward, reverse] {
             let valid = edge.valid.as_ref().expect("窗口应落盘");
-            assert_eq!(valid.from.as_ref().unwrap().scene.as_deref(), Some(sc1.as_str()));
-            assert_eq!(valid.until.as_ref().unwrap().scene.as_deref(), Some(sc2.as_str()));
+            assert_eq!(
+                valid.from.as_ref().unwrap().scene.as_deref(),
+                Some(sc1.as_str())
+            );
+            assert_eq!(
+                valid.until.as_ref().unwrap().scene.as_deref(),
+                Some(sc2.as_str())
+            );
         }
 
         // 孪生查找：正向边能找到反向边，反之亦然
-        assert_eq!(find_symmetric_twin(&paths, &ids[0]).as_deref(), Some(ids[1].as_str()));
-        assert_eq!(find_symmetric_twin(&paths, &ids[1]).as_deref(), Some(ids[0].as_str()));
+        assert_eq!(
+            find_symmetric_twin(&paths, &ids[0]).as_deref(),
+            Some(ids[1].as_str())
+        );
+        assert_eq!(
+            find_symmetric_twin(&paths, &ids[1]).as_deref(),
+            Some(ids[0].as_str())
+        );
     }
 
     #[test]
@@ -4642,7 +4682,14 @@ mod tests {
         let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
         let edge = file.relations.iter().find(|r| r.id == id).unwrap();
         assert_eq!(
-            edge.valid.as_ref().unwrap().from.as_ref().unwrap().scene.as_deref(),
+            edge.valid
+                .as_ref()
+                .unwrap()
+                .from
+                .as_ref()
+                .unwrap()
+                .scene
+                .as_deref(),
             Some(sc1.as_str())
         );
 
@@ -4651,7 +4698,10 @@ mod tests {
         let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
         let edge = file.relations.iter().find(|r| r.id == id).unwrap();
         let valid = edge.valid.as_ref().unwrap();
-        assert_eq!(valid.until.as_ref().unwrap().scene.as_deref(), Some(sc2.as_str()));
+        assert_eq!(
+            valid.until.as_ref().unwrap().scene.as_deref(),
+            Some(sc2.as_str())
+        );
 
         // 清除终点 → 仅剩起点
         update_relation_valid(&paths, &id, None, Some(None)).unwrap();
@@ -4689,7 +4739,11 @@ mod tests {
 
         // 只对正向边设窗口：返回孪生 ID，且两边都落盘相同窗口
         let twin = update_relation_valid(&paths, &ids[0], None, Some(Some(&sc2))).unwrap();
-        assert_eq!(twin.as_deref(), Some(ids[1].as_str()), "应返回同步的孪生边 ID");
+        assert_eq!(
+            twin.as_deref(),
+            Some(ids[1].as_str()),
+            "应返回同步的孪生边 ID"
+        );
         let file: RelationsFile = RelationsFile::load_or_default(&paths.relations_toml()).unwrap();
         for id in &ids {
             let edge = file.relations.iter().find(|r| r.id == *id).unwrap();
@@ -4763,14 +4817,14 @@ mod tests {
         // 线索：观察者为 placeholder
         let t_id = create_thread(&paths, "真凶线", "描述", "main", Some(&sc2), None, None).unwrap();
         let mut threads = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
-        threads.threads[0].knowledge.push(
-            story_project_format::threads_file::KnowledgeDef {
+        threads.threads[0]
+            .knowledge
+            .push(story_project_format::threads_file::KnowledgeDef {
                 observer: story_project_format::threads_file::ObserverDef::Character {
                     character: placeholder.clone(),
                 },
                 state_timeline: vec![],
-            },
-        );
+            });
         threads.save(&paths.threads_toml()).unwrap();
 
         // 章节脉络 characters
@@ -4793,12 +4847,14 @@ mod tests {
 
         // outline 弧线
         let mut outline = OutlineFile::load_or_default(&paths.outline_toml()).unwrap();
-        outline.arcs.push(story_project_format::outline_file::ArcDef {
-            character: placeholder.clone(),
-            name: "真凶弧线".into(),
-            stages: None,
-            summary: None,
-        });
+        outline
+            .arcs
+            .push(story_project_format::outline_file::ArcDef {
+                character: placeholder.clone(),
+                name: "真凶弧线".into(),
+                stages: None,
+                summary: None,
+            });
         outline.save(&paths.outline_toml()).unwrap();
 
         // 未锚定指代台账 target
@@ -4826,7 +4882,10 @@ mod tests {
         assert_eq!(report.aliases_absorbed, 1);
 
         // from 文件已删除；into 别名吸收了占位名
-        assert!(!paths.characters_dir().join(format!("{placeholder}.toml")).exists());
+        assert!(!paths
+            .characters_dir()
+            .join(format!("{placeholder}.toml"))
+            .exists());
         let real_content =
             std::fs::read_to_string(paths.characters_dir().join(format!("{real}.toml"))).unwrap();
         let real_entity = EntityFile::from_toml_str(&real_content).unwrap();
@@ -4908,10 +4967,16 @@ mod tests {
             valid: None,
         };
         // 目标已有 located_at=l_0001；from 也有同款（带证据）→ 合并后只留一条 active
-        assertions.assertions.push(mk("a_001", &into, "l_0001", vec![]));
-        assertions.assertions.push(mk("a_002", &from, "l_0001", vec!["ev_0001"]));
+        assertions
+            .assertions
+            .push(mk("a_001", &into, "l_0001", vec![]));
+        assertions
+            .assertions
+            .push(mk("a_002", &from, "l_0001", vec!["ev_0001"]));
         // 不重合的（object 不同）应保持 active
-        assertions.assertions.push(mk("a_003", &from, "l_0002", vec![]));
+        assertions
+            .assertions
+            .push(mk("a_003", &from, "l_0002", vec![]));
         assertions.save(&paths.assertions_toml()).unwrap();
 
         let report = merge_entities(&paths, &from, &into).unwrap();
@@ -4921,7 +4986,11 @@ mod tests {
         let get = |id: &str| file.assertions.iter().find(|a| a.id == id).unwrap();
         let a1 = get("a_001");
         assert_eq!(a1.status, "", "保留先出现的目标断言（ID 稳定）");
-        assert_eq!(a1.evidence, vec!["ev_0001".to_string()], "重复项的证据应转移给保留者");
+        assert_eq!(
+            a1.evidence,
+            vec!["ev_0001".to_string()],
+            "重复项的证据应转移给保留者"
+        );
         let a2 = get("a_002");
         assert_eq!(a2.status, "superseded", "重定向后的重复断言置为 superseded");
         assert_eq!(a2.subject, into, "重定向本身仍应完成");
@@ -4941,7 +5010,10 @@ mod tests {
 
         assert!(merge_entities(&paths, &a, &a).is_err(), "相同实体不能合并");
         assert!(merge_entities(&paths, &a, &loc).is_err(), "跨类型不能合并");
-        assert!(merge_entities(&paths, "c_9999", &b).is_err(), "不存在的实体应报错");
+        assert!(
+            merge_entities(&paths, "c_9999", &b).is_err(),
+            "不存在的实体应报错"
+        );
     }
 
     #[test]
@@ -5023,8 +5095,7 @@ mod tests {
             ..Default::default()
         });
         save_chapters_file(&paths, &chapters).unwrap();
-        let hint =
-            chapter_completion_hint(&paths, &f2).expect("全部场景有正文且未完成时应提示");
+        let hint = chapter_completion_hint(&paths, &f2).expect("全部场景有正文且未完成时应提示");
         assert!(hint.contains("update_chapter_outline"), "{hint}");
         assert!(hint.contains("index=1"), "{hint}");
 
@@ -5229,8 +5300,7 @@ mod tests {
 
         // 从版本历史恢复：文件重建，并挂回原场景原位置（bug 修复点：
         // 此前只重建文件，structure.toml 不含引用，成为阅读序外的孤儿）
-        let outcome =
-            crate::history::restore_version(&paths, &f2, versions[0].timestamp).unwrap();
+        let outcome = crate::history::restore_version(&paths, &f2, versions[0].timestamp).unwrap();
         assert_eq!(outcome.body.trim(), "第二段");
         assert_eq!(
             outcome.reattach,
@@ -5248,9 +5318,11 @@ mod tests {
         );
 
         // tombstone 已清除：再次恢复同版本属于普通回滚，不重复插入
-        let outcome =
-            crate::history::restore_version(&paths, &f2, versions[0].timestamp).unwrap();
-        assert_eq!(outcome.reattach, crate::history::ReattachStatus::AlreadyRegistered);
+        let outcome = crate::history::restore_version(&paths, &f2, versions[0].timestamp).unwrap();
+        assert_eq!(
+            outcome.reattach,
+            crate::history::ReattachStatus::AlreadyRegistered
+        );
         let structure = load_structure(&paths).unwrap();
         assert_eq!(structure.scene[&sc_id].fragments.len(), 3);
     }
@@ -5337,10 +5409,9 @@ mod tests {
         let outcome = add_assertion(&paths, &char_id, "alive", "true", Some(&frag_id)).unwrap();
         let a_id = outcome.id;
         let ev_id = {
-            let file: AssertionsFile = AssertionsFile::load_or_default(
-                &paths.knowledge_dir().join("assertions.toml"),
-            )
-            .unwrap();
+            let file: AssertionsFile =
+                AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
+                    .unwrap();
             file.assertions
                 .iter()
                 .find(|a| a.id == a_id)
@@ -5356,9 +5427,12 @@ mod tests {
         let a = file.assertions.iter().find(|a| a.id == a_id).unwrap();
         assert!(a.evidence.contains(&ev_id));
         assert!(!a.evidence.contains(&frag_id));
-        let ev_file = EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml"))
-            .unwrap();
-        assert!(ev_file.evidence.iter().any(|e| e.id == ev_id && e.loc == frag_id));
+        let ev_file =
+            EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        assert!(ev_file
+            .evidence
+            .iter()
+            .any(|e| e.id == ev_id && e.loc == frag_id));
 
         // 移除证据
         remove_evidence(&paths, &a_id, &frag_id).unwrap();
@@ -5415,8 +5489,18 @@ mod tests {
         assert_eq!(t.tags, vec!["foreshadowing", "identity"]);
 
         // 非法 priority 被拒绝
-        let err =
-            update_thread(&paths, &id, None, None, None, Some("bogus"), None, None, None).unwrap_err();
+        let err = update_thread(
+            &paths,
+            &id,
+            None,
+            None,
+            None,
+            Some("bogus"),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, StudioError::Config(_)));
 
         // 修改 description；goal 传空串 = 清除
@@ -5442,19 +5526,45 @@ mod tests {
         update_thread(&paths, &id, None, Some(""), None, None, None, None, None).unwrap();
         let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
         assert_eq!(
-            file.threads.iter().find(|t| t.id == id).unwrap().description,
+            file.threads
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap()
+                .description,
             None
         );
-        let err = update_thread(&paths, &id, Some("  "), None, None, None, None, None, None).unwrap_err();
+        let err =
+            update_thread(&paths, &id, Some("  "), None, None, None, None, None, None).unwrap_err();
         assert!(matches!(err, StudioError::Config(_)));
 
         // 不存在的线索
-        let err =
-            update_thread(&paths, "t_999", Some("x"), None, None, None, None, None, None).unwrap_err();
+        let err = update_thread(
+            &paths,
+            "t_999",
+            Some("x"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, StudioError::NotFound(_)));
 
         // due_volume 设置与清除
-        update_thread(&paths, &id, None, None, None, None, None, Some(Some(2)), None).unwrap();
+        update_thread(
+            &paths,
+            &id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Some(2)),
+            None,
+        )
+        .unwrap();
         let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
         assert_eq!(
             file.threads.iter().find(|t| t.id == id).unwrap().due_volume,
@@ -5471,18 +5581,44 @@ mod tests {
         update_thread(&paths, &id, None, None, None, None, None, None, Some("pov")).unwrap();
         let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
         assert_eq!(
-            file.threads.iter().find(|t| t.id == id).unwrap().scope.as_deref(),
+            file.threads
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap()
+                .scope
+                .as_deref(),
             Some("pov")
         );
-        update_thread(&paths, &id, None, None, None, None, None, None, Some("reader")).unwrap();
+        update_thread(
+            &paths,
+            &id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("reader"),
+        )
+        .unwrap();
         let file: ThreadsFile = ThreadsFile::load_or_default(&path).unwrap();
         assert_eq!(
             file.threads.iter().find(|t| t.id == id).unwrap().scope,
             None
         );
         // 非法值被拒绝
-        let err = update_thread(&paths, &id, None, None, None, None, None, None, Some("bogus"))
-            .unwrap_err();
+        let err = update_thread(
+            &paths,
+            &id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("bogus"),
+        )
+        .unwrap_err();
         assert!(matches!(err, StudioError::Config(_)));
     }
 
@@ -5578,19 +5714,27 @@ mod tests {
                 )
             })
             .expect("revealed 应联动 reader 知情");
-        assert!(
-            reader
-                .state_timeline
-                .iter()
-                .any(|e| e.scene == "sc_02_01" && e.state == "known")
-        );
+        assert!(reader
+            .state_timeline
+            .iter()
+            .any(|e| e.scene == "sc_02_01" && e.state == "known"));
 
         // 批量可见性：多条记录一次落盘
         set_thread_knowledge_batch(
             &paths,
             &[
-                (t1.clone(), "c_0001".into(), "suspected".into(), "sc_02_01".into()),
-                (t1.clone(), "c_0002".into(), "known".into(), "sc_02_03".into()),
+                (
+                    t1.clone(),
+                    "c_0001".into(),
+                    "suspected".into(),
+                    "sc_02_01".into(),
+                ),
+                (
+                    t1.clone(),
+                    "c_0002".into(),
+                    "known".into(),
+                    "sc_02_03".into(),
+                ),
             ],
         )
         .unwrap();
@@ -5774,8 +5918,12 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id1 = add_assertion(&paths, "c_0001", "alive", "true", None).unwrap().id;
-        let id2 = add_assertion(&paths, "c_0001", "age", "25", None).unwrap().id;
+        let id1 = add_assertion(&paths, "c_0001", "alive", "true", None)
+            .unwrap()
+            .id;
+        let id2 = add_assertion(&paths, "c_0001", "age", "25", None)
+            .unwrap()
+            .id;
         assert!(id1.starts_with("a_"));
         assert!(id2.starts_with("a_"));
 
@@ -5803,25 +5951,40 @@ mod tests {
         let ev = register_evidence(&paths, &fid).unwrap();
 
         // 两条断言共享同一证据，第三条不带证据
-        let a1 = add_assertion(&paths, "c_0001", "status", "在逃", Some(&fid)).unwrap().id;
-        let a2 = add_assertion(&paths, "c_0001", "holds", "i_0001", Some(&fid)).unwrap().id;
-        let a3 = add_assertion(&paths, "c_0001", "alive", "true", None).unwrap().id;
+        let a1 = add_assertion(&paths, "c_0001", "status", "在逃", Some(&fid))
+            .unwrap()
+            .id;
+        let a2 = add_assertion(&paths, "c_0001", "holds", "i_0001", Some(&fid))
+            .unwrap()
+            .id;
+        let a3 = add_assertion(&paths, "c_0001", "alive", "true", None)
+            .unwrap()
+            .id;
         let assertions = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
         assert!(
-            assertions.assertions.iter().take(2).all(|a| a.evidence == vec![ev.clone()]),
+            assertions
+                .assertions
+                .iter()
+                .take(2)
+                .all(|a| a.evidence == vec![ev.clone()]),
             "两条断言应共享同一证据条目（按片段登记复用）"
         );
 
         // 删第一条：证据仍被 a2 引用 → 不级联
         let cascaded = delete_assertion(&paths, &a1).unwrap();
         assert!(cascaded.is_empty(), "共享证据不应被级联删除");
-        let evidence = EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
-        assert!(evidence.evidence.iter().any(|e| e.id == ev), "共享证据应保留");
+        let evidence =
+            EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        assert!(
+            evidence.evidence.iter().any(|e| e.id == ev),
+            "共享证据应保留"
+        );
 
         // 删 a2：证据不再被任何断言引用 → 级联删除
         let cascaded = delete_assertion(&paths, &a2).unwrap();
         assert_eq!(cascaded, vec![ev.clone()], "独占证据应一并删除");
-        let evidence = EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        let evidence =
+            EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
         assert!(evidence.evidence.is_empty(), "evidence.toml 不应留孤儿条目");
 
         // 无证据断言删除返回空
@@ -5856,8 +6019,14 @@ mod tests {
         let report = repair_project(paths.root()).unwrap();
         assert_eq!(report.evidence_orphans_removed, vec!["ev_0999".to_string()]);
         let evidence = EvidenceFile::load_or_default(&evidence_path).unwrap();
-        assert!(evidence.evidence.iter().any(|e| e.id == ev_used), "被引用的证据保留");
-        assert!(!evidence.evidence.iter().any(|e| e.id == "ev_0999"), "孤儿证据清除");
+        assert!(
+            evidence.evidence.iter().any(|e| e.id == ev_used),
+            "被引用的证据保留"
+        );
+        assert!(
+            !evidence.evidence.iter().any(|e| e.id == "ev_0999"),
+            "孤儿证据清除"
+        );
     }
 
     #[test]
@@ -5874,7 +6043,9 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id = add_assertion(&paths, "c_0001", "alive", "true", None).unwrap().id;
+        let id = add_assertion(&paths, "c_0001", "alive", "true", None)
+            .unwrap()
+            .id;
 
         set_assertion_status(&paths, &id, "contradicted").unwrap();
 
@@ -5890,7 +6061,9 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id = add_assertion(&paths, "c_0001", "alive", "true", None).unwrap().id;
+        let id = add_assertion(&paths, "c_0001", "alive", "true", None)
+            .unwrap()
+            .id;
 
         let result = set_assertion_status(&paths, &id, "deleted");
         assert!(result.is_err());
@@ -5909,9 +6082,8 @@ mod tests {
         assert!(!second.deduplicated);
         assert_eq!(second.superseded, vec![first.id.clone()]);
 
-        let file =
-            AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
-                .unwrap();
+        let file = AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
+            .unwrap();
         let old = file.assertions.iter().find(|a| a.id == first.id).unwrap();
         assert_eq!(old.status, "superseded");
         let new = file.assertions.iter().find(|a| a.id == second.id).unwrap();
@@ -5929,9 +6101,8 @@ mod tests {
         let second = add_assertion(&paths, "c_0001", "holds", "i_0002", None).unwrap();
 
         assert!(second.superseded.is_empty());
-        let file =
-            AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
-                .unwrap();
+        let file = AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
+            .unwrap();
         let old = file.assertions.iter().find(|a| a.id == first.id).unwrap();
         assert_eq!(old.status, "active");
     }
@@ -5947,9 +6118,8 @@ mod tests {
         assert!(again.deduplicated);
         assert_eq!(again.id, first.id);
 
-        let file =
-            AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
-                .unwrap();
+        let file = AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
+            .unwrap();
         assert_eq!(
             file.assertions
                 .iter()
@@ -5988,14 +6158,9 @@ mod tests {
         .unwrap();
         assert!(!outcome.deduplicated);
 
-        let file =
-            AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
-                .unwrap();
-        let a = file
-            .assertions
-            .iter()
-            .find(|a| a.id == outcome.id)
+        let file = AssertionsFile::load_or_default(&paths.knowledge_dir().join("assertions.toml"))
             .unwrap();
+        let a = file.assertions.iter().find(|a| a.id == outcome.id).unwrap();
         let valid = a.valid.as_ref().expect("窗口应落盘");
         assert_eq!(
             valid.from.as_ref().unwrap().scene.as_deref(),
@@ -6025,7 +6190,8 @@ mod tests {
         let paths = ProjectPaths::new(tmp.path());
         let ch = create_chapter(&paths, "章").unwrap();
         let sc = create_scene(&paths, &ch, "场景", None).unwrap();
-        let fid = create_fragment(&paths, &sc, "林风推门而入，尘土簌簌落下。\n他环顾四周。").unwrap();
+        let fid =
+            create_fragment(&paths, &sc, "林风推门而入，尘土簌簌落下。\n他环顾四周。").unwrap();
 
         add_assertion(&paths, "c_0001", "located_at", "l_0001", Some(&fid)).unwrap();
 
@@ -6181,11 +6347,17 @@ mod tests {
         .unwrap();
         let note = evidence_usage_note(&paths, &fid, false).expect("摘录偏离后应有提示");
         assert!(note.contains(&a1.id), "提示应包含 active 断言 id: {note}");
-        assert!(!note.contains(&a2.id), "提示不应包含 superseded 断言: {note}");
+        assert!(
+            !note.contains(&a2.id),
+            "提示不应包含 superseded 断言: {note}"
+        );
         assert!(note.contains("偏离"), "应说明摘录已偏离: {note}");
 
         let removed_note = evidence_usage_note(&paths, &fid, true).expect("删除场景应有提示");
-        assert!(removed_note.contains("悬空"), "删除提示应说明证据悬空: {removed_note}");
+        assert!(
+            removed_note.contains("悬空"),
+            "删除提示应说明证据悬空: {removed_note}"
+        );
 
         // 无关片段：无证据登记 → 无提示
         assert!(evidence_usage_note(&paths, &other, false).is_none());
@@ -6206,7 +6378,11 @@ mod tests {
 
         let content =
             std::fs::read_to_string(paths.fragments_dir().join(format!("{fid}.md"))).unwrap();
-        assert_eq!(content.matches("---").count(), 2, "只应有一层 frontmatter: {content}");
+        assert_eq!(
+            content.matches("---").count(),
+            2,
+            "只应有一层 frontmatter: {content}"
+        );
         assert!(!content.contains("沈砚之"), "复读块不应残留: {content}");
         assert!(content.contains("他没有应声。"));
     }
@@ -6222,9 +6398,8 @@ mod tests {
 
         // —— 构造脏片段：正文前叠残留 YAML 块 ——
         let frag_path = paths.fragments_dir().join(format!("{frag_id}.md"));
-        let dirty = format!(
-            "---\nid: {frag_id}\n---\n\n---\nanchors:\n  - 沈砚之\n---\n\n干净正文。\n"
-        );
+        let dirty =
+            format!("---\nid: {frag_id}\n---\n\n---\nanchors:\n  - 沈砚之\n---\n\n干净正文。\n");
         std::fs::write(&frag_path, dirty).unwrap();
 
         // —— 构造旧格式断言：evidence 直接存片段 ID ——
@@ -6246,7 +6421,11 @@ mod tests {
 
         // 片段已清洗
         let content = std::fs::read_to_string(&frag_path).unwrap();
-        assert_eq!(content.matches("---").count(), 2, "清洗后只应有一层 frontmatter: {content}");
+        assert_eq!(
+            content.matches("---").count(),
+            2,
+            "清洗后只应有一层 frontmatter: {content}"
+        );
         assert!(content.contains("干净正文。"));
 
         // 断言证据已重建为 ev_ ID
@@ -6305,7 +6484,6 @@ mod tests {
         let _ = fid;
     }
 
-
     // —— 本轮：repair 全文扫描 / ID 引用高水位 / 片段埋设点 ——
 
     #[test]
@@ -6349,7 +6527,10 @@ mod tests {
         let report = repair_project(tmp.path()).unwrap();
         assert_eq!(report.fragments_cleaned, vec![fid.clone()]);
         let content = std::fs::read_to_string(&frag_path).unwrap();
-        assert!(content.starts_with(&format!("---\nid: {fid}\n")), "应补 id: {content}");
+        assert!(
+            content.starts_with(&format!("---\nid: {fid}\n")),
+            "应补 id: {content}"
+        );
     }
 
     #[test]
@@ -6403,7 +6584,6 @@ mod tests {
         assert!(has_pov, "POV 应初始化: {:?}", thread.knowledge);
     }
 
-
     #[test]
     fn fragment_id_not_reused_even_without_references() {
         // 无引用的片段删除后，持久高水位仍阻止 ID 回收
@@ -6426,7 +6606,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn advance_thread_reveal_links_reader_knowledge() {
         let tmp = setup_test_project();
@@ -6446,7 +6625,11 @@ mod tests {
             matches!(&k.observer, story_project_format::threads_file::ObserverDef::Builtin(b) if b == "reader")
                 && k.state_timeline.iter().any(|e| e.state == "known")
         });
-        assert!(reader_known, "揭示后 reader 应自动 known: {:?}", thread.knowledge);
+        assert!(
+            reader_known,
+            "揭示后 reader 应自动 known: {:?}",
+            thread.knowledge
+        );
     }
 
     #[test]
@@ -6468,9 +6651,12 @@ mod tests {
             matches!(&k.observer, story_project_format::threads_file::ObserverDef::Builtin(b) if b == "reader")
                 && k.state_timeline.iter().any(|e| e.state == "known")
         });
-        assert!(reader_known, "片段锚点也应联动 reader: {:?}", thread.knowledge);
+        assert!(
+            reader_known,
+            "片段锚点也应联动 reader: {:?}",
+            thread.knowledge
+        );
     }
-
 
     #[test]
     fn add_assertion_reports_coexisting_multi_valued() {
@@ -6489,7 +6675,6 @@ mod tests {
         assert!(again.deduplicated);
     }
 
-
     #[test]
     fn advance_thread_rejects_regression() {
         let tmp = setup_test_project();
@@ -6507,14 +6692,17 @@ mod tests {
 
         let file = ThreadsFile::load_or_default(&paths.root().join("threads.toml")).unwrap();
         let thread = file.threads.iter().find(|t| t.id == t_id).unwrap();
-        assert_eq!(thread.planted_at.as_deref(), Some(sc1.as_str()), "planted_at 不应被改写");
+        assert_eq!(
+            thread.planted_at.as_deref(),
+            Some(sc1.as_str()),
+            "planted_at 不应被改写"
+        );
         assert_eq!(thread.revealed_at.as_deref(), Some(sc2.as_str()));
 
         // revealed → resolved 前进、abandoned 任意时刻均可
         advance_thread(&paths, &t_id, "resolved", Some(&sc2)).unwrap();
         advance_thread(&paths, &t_id, "abandoned", None).unwrap();
     }
-
 
     #[test]
     fn entity_id_not_reused_after_delete() {
@@ -6733,7 +6921,10 @@ scope = "pov"
         let new_id = split_scene(&paths, &sc1, &f2, None).unwrap();
         let structure = load_structure(&paths).unwrap();
         assert_eq!(structure.scene[&sc1].fragments, vec![f1.clone()]);
-        assert_eq!(structure.scene[&new_id].fragments, vec![f2.clone(), f3.clone()]);
+        assert_eq!(
+            structure.scene[&new_id].fragments,
+            vec![f2.clone(), f3.clone()]
+        );
         let order = &structure.chapter[&ch].scenes;
         let p1 = order.iter().position(|s| s == &sc1).unwrap();
         let pn = order.iter().position(|s| s == &new_id).unwrap();
@@ -7030,7 +7221,9 @@ scope = "pov"
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        let id = add_assertion(&paths, "c_0001", "alive", "alive", None).unwrap().id;
+        let id = add_assertion(&paths, "c_0001", "alive", "alive", None)
+            .unwrap()
+            .id;
         assert_eq!(id, "a_0001");
 
         let content =

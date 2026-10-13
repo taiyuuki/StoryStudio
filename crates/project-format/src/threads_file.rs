@@ -232,7 +232,8 @@ due_volume = 2
         assert_eq!(reparsed.threads[0].due_volume, Some(2));
 
         // 未设置的线索序列化时不应带 due_volume 字段
-        let bare = ThreadsFile::from_toml_str("[[thread]]\nid = \"t_011\"\ntitle = \"x\"\n").unwrap();
+        let bare =
+            ThreadsFile::from_toml_str("[[thread]]\nid = \"t_011\"\ntitle = \"x\"\n").unwrap();
         let s = bare.to_toml_string().unwrap();
         assert!(!s.contains("due_volume"), "{s}");
     }

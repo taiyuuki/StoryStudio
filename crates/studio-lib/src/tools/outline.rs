@@ -7,7 +7,7 @@ use story_project_format::outline_file::{ArcDef, ConflictDef, StorylineDef, Volu
 use story_project_format::{EntityFile, OutlineFile};
 
 use super::{
-    check_index, get_index, get_json_array_opt, get_str, get_str_opt, get_str_array_opt,
+    check_index, get_index, get_json_array_opt, get_str, get_str_array_opt, get_str_opt,
     normalize_object_items, object_schema, ToolContext,
 };
 
@@ -425,7 +425,10 @@ impl Tool for SetOutlineItemTool {
         }
         let volume_n = sections.iter().filter(|s| s.as_str() == "volume").count();
         let arc_n = sections.iter().filter(|s| s.as_str() == "arc").count();
-        let storyline_n = sections.iter().filter(|s| s.as_str() == "storyline").count();
+        let storyline_n = sections
+            .iter()
+            .filter(|s| s.as_str() == "storyline")
+            .count();
         let conflict_n = sections.iter().filter(|s| s.as_str() == "conflict").count();
         let story_n = sections.iter().filter(|s| s.as_str() == "story").count();
         let mut out = format!(

@@ -13,8 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use crate::journal;
+use serde::{Deserialize, Serialize};
 
 /// 保留天数上限（滚动淘汰最旧）
 const MAX_DAYS: usize = 400;
@@ -202,15 +202,8 @@ pub fn record_delta(root: &Path, source: WriteSource, words: u32) {
 /// 按新旧正文净增记账（写入路径统一入口）
 ///
 /// `old_body` 为 None 表示新建片段（全文字数计入）。
-pub fn record_change(
-    root: &Path,
-    old_body: Option<&str>,
-    new_body: &str,
-    source: WriteSource,
-) {
-    let old_words = old_body
-        .map(story_ir::count_words)
-        .unwrap_or(0) as i64;
+pub fn record_change(root: &Path, old_body: Option<&str>, new_body: &str, source: WriteSource) {
+    let old_words = old_body.map(story_ir::count_words).unwrap_or(0) as i64;
     let new_words = story_ir::count_words(new_body) as i64;
     let delta = (new_words - old_words).max(0) as u32;
     record_delta(root, source, delta);
@@ -250,12 +243,7 @@ pub fn summary(root: &Path, recent: usize) -> WordStatsSummary {
     let mut streak_days = 0u32;
     let mut i = streak_start;
     while let Some(key) = days_before(&today, i) {
-        if stats
-            .days
-            .get(&key)
-            .map(|c| c.total() > 0)
-            .unwrap_or(false)
-        {
+        if stats.days.get(&key).map(|c| c.total() > 0).unwrap_or(false) {
             streak_days += 1;
             i += 1;
         } else {
@@ -263,10 +251,13 @@ pub fn summary(root: &Path, recent: usize) -> WordStatsSummary {
         }
     }
 
-    let total = stats.days.values().fold(DayCount::default(), |acc, c| DayCount {
-        manual: acc.manual.saturating_add(c.manual),
-        ai: acc.ai.saturating_add(c.ai),
-    });
+    let total = stats
+        .days
+        .values()
+        .fold(DayCount::default(), |acc, c| DayCount {
+            manual: acc.manual.saturating_add(c.manual),
+            ai: acc.ai.saturating_add(c.ai),
+        });
 
     WordStatsSummary {
         daily_goal: stats.daily_goal,
@@ -322,7 +313,10 @@ mod tests {
         }
         // 跨闰年 2 月末
         assert_eq!(civil_from_days(days_from_civil(2024, 2, 29)), (2024, 2, 29));
-        assert_eq!(civil_from_days(days_from_civil(2023, 12, 31) + 1), (2024, 1, 1));
+        assert_eq!(
+            civil_from_days(days_from_civil(2023, 12, 31) + 1),
+            (2024, 1, 1)
+        );
     }
 
     #[test]
@@ -340,12 +334,22 @@ mod tests {
     #[test]
     fn record_change_counts_net_increase_only() {
         let (_dir, paths) = temp_root();
-        record_change(&paths, Some("十个字十个字"), "十个字十个字十个字", WriteSource::Manual);
+        record_change(
+            &paths,
+            Some("十个字十个字"),
+            "十个字十个字十个字",
+            WriteSource::Manual,
+        );
         let s = summary(&paths, 7);
         assert_eq!(s.today.manual, 3);
 
         // 字数减少不回冲
-        record_change(&paths, Some("十个字十个字十个字"), "两字", WriteSource::Manual);
+        record_change(
+            &paths,
+            Some("十个字十个字十个字"),
+            "两字",
+            WriteSource::Manual,
+        );
         let s = summary(&paths, 7);
         assert_eq!(s.today.manual, 3);
 
@@ -362,8 +366,12 @@ mod tests {
         let today = today_key(0);
         let yesterday = days_before(&today, 1).unwrap();
         let two_days_ago = days_before(&today, 2).unwrap();
-        stats.days.insert(yesterday, DayCount { manual: 100, ai: 0 });
-        stats.days.insert(two_days_ago, DayCount { manual: 50, ai: 0 });
+        stats
+            .days
+            .insert(yesterday, DayCount { manual: 100, ai: 0 });
+        stats
+            .days
+            .insert(two_days_ago, DayCount { manual: 50, ai: 0 });
         store(&paths, &stats);
 
         // 今日未写：streak 从昨日起算 = 2

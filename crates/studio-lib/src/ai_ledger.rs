@@ -3,7 +3,6 @@
 //! 记账是 best-effort——账本读写失败绝不影响调用本身。
 //! 保留最近 [`MAX_ENTRIES`] 条（环形淘汰最旧），存 `.novelstudio/ai-ledger.json`。
 
-
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -142,8 +141,26 @@ mod tests {
     #[test]
     fn records_and_summarizes() {
         let (_dir, paths) = temp_root();
-        record(&paths, "续写", "anthropic", "claude-sonnet-4-5", 1200, 3400, true, None);
-        record(&paths, "妙笔对话", "openai", "gpt-5.2", 0, 900, false, Some("401 未授权\n请检查 Key"));
+        record(
+            &paths,
+            "续写",
+            "anthropic",
+            "claude-sonnet-4-5",
+            1200,
+            3400,
+            true,
+            None,
+        );
+        record(
+            &paths,
+            "妙笔对话",
+            "openai",
+            "gpt-5.2",
+            0,
+            900,
+            false,
+            Some("401 未授权\n请检查 Key"),
+        );
 
         let s = summary(&paths, 10);
         assert_eq!(s.total_calls, 2);
@@ -151,14 +168,26 @@ mod tests {
         assert_eq!(s.recent.len(), 2);
         assert_eq!(s.recent[0].scene, "妙笔对话"); // 新 → 旧
         assert!(!s.recent[0].ok);
-        assert!(!s.recent[0].error.as_ref().unwrap().contains('\n'), "错误信息压平为单行");
+        assert!(
+            !s.recent[0].error.as_ref().unwrap().contains('\n'),
+            "错误信息压平为单行"
+        );
     }
 
     #[test]
     fn caps_entries() {
         let (_dir, paths) = temp_root();
         for i in 0..(MAX_ENTRIES + 20) {
-            record(&paths, &format!("场景{i}"), "openai", "gpt-5.2", 1, 1, true, None);
+            record(
+                &paths,
+                &format!("场景{i}"),
+                "openai",
+                "gpt-5.2",
+                1,
+                1,
+                true,
+                None,
+            );
         }
         assert_eq!(load(&paths).entries.len(), MAX_ENTRIES);
         let s = summary(&paths, 1);

@@ -6,7 +6,7 @@ use story_ir::StableId;
 use story_project_format::FragmentFile;
 
 use super::{
-    get_json_array_opt, get_str, get_str_opt, get_str_array_opt, get_u32_opt,
+    get_json_array_opt, get_str, get_str_array_opt, get_str_opt, get_u32_opt,
     normalize_object_items, object_schema, ToolContext,
 };
 
@@ -106,8 +106,8 @@ impl Tool for AddAssertionTool {
                     get_str_opt(item, "evidence_fragment"),
                 ));
             }
-            let outcomes = crate::mutations::add_assertions(&paths, &entries)
-                .map_err(|e| e.to_string())?;
+            let outcomes =
+                crate::mutations::add_assertions(&paths, &entries).map_err(|e| e.to_string())?;
 
             let mut superseded_all: Vec<String> = Vec::new();
             let mut coexisting_count = 0usize;
@@ -222,7 +222,9 @@ impl Tool for RetireAssertionTool {
         let paths = self.ctx.paths();
         crate::mutations::set_assertion_status(&paths, &assertion_id, "superseded")
             .map_err(|e| e.to_string())?;
-        Ok(format!("断言 {assertion_id} 已废弃（superseded），不再参与当前状态"))
+        Ok(format!(
+            "断言 {assertion_id} 已废弃（superseded），不再参与当前状态"
+        ))
     }
 }
 
@@ -258,8 +260,8 @@ impl Tool for DeleteAssertionTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let assertion_id = get_str(arguments, "assertion_id")?;
         let paths = self.ctx.paths();
-        let cascaded = crate::mutations::delete_assertion(&paths, &assertion_id)
-            .map_err(|e| e.to_string())?;
+        let cascaded =
+            crate::mutations::delete_assertion(&paths, &assertion_id).map_err(|e| e.to_string())?;
         let mut msg = format!("断言 {assertion_id} 已彻底删除");
         if !cascaded.is_empty() {
             msg.push_str(&format!(
@@ -407,8 +409,7 @@ impl Tool for AddRelationTool {
             }
             // 项归一化：模型常把每项序列化成字符串传入
             let items = normalize_object_items(items, "relations")?;
-            let mut inputs: Vec<crate::mutations::RelationInput> =
-                Vec::with_capacity(items.len());
+            let mut inputs: Vec<crate::mutations::RelationInput> = Vec::with_capacity(items.len());
             for item in &items {
                 // 批量项同样必须解析 from/to/relation（曾漏掉导致整批空边落盘）
                 inputs.push(crate::mutations::RelationInput {
@@ -418,8 +419,8 @@ impl Tool for AddRelationTool {
                     ..relation_input_from_json(item)?
                 });
             }
-            let ids = crate::mutations::add_relation_full(&paths, &inputs)
-                .map_err(|e| e.to_string())?;
+            let ids =
+                crate::mutations::add_relation_full(&paths, &inputs).map_err(|e| e.to_string())?;
             // 回执列出完整落盘明细（含方向），而非只报数量
             let detail = inputs
                 .iter()
@@ -446,8 +447,8 @@ impl Tool for AddRelationTool {
             ..relation_input_from_json(arguments)?
         };
         let has_window = input.valid_from_scene.is_some() || input.valid_until_scene.is_some();
-        let ids = crate::mutations::add_relation_full(&paths, &[input])
-            .map_err(|e| e.to_string())?;
+        let ids =
+            crate::mutations::add_relation_full(&paths, &[input]).map_err(|e| e.to_string())?;
         let mut msg = format!("关系已添加: id={}", ids[0]);
         if ids.len() > 1 {
             msg.push_str(&format!("（含对称反向边 {}）", ids[1]));
@@ -462,7 +463,9 @@ impl Tool for AddRelationTool {
 /// 从 JSON 对象解析 RelationInput 的可选字段（窗口 + 对称声明）。
 ///
 /// 单条与批量共用；from/to/relation 由调用方按各自必填规则解析后填充。
-fn relation_input_from_json(item: &serde_json::Value) -> Result<crate::mutations::RelationInput, String> {
+fn relation_input_from_json(
+    item: &serde_json::Value,
+) -> Result<crate::mutations::RelationInput, String> {
     let get_scene = |key: &str| -> Result<Option<String>, String> {
         match item.get(key) {
             None => Ok(None),
@@ -589,10 +592,7 @@ impl Tool for UpdateRelationTool {
                 .map(Some)
                 .or_else(|| {
                     // 显式传了空串 → 清除
-                    arguments
-                        .get(key)
-                        .and_then(|v| v.as_str())
-                        .map(|_| None)
+                    arguments.get(key).and_then(|v| v.as_str()).map(|_| None)
                 })
         };
         let from = bound("valid_from_scene");
@@ -664,7 +664,12 @@ impl Tool for CreateThreadTool {
                     pov（暗线：POV 角色私人闭环，允许直接回收，不要求先揭示）",
                     false,
                 ),
-                ("planted_at", "string", "埋设位置（场景 ID 或片段 ID，如 sc_01_01 / f_0003）", false),
+                (
+                    "planted_at",
+                    "string",
+                    "埋设位置（场景 ID 或片段 ID，如 sc_01_01 / f_0003）",
+                    false,
+                ),
                 (
                     "due_volume",
                     "integer",
@@ -725,7 +730,9 @@ impl Tool for CreateThreadTool {
 // ============================================================================
 
 /// 从 ThreadDef 的 loose-typed 字段推导状态（与 ThreadStatus::derive 逻辑一致）。
-pub(super) fn derive_thread_status(t: &story_project_format::threads_file::ThreadDef) -> &'static str {
+pub(super) fn derive_thread_status(
+    t: &story_project_format::threads_file::ThreadDef,
+) -> &'static str {
     if t.abandoned {
         "abandoned"
     } else if t.resolved_at.is_some() {
@@ -826,12 +833,7 @@ impl Tool for GetThreadsTool {
                     .unwrap_or_default();
                 format!(
                     "{} [{}/{}{}] {}{}",
-                    t.id,
-                    t.priority,
-                    status,
-                    scope,
-                    t.title,
-                    desc
+                    t.id, t.priority, status, scope, t.title, desc
                 )
             })
             .collect();
@@ -865,9 +867,10 @@ impl Tool for UpdateThreadTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "update_thread".into(),
-            description: "修改已有线索的核心字段（title/description/goal/priority/tags/due_volume/scope），\
+            description:
+                "修改已有线索的核心字段（title/description/goal/priority/tags/due_volume/scope），\
             只更新提供的字段。tags 以逗号分隔，整体覆盖。操作前先 get_threads 确认 ID。"
-                .into(),
+                    .into(),
             parameters: object_schema(vec![
                 ("thread_id", "string", "线索 ID（如 t_001）", true),
                 ("title", "string", "线索标题", false),
@@ -880,7 +883,12 @@ impl Tool for UpdateThreadTool {
                     "可见性范围: reader（明线，默认）/ pov（暗线，回收不要求先揭示）",
                     false,
                 ),
-                ("tags", "array", "标签列表（原生数组或逗号分隔字符串，整体覆盖）", false),
+                (
+                    "tags",
+                    "array",
+                    "标签列表（原生数组或逗号分隔字符串，整体覆盖）",
+                    false,
+                ),
                 (
                     "due_volume",
                     "integer",
@@ -899,9 +907,9 @@ impl Tool for UpdateThreadTool {
         let priority = get_str_opt(arguments, "priority");
         let tags = get_str_array_opt(arguments, "tags")?;
         // None=不动；Some(n)=设为第 n 卷（0 清除）
-        let due_volume = arguments.get("due_volume").map(|_| {
-            get_u32_opt(arguments, "due_volume")
-        });
+        let due_volume = arguments
+            .get("due_volume")
+            .map(|_| get_u32_opt(arguments, "due_volume"));
         let scope = get_str_opt(arguments, "scope");
 
         let paths = self.ctx.paths();
@@ -994,8 +1002,8 @@ impl Tool for AdvanceThreadTool {
                     get_str_opt(item, "scene_id"),
                 ));
             }
-            let results = crate::mutations::advance_threads(&paths, &entries)
-                .map_err(|e| e.to_string())?;
+            let results =
+                crate::mutations::advance_threads(&paths, &entries).map_err(|e| e.to_string())?;
 
             let parts: Vec<String> = entries
                 .iter()
@@ -1384,9 +1392,7 @@ impl Tool for RemoveThreadKnowledgeTool {
         } else {
             Ok(format!(
                 "未找到匹配的可见性记录：线索 {thread_id} — {observer}{}（无改动）",
-                scene_id
-                    .map(|s| format!(" 在 {s}"))
-                    .unwrap_or_default()
+                scene_id.map(|s| format!(" 在 {s}")).unwrap_or_default()
             ))
         }
     }
@@ -1468,7 +1474,6 @@ impl Tool for WriteFragmentTextTool {
         let scene_time_raw = get_str_opt(arguments, "scene_time");
         let advance_threads_raw = get_str_array_opt(arguments, "advance_threads")?;
 
-
         let paths = self.ctx.paths();
 
         let mut stored_snapshot = false;
@@ -1490,7 +1495,7 @@ impl Tool for WriteFragmentTextTool {
                 &text,
                 crate::stats::WriteSource::Ai,
             )
-                .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
             (fid, false)
         } else {
             // 创建新片段（AI 来源记账——create_fragment 固定记手写，
@@ -1512,12 +1517,13 @@ impl Tool for WriteFragmentTextTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let action = if is_new { "创建" } else { "更新" };
-        let mut msg = format!(
-            "片段已{action}: id={fragment_id}, scene={scene_id}, 字数={word_count}"
-        );
+        let mut msg =
+            format!("片段已{action}: id={fragment_id}, scene={scene_id}, 字数={word_count}");
         if word_count < 800 && !declared_short {
-            msg.push_str(" ⚠ 低于建议下限 800 字，如非刻意留短（如收尾短章），建议扩写完整叙事；\
-            刻意短片段（收尾/过渡/暗线视角）可传 short=true 声明，跳过此警示");
+            msg.push_str(
+                " ⚠ 低于建议下限 800 字，如非刻意留短（如收尾短章），建议扩写完整叙事；\
+            刻意短片段（收尾/过渡/暗线视角）可传 short=true 声明，跳过此警示",
+            );
         }
         // 写入时理解锚定：LLM 指代消解，把"那人/佣兵"这类文字匹配认不到的
         // 出场落为显式锚点（best-effort，失败不影响已完成的写入）。
@@ -1540,20 +1546,29 @@ impl Tool for WriteFragmentTextTool {
         // 让创作者第一时间看见设定（如职业/种族），防正文与档案冲突
         let briefs = super::mentioned_entity_briefs(&paths, &text, 8);
         if !briefs.is_empty() {
-            msg.push_str(&format!("\n出场实体（正文匹配，档案要点）：\n{}", {
-                let lines: Vec<String> = briefs.iter().map(|b| format!("  - {b}")).collect();
-                lines.join("\n")
-            }));
+            msg.push_str(&format!(
+                "\n出场实体（正文匹配，档案要点）：\n{}",
+                {
+                    let lines: Vec<String> = briefs.iter().map(|b| format!("  - {b}")).collect();
+                    lines.join("\n")
+                }
+            ));
         }
         // 快照回执区分"已留存/未达留版条件"（节流如实说明）
-        if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored_snapshot) {
+        if let Some(note) =
+            crate::history::fresh_snapshot_note(&paths, &fragment_id, stored_snapshot)
+        {
             msg.push_str(&note);
         }
         // 顺手附带的场景元数据：同一次调用落盘，省一次 update_scene 往返
         let story_time = match &scene_time_raw {
             Some(raw) => match super::structure::parse_story_time(raw) {
                 Ok(def) => def,
-                Err(e) => return Err(format!("scene_time 解析失败: {e}（正文已写入，仅元数据未落）")),
+                Err(e) => {
+                    return Err(format!(
+                        "scene_time 解析失败: {e}（正文已写入，仅元数据未落）"
+                    ))
+                }
             },
             None => None,
         };
@@ -1787,7 +1802,8 @@ impl Tool for EditFragmentTextTool {
                             .to_string();
                         // 填反检测：old_text 找不到而 new_text 能在正文中精确找到，
                         // 十有八九是两个参数互换了（反向替换的前兆）
-                        if !new_text.is_empty() && !find_all_occurrences(&frag.text, &new_text).is_empty()
+                        if !new_text.is_empty()
+                            && !find_all_occurrences(&frag.text, &new_text).is_empty()
                         {
                             msg.push_str(&format!(
                                 "\n⚠️ 疑似 old_text 与 new_text 填反：new_text「{new_text}」\
@@ -1839,7 +1855,7 @@ impl Tool for EditFragmentTextTool {
             &new_body,
             crate::stats::WriteSource::Ai,
         )
-            .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
         let mut msg = format!(
             "片段 {fragment_id} 已修改（原 {original_len} 字 → 新 {new_len} 字，替换 {replace_count} 处）"
@@ -2227,12 +2243,7 @@ impl Tool for ReadSceneFullTextTool {
             需要 POV、章节脉络、出场角色等元数据时另调 get_scene_context。\
             避免逐片段调 read_fragment_text 的多次往返。"
                 .into(),
-            parameters: object_schema(vec![(
-                "scene_id",
-                "string",
-                "场景 ID（如 sc_01_01）",
-                true,
-            )]),
+            parameters: object_schema(vec![("scene_id", "string", "场景 ID（如 sc_01_01）", true)]),
         }
     }
 
@@ -2265,11 +2276,9 @@ impl Tool for ReadSceneFullTextTool {
             let anchors: Vec<String> = frag
                 .anchors
                 .iter()
-                .map(|a| {
-                    match parse_output.ir.semantic.get(&a.entity) {
-                        Some(node) => format!("{}({})", a.entity.as_str(), node.display_name()),
-                        None => a.entity.as_str().to_string(),
-                    }
+                .map(|a| match parse_output.ir.semantic.get(&a.entity) {
+                    Some(node) => format!("{}({})", a.entity.as_str(), node.display_name()),
+                    None => a.entity.as_str().to_string(),
                 })
                 .collect();
             let anchor_part = if anchors.is_empty() {
@@ -2362,10 +2371,13 @@ impl Tool for AppendFragmentTextTool {
         }
         let briefs = super::mentioned_entity_briefs(&paths, &text, 8);
         if !briefs.is_empty() {
-            msg.push_str(&format!("\n出场实体（正文匹配，档案要点）：\n{}", {
-                let lines: Vec<String> = briefs.iter().map(|b| format!("  - {b}")).collect();
-                lines.join("\n")
-            }));
+            msg.push_str(&format!(
+                "\n出场实体（正文匹配，档案要点）：\n{}",
+                {
+                    let lines: Vec<String> = briefs.iter().map(|b| format!("  - {b}")).collect();
+                    lines.join("\n")
+                }
+            ));
         }
         // 追加改变了正文 → 对全文重跑理解锚定（幂等，带时限：慢则转后台，
         // 回执先行返回，防 MCP 客户端超时误判失败导致重复追加）
@@ -2446,15 +2458,18 @@ impl Tool for ListFragmentVersionsTool {
         let fragment_id = get_str(arguments, "fragment_id")?;
         let paths = self.ctx.paths();
 
-        let versions = crate::history::list_versions(&paths, &fragment_id)
-            .map_err(|e| e.to_string())?;
+        let versions =
+            crate::history::list_versions(&paths, &fragment_id).map_err(|e| e.to_string())?;
         if versions.is_empty() {
             return Ok(format!(
                 "片段 {fragment_id} 没有版本快照（从未被覆盖/改写过，或变化未达留版阈值）"
             ));
         }
 
-        let mut out = format!("片段 {fragment_id} 的版本历史（{} 版，新→旧）：\n", versions.len());
+        let mut out = format!(
+            "片段 {fragment_id} 的版本历史（{} 版，新→旧）：\n",
+            versions.len()
+        );
         for v in &versions {
             let excerpt = crate::history::read_version(&paths, &fragment_id, v.timestamp)
                 .ok()
@@ -2512,12 +2527,13 @@ impl Tool for RestoreFragmentVersionTool {
         let timestamp = arguments
             .get("timestamp")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| "缺少或非法参数: timestamp（版本时间戳，见 list_fragment_versions）".to_string())?;
+            .ok_or_else(|| {
+                "缺少或非法参数: timestamp（版本时间戳，见 list_fragment_versions）".to_string()
+            })?;
 
         let paths = self.ctx.paths();
-        let outcome =
-            crate::history::restore_version(&paths, &fragment_id, timestamp)
-                .map_err(|e| e.to_string())?;
+        let outcome = crate::history::restore_version(&paths, &fragment_id, timestamp)
+            .map_err(|e| e.to_string())?;
         let words = crate::workflow::count_words(&outcome.body);
 
         let mut msg = format!(
@@ -2583,9 +2599,7 @@ impl Tool for DeleteFragmentTool {
         let fragment_id = get_str(arguments, "fragment_id")?;
         let paths = self.ctx.paths();
         crate::mutations::delete_fragment(&paths, &fragment_id).map_err(|e| e.to_string())?;
-        let mut msg = format!(
-            "片段 {fragment_id} 已删除（已从所属场景的 fragments 列表移除）"
-        );
+        let mut msg = format!("片段 {fragment_id} 已删除（已从所属场景的 fragments 列表移除）");
         // 删除前强制留底——内容仍在版本历史中可找回
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, true) {
             msg.push_str(&note);
@@ -2704,7 +2718,9 @@ impl Tool for RewriteFragmentTool {
         }
 
         // 剥思考链：部分端点把 reasoning 内联混入 content，防止英文推理写进正文
-        let new_text = crate::llm_json::strip_think(&response.text).trim().to_string();
+        let new_text = crate::llm_json::strip_think(&response.text)
+            .trim()
+            .to_string();
         if new_text.is_empty() {
             return Err("LLM 返回空内容，改写失败".to_string());
         }
@@ -2718,11 +2734,10 @@ impl Tool for RewriteFragmentTool {
             &new_text,
             crate::stats::WriteSource::Ai,
         )
-            .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
-        let mut msg = format!(
-            "片段 {fragment_id} 已改写（原 {original_len} 字 → 新 {new_len} 字）"
-        );
+        let mut msg =
+            format!("片段 {fragment_id} 已改写（原 {original_len} 字 → 新 {new_len} 字）");
         // 改写前的原文已留版本快照——把"可反悔"说到明面上，鼓励大胆尝试
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, stored) {
             msg.push_str(&note);
@@ -2838,7 +2853,7 @@ impl Tool for SplitFragmentTool {
             &before,
             crate::stats::WriteSource::Ai,
         )
-            .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
         // 创建新片段（含后半内容）—— create_fragment 会 push 到末尾
         let new_id = crate::mutations::create_fragment(&paths, scene_id_str, &after)
@@ -3115,21 +3130,33 @@ pub fn knowledge_matrix(
 
     // 尚无线索文件（新建项目）= 空矩阵
     let Ok(content) = std::fs::read_to_string(paths.threads_toml()) else {
-        return Ok(KnowledgeMatrixDto { threads: Vec::new(), observers: Vec::new(), cells: Vec::new() });
+        return Ok(KnowledgeMatrixDto {
+            threads: Vec::new(),
+            observers: Vec::new(),
+            cells: Vec::new(),
+        });
     };
     let file = story_project_format::ThreadsFile::from_toml_str(&content)
         .map_err(|e| format!("解析 threads.toml 失败: {e}"))?;
     if file.threads.is_empty() {
-        return Ok(KnowledgeMatrixDto { threads: Vec::new(), observers: Vec::new(), cells: Vec::new() });
+        return Ok(KnowledgeMatrixDto {
+            threads: Vec::new(),
+            observers: Vec::new(),
+            cells: Vec::new(),
+        });
     }
 
     // 阅读序（structure.toml：book.chapters → chapter.scenes），供时间线排序
     let structure = crate::mutations::load_structure(paths).ok();
-    let mut scene_order: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut scene_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut scene_order: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut scene_label: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     if let Some(structure) = &structure {
         for (ch_no, ch_id) in structure.book.chapters.iter().enumerate() {
-            let Some(ch) = structure.chapter.get(ch_id) else { continue };
+            let Some(ch) = structure.chapter.get(ch_id) else {
+                continue;
+            };
             for sc_id in &ch.scenes {
                 let label = structure
                     .scene
@@ -3137,10 +3164,7 @@ pub fn knowledge_matrix(
                     .and_then(|s| s.title.as_deref())
                     .unwrap_or("无标题");
                 scene_order.insert(sc_id.clone(), scene_order.len());
-                scene_label.insert(
-                    sc_id.clone(),
-                    format!("第{}章·{}", ch_no + 1, label),
-                );
+                scene_label.insert(sc_id.clone(), format!("第{}章·{}", ch_no + 1, label));
             }
         }
     }
@@ -3192,7 +3216,10 @@ pub fn knowledge_matrix(
 
     let mut observers: Vec<MatrixObserverDto> = Vec::new();
     if has_reader {
-        observers.push(MatrixObserverDto { label: "读者".into(), kind: "reader".into() });
+        observers.push(MatrixObserverDto {
+            label: "读者".into(),
+            kind: "reader".into(),
+        });
     }
     for cid in &character_ids {
         observers.push(MatrixObserverDto {
@@ -3208,7 +3235,11 @@ pub fn knowledge_matrix(
     }
 
     // 单元格：[观察者行][thread 列]
-    let empty_cell = MatrixCellDto { state: String::new(), scene: None, scene_label: None };
+    let empty_cell = MatrixCellDto {
+        state: String::new(),
+        scene: None,
+        scene_label: None,
+    };
     let mut cells: Vec<Vec<MatrixCellDto>> =
         vec![vec![empty_cell.clone(); file.threads.len()]; observers.len()];
 
@@ -3229,7 +3260,11 @@ pub fn knowledge_matrix(
             let Some(latest) = latest else { continue };
             let row = match &k.observer {
                 ObserverDef::Builtin(s) if s == "reader" => {
-                    if has_reader { Some(0) } else { None }
+                    if has_reader {
+                        Some(0)
+                    } else {
+                        None
+                    }
                 }
                 ObserverDef::Character { character } => character_ids
                     .binary_search(character)
@@ -3251,7 +3286,11 @@ pub fn knowledge_matrix(
         }
     }
 
-    Ok(KnowledgeMatrixDto { threads, observers, cells })
+    Ok(KnowledgeMatrixDto {
+        threads,
+        observers,
+        cells,
+    })
 }
 
 // ============================================================================
@@ -3276,7 +3315,11 @@ mod tests {
         let paths = story_project_format::ProjectPaths::new(tmp.path());
 
         std::fs::write(
-            paths.fragments_dir().parent().unwrap().join("structure.toml"),
+            paths
+                .fragments_dir()
+                .parent()
+                .unwrap()
+                .join("structure.toml"),
             r#"[book]
 id = "b_root"
 title = "测试"
@@ -3344,7 +3387,11 @@ state_timeline = [
         // 读者：阅读序最靠后 sc_03 → suspected
         assert_eq!(matrix.cells[0][0].state, "suspected");
         assert_eq!(matrix.cells[0][0].scene.as_deref(), Some("sc_03"));
-        assert!(matrix.cells[0][0].scene_label.as_deref().unwrap().contains("摊牌"));
+        assert!(matrix.cells[0][0]
+            .scene_label
+            .as_deref()
+            .unwrap()
+            .contains("摊牌"));
         // 角色：补录乱序时仍按阅读序取 sc_02 → known
         assert_eq!(matrix.cells[1][0].state, "known");
         assert_eq!(matrix.cells[1][0].scene.as_deref(), Some("sc_02"));
@@ -3430,7 +3477,12 @@ fragments = []
         assert!(content.contains("第一版正文"), "{content}");
 
         // 回滚本身也留了底（可再恢复回去）
-        assert_eq!(crate::history::list_versions(&paths, "f_0001").unwrap().len(), 2);
+        assert_eq!(
+            crate::history::list_versions(&paths, "f_0001")
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     /// 已删除片段从版本历史恢复时，必须重新挂回 structure.toml 的阅读序。
@@ -3465,7 +3517,10 @@ fragments = []
             .execute(&serde_json::json!({"fragment_id": "f_0002"}))
             .unwrap();
         let structure = std::fs::read_to_string(dir.join("structure.toml")).unwrap();
-        assert!(!structure.contains("f_0002"), "删除后引用应移除: {structure}");
+        assert!(
+            !structure.contains("f_0002"),
+            "删除后引用应移除: {structure}"
+        );
 
         // 恢复：回执说明挂回，structure 重新含引用且顺序正确
         let ts = crate::history::list_versions(&paths, "f_0002").unwrap()[0].timestamp;
@@ -3477,7 +3532,10 @@ fragments = []
         assert!(msg.contains("挂回场景 sc_01_01"), "应说明挂回原场景: {msg}");
 
         let structure = std::fs::read_to_string(dir.join("structure.toml")).unwrap();
-        assert!(structure.contains("f_0002"), "恢复后应重新出现在阅读序: {structure}");
+        assert!(
+            structure.contains("f_0002"),
+            "恢复后应重新出现在阅读序: {structure}"
+        );
         assert!(
             structure.matches("f_0002").count() == 1,
             "只挂回一次不重复: {structure}"
@@ -3541,13 +3599,17 @@ fragments = []
                 ]
             }))
             .unwrap_err();
-        assert!(err.contains("缺少参数: from") || err.contains("不能为空"), "{err}");
+        assert!(
+            err.contains("缺少参数: from") || err.contains("不能为空"),
+            "{err}"
+        );
         let after = std::fs::read_to_string(tmp.path().join("relations.toml")).unwrap();
         assert_eq!(after, before, "失败批量不应改动落盘内容");
     }
 
     #[test]
-    fn add_relation_symmetric_creates_paired_edges() {        let tmp = setup_test_project();
+    fn add_relation_symmetric_creates_paired_edges() {
+        let tmp = setup_test_project();
         write_structure_with_scene(tmp.path());
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
@@ -3608,7 +3670,10 @@ fragments = []
             .unwrap();
         assert!(msg.contains("终点已清除"), "{msg}");
         let content = std::fs::read_to_string(dir.join("relations.toml")).unwrap();
-        assert!(!content.contains("scene"), "清除后不应再有场景锚: {content}");
+        assert!(
+            !content.contains("scene"),
+            "清除后不应再有场景锚: {content}"
+        );
 
         // 两个边界都不提供 → 报错
         assert!(tool
@@ -3922,7 +3987,11 @@ fragments = []
         let structure = story_project_format::StructureFile::from_toml_str(&content).unwrap();
         assert_eq!(
             structure.scene["sc_01_01"].fragments,
-            vec!["f_0001".to_string(), "f_0003".to_string(), "f_0002".to_string()],
+            vec![
+                "f_0001".to_string(),
+                "f_0003".to_string(),
+                "f_0002".to_string()
+            ],
             "后半应插在原片段之后、f_0002 之前，保持叙事顺序"
         );
     }
@@ -4083,12 +4152,14 @@ fragments = []
             .unwrap();
         assert!(result.contains("1 → 3"), "{result}");
 
-        let structure_content =
-            std::fs::read_to_string(tmp.path().join("structure.toml")).unwrap();
+        let structure_content = std::fs::read_to_string(tmp.path().join("structure.toml")).unwrap();
         let pos2 = structure_content.find("f_0002").unwrap();
         let pos3 = structure_content.find("f_0003").unwrap();
         let pos1 = structure_content.rfind("f_0001").unwrap();
-        assert!(pos2 < pos3 && pos3 < pos1, "顺序应为 f_0002, f_0003, f_0001");
+        assert!(
+            pos2 < pos3 && pos3 < pos1,
+            "顺序应为 f_0002, f_0003, f_0001"
+        );
 
         // 越界报错
         let tool = MoveFragmentTool::new(ToolContext::new(tmp.path().to_path_buf()));
@@ -4663,7 +4734,8 @@ fragments = []
     #[test]
     fn edit_lcs_rejects_scattered_hits() {
         // 引文由正文里相隔很远的字拼成（覆盖率高但跨度大）：应拒绝整段替换
-        let (_tmp, ctx, fid) = setup_fragment("甲乙丙丁戊。己庚辛壬癸。子丑寅卯辰。巳午未申酉。戌亥。");
+        let (_tmp, ctx, fid) =
+            setup_fragment("甲乙丙丁戊。己庚辛壬癸。子丑寅卯辰。巳午未申酉。戌亥。");
 
         let tool = EditFragmentTextTool::new(ctx);
         let result = tool.execute(&serde_json::json!({
@@ -4734,11 +4806,7 @@ occupation = "法阵课讲师"
 race = "星辰精灵"
 "#;
         std::fs::create_dir_all(dir.join("entities/characters")).unwrap();
-        std::fs::write(
-            dir.join("entities/characters/c_0001.toml"),
-            entity_toml,
-        )
-        .unwrap();
+        std::fs::write(dir.join("entities/characters/c_0001.toml"), entity_toml).unwrap();
 
         let tool = WriteFragmentTextTool::new(ctx);
         let res = tool
@@ -4747,10 +4815,7 @@ race = "星辰精灵"
                 "text": "琳恩站上讲台，法阵在指尖亮起。"
             }))
             .unwrap();
-        assert!(
-            res.contains("出场实体"),
-            "回执应附出场实体: {res}"
-        );
+        assert!(res.contains("出场实体"), "回执应附出场实体: {res}");
         assert!(
             res.contains("琳恩（c_0001，法阵课讲师，星辰精灵）"),
             "档案要点格式: {res}"
@@ -4797,7 +4862,10 @@ race = "星辰精灵"
         let half1 = std::fs::read_to_string(dir.join("fragments/f_0001.md")).unwrap();
         let half2 = std::fs::read_to_string(dir.join("fragments/f_0002.md")).unwrap();
         assert!(half1.contains(&line), "前半应带完整引号对: {half1}");
-        assert!(!half2.contains(&format!("{rq}然后")), "切点应已后移过闭合引号: {half2}");
+        assert!(
+            !half2.contains(&format!("{rq}然后")),
+            "切点应已后移过闭合引号: {half2}"
+        );
     }
 
     #[test]
@@ -4897,8 +4965,7 @@ race = "星辰精灵"
         assert!(out.contains("a_0001 已自动置为 superseded"), "{out}");
 
         // 落盘验证：3 条断言，a_0001 已 superseded
-        let content =
-            std::fs::read_to_string(dir.join("knowledge/assertions.toml")).unwrap();
+        let content = std::fs::read_to_string(dir.join("knowledge/assertions.toml")).unwrap();
         assert_eq!(content.matches("id = ").count(), 3, "{content}");
         assert!(content.contains("superseded"), "{content}");
     }
@@ -4941,7 +5008,10 @@ race = "星辰精灵"
         assert!(out.contains("已删除"), "{out}");
         let content = std::fs::read_to_string(dir.join("threads.toml")).unwrap();
         assert!(!content.contains("sc_01_01"), "该场景记录应移除: {content}");
-        assert!(content.contains("sc_01_02"), "其他时间线记录保留: {content}");
+        assert!(
+            content.contains("sc_01_02"),
+            "其他时间线记录保留: {content}"
+        );
 
         // 删整条观察者记录
         let out = tool
@@ -4951,7 +5021,10 @@ race = "星辰精灵"
             .unwrap();
         assert!(out.contains("整条认知记录"), "{out}");
         let content = std::fs::read_to_string(dir.join("threads.toml")).unwrap();
-        assert!(!content.contains("reader"), "reader 记录应整体移除: {content}");
+        assert!(
+            !content.contains("reader"),
+            "reader 记录应整体移除: {content}"
+        );
         assert!(content.contains("c_0001"), "角色认知不受影响: {content}");
 
         // 再删 → 未找到，无副作用
@@ -4977,8 +5050,16 @@ race = "星辰精灵"
         let sc_id = crate::mutations::create_scene(&paths, &ch_id, "开场", None).unwrap();
         crate::mutations::create_thread(&paths, "旧案之谜", "测试线索一", "main", None, None, None)
             .unwrap();
-        crate::mutations::create_thread(&paths, "空匣去向", "测试线索二", "minor", None, None, None)
-            .unwrap();
+        crate::mutations::create_thread(
+            &paths,
+            "空匣去向",
+            "测试线索二",
+            "minor",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         std::fs::write(
             paths.chapters_toml(),
             format!(
@@ -5052,8 +5133,16 @@ race = "星辰精灵"
         let fid = crate::mutations::create_fragment(&paths, &sc_id, "夜雨敲窗。").unwrap();
         crate::mutations::create_thread(&paths, "旧案之谜", "测试线索一", "main", None, None, None)
             .unwrap();
-        crate::mutations::create_thread(&paths, "空匣去向", "测试线索二", "minor", None, None, None)
-            .unwrap();
+        crate::mutations::create_thread(
+            &paths,
+            "空匣去向",
+            "测试线索二",
+            "minor",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         std::fs::write(
             paths.chapters_toml(),
             format!(
@@ -5100,5 +5189,4 @@ race = "星辰精灵"
         let err = parse_thread_advance("t_001:bogus").unwrap_err();
         assert!(err.contains("非法"), "{err}");
     }
-
 }

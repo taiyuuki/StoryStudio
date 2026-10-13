@@ -33,13 +33,15 @@ pub use knowledge_file::{AssertionsFile, EvidenceFile, KnowledgeFileError};
 pub use outline_file::{ConflictDef, OutlineFile, OutlineFileError, StoryMeta, VolumeDef};
 pub use paths::ProjectPaths;
 pub use project_toml::{AiConfig, KnowledgeConfig, ProjectConfig};
-pub use relation_file::{RelationDef, RelationFileError, RelationsFile, StoryTimeDef as RelationTimeDef, ValidityDef};
+pub use relation_file::{
+    RelationDef, RelationFileError, RelationsFile, StoryTimeDef as RelationTimeDef, ValidityDef,
+};
 pub use slug::slugify;
 pub use structure_toml::{BookDef, ChapterDef, SceneDef, StructureFile};
 pub use threads_file::{ThreadsFile, ThreadsFileError};
 pub use volumes::{
-    load_chapters_unified, remap_due_volumes, save_outline_volumes, unify_volumes,
-    unified_groups, VolumeRemap, VolumeSyncError,
+    load_chapters_unified, remap_due_volumes, save_outline_volumes, unified_groups, unify_volumes,
+    VolumeRemap, VolumeSyncError,
 };
 pub use worldview_file::{
     ConceptDef, ConceptsFile, SystemDef, SystemsFile, TimelineFile, WorldviewFileError,

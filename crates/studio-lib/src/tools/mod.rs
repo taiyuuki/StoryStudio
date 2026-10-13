@@ -593,7 +593,10 @@ mod tests {
         // object-array 简写渲染为 items: {type: object}，防模型默认传字符串数组
         assert_eq!(schema["properties"]["items"]["type"], "array");
         assert_eq!(schema["properties"]["items"]["items"]["type"], "object");
-        assert_eq!(schema["properties"]["items"]["description"], "批量：对象数组");
+        assert_eq!(
+            schema["properties"]["items"]["description"],
+            "批量：对象数组"
+        );
         // string-array 同理显式声明 items: {type: string}
         assert_eq!(schema["properties"]["ids"]["type"], "array");
         assert_eq!(schema["properties"]["ids"]["items"]["type"], "string");

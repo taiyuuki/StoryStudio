@@ -8,9 +8,7 @@ use story_compiler::{compile, CompileRequest, CompilerConfig, Diagnostics, RuleR
 use story_ir::{LocationIndex, StoryIR};
 use story_knowledge::KnowledgeBase;
 use story_parser::{parse_project, ParseOutput};
-use story_project_format::{
-    AssertionsFile, EvidenceFile, ProjectPaths, ThreadsFile,
-};
+use story_project_format::{AssertionsFile, EvidenceFile, ProjectPaths, ThreadsFile};
 
 use crate::error::StudioError;
 
@@ -199,9 +197,7 @@ fn grade_unused_thread_diagnostics(paths: &ProjectPaths, diagnostics: &mut Diagn
         .unwrap_or(0);
 
     // 摘除 compiler 的 unused_thread，按台账重排
-    diagnostics
-        .0
-        .retain(|d| d.code.as_str() != "unused_thread");
+    diagnostics.0.retain(|d| d.code.as_str() != "unused_thread");
 
     for t in &threads.threads {
         if t.priority != "main" || t.abandoned || t.planted_at.is_some() {
@@ -269,7 +265,11 @@ where
 ///
 /// 长篇写到几十万字时「分身两地、季节脱节、三天变半月」这类矛盾靠人眼
 /// 已经盯不住；可比序数沿用 timeline.rs 的锚点折算（含纪元表）。
-fn check_timeline_conflicts(paths: &ProjectPaths, ir: &story_ir::StoryIR, diagnostics: &mut Diagnostics) {
+fn check_timeline_conflicts(
+    paths: &ProjectPaths,
+    ir: &story_ir::StoryIR,
+    diagnostics: &mut Diagnostics,
+) {
     use story_compiler::{Diagnostic, DiagnosticSource, Severity, SourceLocation};
 
     let eras = crate::timeline::load_eras(paths);
@@ -327,7 +327,11 @@ fn check_timeline_conflicts(paths: &ProjectPaths, ir: &story_ir::StoryIR, diagno
     };
 
     let is_flashback = |s: &story_ir::SceneNode| -> bool {
-        let hay = format!("{}{}", s.title.as_deref().unwrap_or(""), s.function.as_deref().unwrap_or(""));
+        let hay = format!(
+            "{}{}",
+            s.title.as_deref().unwrap_or(""),
+            s.function.as_deref().unwrap_or("")
+        );
         ["回忆", "闪回", "倒叙", "往事", "当年", "多年前", "多年后"]
             .iter()
             .any(|k| hay.contains(k))
@@ -344,7 +348,9 @@ fn check_timeline_conflicts(paths: &ProjectPaths, ir: &story_ir::StoryIR, diagno
     // —— 1. 阅读序时序回退 ——
     let mut prev: Option<(&story_ir::SceneNode, i64)> = None;
     for scene in &scenes {
-        let Some(ord) = ordinal_of(scene) else { continue };
+        let Some(ord) = ordinal_of(scene) else {
+            continue;
+        };
         if let Some((p, p_ord)) = prev {
             if ord < p_ord && !is_flashback(scene) && !is_flashback(p) {
                 report(
@@ -392,11 +398,13 @@ fn check_timeline_conflicts(paths: &ProjectPaths, ir: &story_ir::StoryIR, diagno
     }
 
     // —— 3. 间隔标注 vs 时间锚差值 ——
-    let day_ordinal = |ord: i64| -> i64 { (ord % 10_000) / 100 * 30 + ord % 100 + (ord / 10_000) * 360 };
+    let day_ordinal =
+        |ord: i64| -> i64 { (ord % 10_000) / 100 * 30 + ord % 100 + (ord / 10_000) * 360 };
     for window in scenes.windows(2) {
         let (a, b) = (window[0], window[1]);
         // gap 挂在靠后场景上（“与阅读序前一场景的间隔”）
-        let (Some(gap), Some(a_ord), Some(b_ord)) = (&b.story_time_gap, ordinal_of(a), ordinal_of(b))
+        let (Some(gap), Some(a_ord), Some(b_ord)) =
+            (&b.story_time_gap, ordinal_of(a), ordinal_of(b))
         else {
             continue;
         };
@@ -405,8 +413,11 @@ fn check_timeline_conflicts(paths: &ProjectPaths, ir: &story_ir::StoryIR, diagno
         };
         let actual_days = (day_ordinal(b_ord) - day_ordinal(a_ord)).abs();
         // 脱节判据：量级差 3 倍以上且较大一方超过一个月（容忍月大月小的粗粒度误差）
-        let (larger, smaller) =
-            if actual_days >= gap_days { (actual_days, gap_days) } else { (gap_days, actual_days) };
+        let (larger, smaller) = if actual_days >= gap_days {
+            (actual_days, gap_days)
+        } else {
+            (gap_days, actual_days)
+        };
         if larger > 30 && larger > smaller * 3 {
             report(
                 diagnostics,
@@ -548,7 +559,11 @@ pov = "c_missing"
         );
     }
 
-    fn completed_chapter(chapter_id: Option<String>, title: &str, volume_order: u32) -> ChapterOutlineDef {
+    fn completed_chapter(
+        chapter_id: Option<String>,
+        title: &str,
+        volume_order: u32,
+    ) -> ChapterOutlineDef {
         ChapterOutlineDef {
             chapter_id,
             title: title.into(),
@@ -614,7 +629,11 @@ pov = "c_missing"
             .find(|d| d.message.contains("到期未埋"))
             .expect("到期线索应有诊断");
         assert_eq!(overdue.severity.as_str(), "warning");
-        assert!(overdue.message.contains("本卷该埋未埋"), "{}", overdue.message);
+        assert!(
+            overdue.message.contains("本卷该埋未埋"),
+            "{}",
+            overdue.message
+        );
 
         let longline = unused
             .iter()
@@ -665,9 +684,7 @@ pov = "c_missing"
             .collect();
         // 卷还在写作中（无完稿章）：未到期，完全静默——写作期不制造告警疲劳
         assert!(
-            unused
-                .iter()
-                .all(|d| !d.message.contains("写作中卷的线索")),
+            unused.iter().all(|d| !d.message.contains("写作中卷的线索")),
             "写作中的卷不应触发 unused_thread: {:?}",
             unused.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
@@ -716,9 +733,7 @@ pov = "c_missing"
         // 更大卷里只有规划章：作者可能回到前卷补章，前卷不算封卷
         create_thread(&paths, "排期线索", "", "main", None, Some(1), None).unwrap();
         let mut chapters = load_chapters_file(&paths).unwrap();
-        chapters
-            .chapters
-            .push(completed_chapter(None, "第一章", 1));
+        chapters.chapters.push(completed_chapter(None, "第一章", 1));
         chapters.chapters.push(ChapterOutlineDef {
             chapter_id: None,
             title: "第二卷规划章".into(),
@@ -796,8 +811,15 @@ scenes = ["sc_01", "sc_02"]
             "title = \"抵达\"\nstory_time = { year = 1023 }",
         );
         let result = compile_project(tmp.path()).unwrap();
-        assert!(has_code(&result, "scene_time_regression"), "{:?}",
-            result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            has_code(&result, "scene_time_regression"),
+            "{:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
 
         // 标记为闪回的场景豁免
         timeline_fixture(
@@ -830,8 +852,15 @@ scenes = ["sc_01", "sc_02"]
             "title = \"终局\"",
         );
         let result = compile_project(tmp.path()).unwrap();
-        assert!(has_code(&result, "time_anchor_mismatch"), "{:?}",
-            result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            has_code(&result, "time_anchor_mismatch"),
+            "{:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
 
         // 一致（同年不同表述）不报
         timeline_fixture(
@@ -855,8 +884,15 @@ scenes = ["sc_01", "sc_02"]
             "title = \"重聚\"\nstory_time = { year = 1025, month = 1, day = 1, gap = \"3天\" }",
         );
         let result = compile_project(tmp.path()).unwrap();
-        assert!(has_code(&result, "time_gap_mismatch"), "{:?}",
-            result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            has_code(&result, "time_gap_mismatch"),
+            "{:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
 
         // 间隔与时间线一致（3 天）不报
         timeline_fixture(
@@ -880,7 +916,10 @@ scenes = ["sc_01", "sc_02"]
             "title = \"重聚\"\nstory_time = { year = 1025, month = 1, day = 1, gap = \"3天\" }",
         );
         let result = compile_project(tmp.path()).unwrap();
-        assert!(!has_code(&result, "time_gap_mismatch"), "timeline_checks 关闭后应静默");
+        assert!(
+            !has_code(&result, "time_gap_mismatch"),
+            "timeline_checks 关闭后应静默"
+        );
     }
 
     #[test]
@@ -891,7 +930,11 @@ scenes = ["sc_01", "sc_02"]
         assert_eq!(parse_gap_days("5个月"), Some(150));
         assert_eq!(parse_gap_days("1年"), Some(360));
         assert_eq!(parse_gap_days("数月"), None);
-        assert_eq!(parse_gap_days("三天"), None, "中文数字暂不支持，按模糊间隔跳过");
+        assert_eq!(
+            parse_gap_days("三天"),
+            None,
+            "中文数字暂不支持，按模糊间隔跳过"
+        );
     }
 }
 

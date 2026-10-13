@@ -307,8 +307,9 @@ due_volume = 9
         .unwrap();
 
         // order 排序落盘为数组序
-        let outline = OutlineFile::from_toml_str(&std::fs::read_to_string(paths.outline_toml()).unwrap())
-            .unwrap();
+        let outline =
+            OutlineFile::from_toml_str(&std::fs::read_to_string(paths.outline_toml()).unwrap())
+                .unwrap();
         let groups = unified_groups(&outline);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].name, "第一卷 灯下");

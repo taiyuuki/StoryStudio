@@ -45,12 +45,20 @@ pub fn search_text(dir: &Path, query: &str, max_hits: usize) -> Result<Vec<Searc
     let mut hits: Vec<SearchHit> = Vec::new();
 
     'outer: for ch_id in &structure.book.chapters {
-        let Some(ch) = structure.chapter.get(ch_id) else { continue };
+        let Some(ch) = structure.chapter.get(ch_id) else {
+            continue;
+        };
         for sc_id in &ch.scenes {
-            let Some(sc) = structure.scene.get(sc_id) else { continue };
+            let Some(sc) = structure.scene.get(sc_id) else {
+                continue;
+            };
             for fid in &sc.fragments {
-                let Some(path) = paths.file_for_id(fid) else { continue };
-                let Ok(content) = std::fs::read_to_string(&path) else { continue };
+                let Some(path) = paths.file_for_id(fid) else {
+                    continue;
+                };
+                let Ok(content) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
                 let body = crate::fragment::fragment_body(&content);
 
                 // 先取首个命中位置构造摘录，再统计次数（两趟都只扫本片段）
@@ -100,7 +108,8 @@ mod tests {
         let sc1 = crate::mutations::create_scene(&paths, &ch, "渡口", None).unwrap();
         let sc2 = crate::mutations::create_scene(&paths, &ch, "客栈", None).unwrap();
         crate::mutations::create_fragment(&paths, &sc2, "他推开客栈的门。").unwrap();
-        let f1 = crate::mutations::create_fragment(&paths, &sc1, "槐安渡的老船工等在渡口。").unwrap();
+        let f1 =
+            crate::mutations::create_fragment(&paths, &sc1, "槐安渡的老船工等在渡口。").unwrap();
 
         let hits = search_text(dir, "渡口", 50).unwrap();
         assert_eq!(hits.len(), 1, "{hits:?}");

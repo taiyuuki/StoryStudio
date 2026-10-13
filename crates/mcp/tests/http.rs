@@ -243,8 +243,11 @@ fn http_stale_or_unknown_session_auto_recovers() {
         }),
     );
     let result = &called["result"];
-    assert_eq!(result["isError"], serde_json::json!(false), "未知 session 调工具应自动恢复并成功");
+    assert_eq!(
+        result["isError"],
+        serde_json::json!(false),
+        "未知 session 调工具应自动恢复并成功"
+    );
     assert!(!result["content"][0]["text"].as_str().unwrap().is_empty());
     handle.stop();
 }
-

@@ -692,7 +692,6 @@ impl Tool for SearchEntitiesTool {
 // get_entity_detail
 // ============================================================================
 
-
 /// 断言 object 的简洁展示（布尔/整数直出，字符串去引号）
 fn object_display(v: &toml::Value) -> String {
     match v {
@@ -829,33 +828,37 @@ impl Tool for GetEntityDetailTool {
 
         // —— 当前事实投影：该实体的 active 断言（档案是建档快照，动态状态走断言，
         //      此分节把两者合并成完整视图，免得再查 query_assertions）——
-        let active: Vec<String> = std::fs::read_to_string(
-            self.ctx.paths().knowledge_dir().join("assertions.toml"),
-        )
-        .ok()
-        .and_then(|c| story_project_format::AssertionsFile::from_toml_str(&c).ok())
-        .map(|f| {
-            f.assertions
-                .iter()
-                .filter(|a| a.subject == entity_id && (a.status.is_empty() || a.status == "active"))
-                .map(|a| {
-                    format!(
-                        "  - {}.{} = {}{}",
-                        a.id,
-                        a.predicate,
-                        object_display(&a.object),
-                        if a.evidence.is_empty() {
-                            String::new()
-                        } else {
-                            format!("（证据 {}）", a.evidence.join(","))
-                        }
-                    )
+        let active: Vec<String> =
+            std::fs::read_to_string(self.ctx.paths().knowledge_dir().join("assertions.toml"))
+                .ok()
+                .and_then(|c| story_project_format::AssertionsFile::from_toml_str(&c).ok())
+                .map(|f| {
+                    f.assertions
+                        .iter()
+                        .filter(|a| {
+                            a.subject == entity_id && (a.status.is_empty() || a.status == "active")
+                        })
+                        .map(|a| {
+                            format!(
+                                "  - {}.{} = {}{}",
+                                a.id,
+                                a.predicate,
+                                object_display(&a.object),
+                                if a.evidence.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("（证据 {}）", a.evidence.join(","))
+                                }
+                            )
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+                .unwrap_or_default();
         if !active.is_empty() {
-            out.push_str(&format!("\n\n  当前事实（active 断言投影，{} 条）:\n", active.len()));
+            out.push_str(&format!(
+                "\n\n  当前事实（active 断言投影，{} 条）:\n",
+                active.len()
+            ));
             out.push_str(&active.join("\n"));
             out.push_str("\n  档案若滞后于这些动态状态，profile_check 会提示更新。");
         }
@@ -1070,16 +1073,10 @@ impl Tool for ProfileCheckTool {
                         .assertions
                         .iter()
                         .filter(|a| {
-                            a.subject == entity_id
-                                && (a.status.is_empty() || a.status == "active")
+                            a.subject == entity_id && (a.status.is_empty() || a.status == "active")
                         })
                         .map(|a| {
-                            format!(
-                                "- {}.{} = {}",
-                                a.id,
-                                a.predicate,
-                                object_display(&a.object)
-                            )
+                            format!("- {}.{} = {}", a.id, a.predicate, object_display(&a.object))
                         })
                         .collect();
                     lines.join("\n")
@@ -2135,7 +2132,8 @@ kind = "weapon"
         let err = parse_profile_check_response("这不是 JSON").unwrap_err();
         assert!(err.contains("解析失败"), "{err}");
         // 思考链污染也能剥掉后正常解析
-        let think = "<think>let me check the profile</think>\n{\"conflicts\":[],\"summary\":\"OK\"}";
+        let think =
+            "<think>let me check the profile</think>\n{\"conflicts\":[],\"summary\":\"OK\"}";
         assert!(parse_profile_check_response(think).is_ok());
     }
 

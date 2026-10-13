@@ -9,12 +9,14 @@ use std::path::Path;
 
 use story_ai_runtime::{Tool, ToolDef};
 use story_project_format::worldview_file::{
-    ConceptDef, ConceptsFile, SystemDef, SystemsFile, TimelineFile,
-    WorldviewSectionFile,
+    ConceptDef, ConceptsFile, SystemDef, SystemsFile, TimelineFile, WorldviewSectionFile,
 };
 use story_project_format::EntityFile;
 
-use super::{check_index, get_index, get_json_array_opt, get_str, get_str_opt, normalize_object_items, object_schema, ToolContext};
+use super::{
+    check_index, get_index, get_json_array_opt, get_str, get_str_opt, normalize_object_items,
+    object_schema, ToolContext,
+};
 
 // ============================================================================
 // get_worldview
@@ -92,9 +94,11 @@ impl Tool for GetWorldviewTool {
             if selected.is_some() {
                 Ok("所选分节尚未创建或为空。".to_string())
             } else {
-                Ok("世界观尚未创建或为空。使用 set_worldview_item 添加概念/体系，\
+                Ok(
+                    "世界观尚未创建或为空。使用 set_worldview_item 添加概念/体系，\
                 create_location / create_organization 添加地点与势力。"
-                    .to_string())
+                        .to_string(),
+                )
             }
         } else {
             Ok(result.trim_end().to_string())
@@ -405,7 +409,12 @@ impl Tool for UpdateWorldviewItemTool {
                 .into(),
             parameters: object_schema(vec![
                 ("section", "string", "条目类型: concept / system", true),
-                ("index", "integer", "条目序号（1-based，对应 get_worldview 显示的编号）", true),
+                (
+                    "index",
+                    "integer",
+                    "条目序号（1-based，对应 get_worldview 显示的编号）",
+                    true,
+                ),
                 ("name", "string", "名称（全部类型通用）", false),
                 ("category", "string", "概念分类（concept）", false),
                 ("summary", "string", "摘要（全部类型通用）", false),
@@ -517,7 +526,12 @@ impl Tool for DeleteWorldviewItemTool {
                 .into(),
             parameters: object_schema(vec![
                 ("section", "string", "条目类型: concept / system", true),
-                ("index", "integer", "条目序号（1-based，对应 get_worldview 显示的编号）", true),
+                (
+                    "index",
+                    "integer",
+                    "条目序号（1-based，对应 get_worldview 显示的编号）",
+                    true,
+                ),
             ]),
         }
     }
@@ -547,12 +561,10 @@ impl Tool for DeleteWorldviewItemTool {
                 save_section(&path, &file)?;
                 (removed.name, remaining)
             }
-            "place" | "faction" => {
-                return Err(
-                    "地理与势力已统一为实体：请用 delete_entity 删除（可先用 get_worldview 查看 ID）"
-                        .into(),
-                )
-            }
+            "place" | "faction" => return Err(
+                "地理与势力已统一为实体：请用 delete_entity 删除（可先用 get_worldview 查看 ID）"
+                    .into(),
+            ),
             other => {
                 return Err(format!(
                     "未知 section 类型: {other}（支持: concept, system）"
@@ -720,12 +732,10 @@ mod tests {
             .unwrap();
         assert!(out.contains("section=system"), "{out}");
 
-        let concepts =
-            std::fs::read_to_string(dir.join("worldview/concepts.toml")).unwrap();
+        let concepts = std::fs::read_to_string(dir.join("worldview/concepts.toml")).unwrap();
         assert!(concepts.contains("红档"), "{concepts}");
         assert!(concepts.contains("灰域"), "{concepts}");
-        let systems =
-            std::fs::read_to_string(dir.join("worldview/systems.toml")).unwrap();
+        let systems = std::fs::read_to_string(dir.join("worldview/systems.toml")).unwrap();
         assert!(systems.contains("灵潮"), "{systems}");
         assert!(systems.contains("械力"), "{systems}");
     }
@@ -748,8 +758,7 @@ mod tests {
             .unwrap();
         assert!(out.contains("基础概念 +2"), "{out}");
 
-        let concepts =
-            std::fs::read_to_string(dir.join("worldview/concepts.toml")).unwrap();
+        let concepts = std::fs::read_to_string(dir.join("worldview/concepts.toml")).unwrap();
         assert!(concepts.contains("红档"), "{concepts}");
         assert!(concepts.contains("灰域"), "{concepts}");
     }
@@ -788,12 +797,15 @@ mod tests {
         assert!(content.contains("\"灵历\""), "{content}");
 
         // 逗号分隔字符串兼容
-        tool.execute(&serde_json::json!({"eras": "上古,神纪"})).unwrap();
+        tool.execute(&serde_json::json!({"eras": "上古,神纪"}))
+            .unwrap();
         let content = std::fs::read_to_string(dir.join("worldview/timeline.toml")).unwrap();
         assert!(content.contains("\"神纪\""), "{content}");
 
         // 重复纪元拒绝；空数组拒绝
-        assert!(tool.execute(&serde_json::json!({"eras": ["灵历", "灵历"]})).is_err());
+        assert!(tool
+            .execute(&serde_json::json!({"eras": ["灵历", "灵历"]}))
+            .is_err());
         assert!(tool.execute(&serde_json::json!({"eras": []})).is_err());
     }
 
@@ -831,7 +843,6 @@ mod tests {
             .unwrap();
         assert!(out.contains("纪元历法"), "{out}");
     }
-
 
     /// section 过滤：单选 / 逗号多选 / 单数别名 / 未知值报错 / 省略全量。
     #[test]
@@ -881,7 +892,9 @@ mod tests {
         assert!(err.contains("未知 section"), "{err}");
 
         // "all" 等价省略
-        let out = tool.execute(&serde_json::json!({"section": "all"})).unwrap();
+        let out = tool
+            .execute(&serde_json::json!({"section": "all"}))
+            .unwrap();
         assert!(out.contains("## 地理"), "{out}");
     }
 }

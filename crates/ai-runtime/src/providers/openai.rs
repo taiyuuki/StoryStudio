@@ -561,7 +561,11 @@ impl ProviderAdapter for OpenAiAdapter {
                 if is_start {
                     events.push(StreamEvent::ToolUseStart {
                         index,
-                        id: tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+                        id: tc
+                            .get("id")
+                            .and_then(|i| i.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                         name: func
                             .and_then(|f| f.get("name"))
                             .and_then(|n| n.as_str())
@@ -1251,7 +1255,8 @@ mod tests {
             StreamEvent::ToolUseStart { signature, .. } => {
                 assert_eq!(signature.as_deref(), Some("TopLevel"));
             }
-            other => panic!("应为 ToolUseStart，实际: {other:?}"),        }
+            other => panic!("应为 ToolUseStart，实际: {other:?}"),
+        }
     }
 
     #[test]
@@ -1349,9 +1354,12 @@ mod tests {
         let adapter = stream_adapter();
         let line = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"search_entities","arguments":{"query":"苏格"}}}]}}]}"#;
         let events = adapter.parse_stream_chunks(line);
-        assert!(events.iter().any(|e| matches!(e,
+        assert!(
+            events.iter().any(|e| matches!(e,
             StreamEvent::ToolUseDelta { partial_json, .. }
-                if partial_json.contains("苏格"))), "对象形态参数应转成 Delta: {events:?}");
+                if partial_json.contains("苏格"))),
+            "对象形态参数应转成 Delta: {events:?}"
+        );
     }
 
     #[test]

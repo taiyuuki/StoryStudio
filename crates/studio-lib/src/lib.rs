@@ -10,46 +10,45 @@
 
 pub mod ai;
 pub mod ai_check;
-pub mod book_studio;
 pub mod ai_ledger;
+pub mod book_studio;
 pub mod compile;
 pub mod error;
 pub mod export;
 pub mod fragment;
 pub mod git;
-pub mod llm_json;
 pub mod history;
 pub mod journal;
-pub mod stats;
-pub mod timeline;
+pub mod llm_json;
 pub mod mutations;
 pub mod project;
 pub mod prompt_custom;
-pub mod search;
 mod prompts;
+pub mod search;
+pub mod stats;
+pub mod timeline;
 pub mod tools;
 pub mod workflow;
 
 // 常用类型的便捷 re-export
-pub use ai::{
-    complete_fragment_streaming, complete_with_fallback, create_provider,
-    create_dynamic_provider_for_purpose, create_provider_for_purpose,
-    create_provider_for_purpose_with_thinking, create_provider_from_global, extract_assertions,
-    list_models, provider_presets, provider_preset, read_global_ai_config, save_write_result,
-    test_profile, write_fragment, write_fragment_streaming, write_global_ai_config,
-    CompleteResult, DynamicProfileProvider, ExtractResult, GlobalAiConfig, ProfileTestRecord,
-    ProviderPreset, ProviderProfile, WriteResult,
-};
 pub use ai::purpose;
+pub use ai::{
+    complete_fragment_streaming, complete_with_fallback, create_dynamic_provider_for_purpose,
+    create_provider, create_provider_for_purpose, create_provider_for_purpose_with_thinking,
+    create_provider_from_global, extract_assertions, list_models, provider_preset,
+    provider_presets, read_global_ai_config, save_write_result, test_profile, write_fragment,
+    write_fragment_streaming, write_global_ai_config, CompleteResult, DynamicProfileProvider,
+    ExtractResult, GlobalAiConfig, ProfileTestRecord, ProviderPreset, ProviderProfile, WriteResult,
+};
+pub use ai_check::{
+    check_fragment, check_scope, check_text, AiCheckBatchReport, AiCheckItem, AiCheckReport,
+    AiCheckSeverity, CheckScope,
+};
 pub use book_studio::{
     ai_book_concepts, ai_book_outline_batch, ai_book_world, cancel_book_creation,
     create_book_project, save_book_outline_batch, save_book_world, BookConcept,
     BookCreationOptions, ChapterItem, OutlineBatchDraft, VolumeItem, WorldDraft, WorldSaveReport,
     CONCEPT_CANDIDATES, MAX_BATCH_CHAPTERS,
-};
-pub use ai_check::{
-    check_fragment, check_scope, check_text, AiCheckBatchReport, AiCheckItem, AiCheckReport,
-    AiCheckSeverity, CheckScope,
 };
 pub use compile::{compile_project, compile_project_full, CompileResult, CompileStats};
 pub use error::StudioError;
@@ -61,14 +60,14 @@ pub use git::{
 };
 pub use mutations::EntityKind;
 pub use mutations::{repair_project, RepairReport};
-pub use prompt_custom::{PromptEntry, PromptSpec, PROMPT_SPECS};
 pub use project::{
     create_project, get_book_meta, init_project, open_project, peek, peek_projects, project_info,
     save_book_meta, FileCounts, PeekEntry, Project, ProjectInfo, ProjectPeek,
 };
-pub use story_project_format::StoryMeta;
+pub use prompt_custom::{PromptEntry, PromptSpec, PROMPT_SPECS};
 pub use story_ai_runtime::ApiMode;
 pub use story_exporter::ChapterFile;
+pub use story_project_format::StoryMeta;
 pub use tools::{
     agent_chat_global_streaming, agent_chat_streaming, cancel_agent, create_tool_registry,
     drop_session, list_sessions, run_agent, run_agent_global, run_agent_global_streaming,

@@ -31,15 +31,33 @@ pub(crate) fn classify_opening(body: &str) -> &'static str {
         return "对话";
     }
     const TIME_STARTS: &[&str] = &[
-        "清晨", "黄昏", "入夜", "深夜", "午夜", "傍晚", "黎明", "翌日", "次日", "当晚", "是夜",
-        "夜半", "正午", "午后", "月夜", "雨夜", "雪夜", "这一夜", "那一夜", "转眼",
+        "清晨",
+        "黄昏",
+        "入夜",
+        "深夜",
+        "午夜",
+        "傍晚",
+        "黎明",
+        "翌日",
+        "次日",
+        "当晚",
+        "是夜",
+        "夜半",
+        "正午",
+        "午后",
+        "月夜",
+        "雨夜",
+        "雪夜",
+        "这一夜",
+        "那一夜",
+        "转眼",
     ];
     if TIME_STARTS.iter().any(|w| line.starts_with(w)) {
         return "时间景描";
     }
     const SCENE_STARTS: &[char] = &[
-        '雨', '雪', '风', '雾', '霜', '云', '山', '海', '河', '湖', '街', '巷', '檐', '窗',
-        '灯', '炉', '月', '日', '天',
+        '雨', '雪', '风', '雾', '霜', '云', '山', '海', '河', '湖', '街', '巷', '檐', '窗', '灯',
+        '炉', '月', '日', '天',
     ];
     if SCENE_STARTS.contains(&first) {
         return "景物";
@@ -51,10 +69,14 @@ pub(crate) fn classify_opening(body: &str) -> &'static str {
 ///
 /// 任一章无法解析开场（缺场景/片段/文件）则返回 None——统计失败时
 /// 不降级不升级，保持报告原样（fail-open）。
-pub(crate) fn opening_streak(dir: &std::path::Path, chapter_id: &str) -> Option<(usize, &'static str)> {
+pub(crate) fn opening_streak(
+    dir: &std::path::Path,
+    chapter_id: &str,
+) -> Option<(usize, &'static str)> {
     let paths = ProjectPaths::new(dir);
     let structure =
-        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?).ok()?;
+        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?)
+            .ok()?;
 
     let mut kinds: Vec<&'static str> = Vec::with_capacity(structure.book.chapters.len());
     for ch_id in &structure.book.chapters {
@@ -69,7 +91,11 @@ pub(crate) fn opening_streak(dir: &std::path::Path, chapter_id: &str) -> Option<
         kinds.push(classify_opening(crate::fragment::fragment_body(&content)));
     }
 
-    let idx = structure.book.chapters.iter().position(|c| c == chapter_id)?;
+    let idx = structure
+        .book
+        .chapters
+        .iter()
+        .position(|c| c == chapter_id)?;
     let kind = kinds[idx];
     let mut streak = 1usize;
     let mut i = idx;
@@ -84,7 +110,8 @@ pub(crate) fn opening_streak(dir: &std::path::Path, chapter_id: &str) -> Option<
 fn chapter_of_fragment(dir: &std::path::Path, fragment_id: &str) -> Option<String> {
     let paths = ProjectPaths::new(dir);
     let structure =
-        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?).ok()?;
+        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?)
+            .ok()?;
     structure
         .chapter
         .iter()
@@ -103,7 +130,8 @@ fn chapter_of_fragment(dir: &std::path::Path, fragment_id: &str) -> Option<Strin
 fn chapter_of_scene(dir: &std::path::Path, scene_id: &str) -> Option<String> {
     let paths = ProjectPaths::new(dir);
     let structure =
-        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?).ok()?;
+        StructureFile::from_toml_str(&std::fs::read_to_string(paths.structure_toml()).ok()?)
+            .ok()?;
     structure
         .chapter
         .iter()
@@ -127,9 +155,7 @@ fn opening_adjustment(
     if streak >= 3 {
         Some((
             "保持原级",
-            format!(
-                "\n   📊 跨章统计：已连续 {streak} 章以「{kind}」开场，确属模式化，优先处理"
-            ),
+            format!("\n   📊 跨章统计：已连续 {streak} 章以「{kind}」开场，确属模式化，优先处理"),
         ))
     } else {
         Some((
@@ -264,7 +290,10 @@ impl Tool for AiCheckScopeTool {
         let scope_id = get_str(arguments, self.param)?;
 
         let provider = self.ctx.provider.as_ref().ok_or_else(|| {
-            format!("{} 需要 provider，但当前未配置。请确保通过项目模式运行。", self.name)
+            format!(
+                "{} 需要 provider，但当前未配置。请确保通过项目模式运行。",
+                self.name
+            )
         })?;
 
         let dir = self.ctx.project_dir.clone();
@@ -320,7 +349,13 @@ fn format_batch_report_for_llm(
     let hits_line = report
         .fragment_hits
         .iter()
-        .map(|(fid, n)| if *n > 0 { format!("{fid}×{n}") } else { fid.clone() })
+        .map(|(fid, n)| {
+            if *n > 0 {
+                format!("{fid}×{n}")
+            } else {
+                fid.clone()
+            }
+        })
         .collect::<Vec<_>>()
         .join("、");
     out.push_str(&format!("\n命中分布：{hits_line}"));
@@ -346,12 +381,12 @@ fn format_batch_report_for_llm(
             AiCheckSeverity::Weak => "💡弱信号",
         };
         // 开场型特征按跨章统计降级/升级（保持原级时附"确属模式化"注记）
-        let (sev, note) = match opening_adjustment(&item.feature_id, &item.feature_name, opening_stat)
-        {
-            Some(("保持原级", n)) => (default_sev, n),
-            Some((forced, n)) => (forced, n),
-            None => (default_sev, String::new()),
-        };
+        let (sev, note) =
+            match opening_adjustment(&item.feature_id, &item.feature_name, opening_stat) {
+                Some(("保持原级", n)) => (default_sev, n),
+                Some((forced, n)) => (forced, n),
+                None => (default_sev, String::new()),
+            };
         // 带 ? 表示引文未能匹配回原文、归属为就近推测，以引文实际所在片段为准
         let fid = match item.fragment_id.as_deref() {
             None => "?".to_string(),
@@ -431,12 +466,12 @@ fn format_report_for_llm(
             AiCheckSeverity::Medium => "⚠️中信号",
             AiCheckSeverity::Weak => "💡弱信号",
         };
-        let (sev, note) = match opening_adjustment(&item.feature_id, &item.feature_name, opening_stat)
-        {
-            Some(("保持原级", n)) => (default_sev, n),
-            Some((forced, n)) => (forced, n),
-            None => (default_sev, String::new()),
-        };
+        let (sev, note) =
+            match opening_adjustment(&item.feature_id, &item.feature_name, opening_stat) {
+                Some(("保持原级", n)) => (default_sev, n),
+                Some((forced, n)) => (forced, n),
+                None => (default_sev, String::new()),
+            };
         let quote_display = if item.quote.is_empty() {
             "（无原文引用）"
         } else {
@@ -507,10 +542,9 @@ impl Tool for AiCheckPovTool {
             .scene
             .get(&scene_id)
             .ok_or_else(|| format!("场景 '{scene_id}' 不存在"))?;
-        let pov = scene
-            .pov
-            .clone()
-            .ok_or_else(|| format!("场景 {scene_id} 未设置 POV，先 update_scene(pov_character_id=...) 再检测"))?;
+        let pov = scene.pov.clone().ok_or_else(|| {
+            format!("场景 {scene_id} 未设置 POV，先 update_scene(pov_character_id=...) 再检测")
+        })?;
         let pov_name = std::fs::read_to_string(
             paths
                 .file_for_id(&pov)
@@ -524,7 +558,8 @@ impl Tool for AiCheckPovTool {
         // 场景正文（按 fragments 顺序拼接）
         let mut text = String::new();
         for fid in &scene.fragments {
-            if let Ok(c) = std::fs::read_to_string(paths.fragments_dir().join(format!("{fid}.md"))) {
+            if let Ok(c) = std::fs::read_to_string(paths.fragments_dir().join(format!("{fid}.md")))
+            {
                 text.push_str(crate::fragment::fragment_body(&c));
                 text.push('\n');
             }
@@ -611,8 +646,12 @@ impl Tool for AiCheckPovTool {
             .trim_start_matches("```")
             .trim_end_matches("```")
             .trim();
-        let parsed: serde_json::Value = serde_json::from_str(json_text)
-            .map_err(|e| format!("视角检测报告解析失败: {e}\n原始输出开头: {}", raw.chars().take(200).collect::<String>()))?;
+        let parsed: serde_json::Value = serde_json::from_str(json_text).map_err(|e| {
+            format!(
+                "视角检测报告解析失败: {e}\n原始输出开头: {}",
+                raw.chars().take(200).collect::<String>()
+            )
+        })?;
 
         let leaks = parsed
             .get("leaks")
@@ -638,8 +677,12 @@ impl Tool for AiCheckPovTool {
                 "{}. [{}]\n   「{}」\n   → {}\n",
                 i + 1,
                 leak.get("kind").and_then(|v| v.as_str()).unwrap_or("越权"),
-                leak.get("quote").and_then(|v| v.as_str()).unwrap_or("（无引文）"),
-                leak.get("explanation").and_then(|v| v.as_str()).unwrap_or("")
+                leak.get("quote")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("（无引文）"),
+                leak.get("explanation")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
             ));
         }
         if !summary.is_empty() {
@@ -718,13 +761,11 @@ mod tests {
     /// 降级/保持逻辑：streak<3 强制弱信号；≥3 保持并注明模式化。
     #[test]
     fn opening_adjustment_downgrades_and_escalates() {
-        let (sev, note) =
-            opening_adjustment("12", "冷叙述/硬切入开场", Some((1, "叙述"))).unwrap();
+        let (sev, note) = opening_adjustment("12", "冷叙述/硬切入开场", Some((1, "叙述"))).unwrap();
         assert_eq!(sev, "💡弱信号");
         assert!(note.contains("合理的叙事风格"), "{note}");
 
-        let (sev, note) =
-            opening_adjustment("12", "冷叙述/硬切入开场", Some((3, "对话"))).unwrap();
+        let (sev, note) = opening_adjustment("12", "冷叙述/硬切入开场", Some((3, "对话"))).unwrap();
         assert_eq!(sev, "保持原级");
         assert!(note.contains("模式化"), "{note}");
 

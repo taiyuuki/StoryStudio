@@ -14,8 +14,8 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use story_project_format::ProjectPaths;
 use story_ir::count_words;
+use story_project_format::ProjectPaths;
 
 use crate::error::StudioError;
 use crate::journal;
@@ -48,9 +48,7 @@ fn fragment_history_dir(paths: &ProjectPaths, fragment_id: &str) -> Result<PathB
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !valid {
-        return Err(StudioError::Config(format!(
-            "无效的片段 ID: {fragment_id}"
-        )));
+        return Err(StudioError::Config(format!("无效的片段 ID: {fragment_id}")));
     }
     Ok(paths
         .root()
@@ -245,7 +243,9 @@ pub fn write_tombstone(paths: &ProjectPaths, fragment_id: &str, scene_id: &str, 
 
 /// 读取删除归属记录
 fn read_tombstone(paths: &ProjectPaths, fragment_id: &str) -> Option<(String, usize)> {
-    let path = fragment_history_dir(paths, fragment_id).ok()?.join("deleted.toml");
+    let path = fragment_history_dir(paths, fragment_id)
+        .ok()?
+        .join("deleted.toml");
     let content = std::fs::read_to_string(path).ok()?;
     let mut scene_id = None;
     let mut position = None;
@@ -443,23 +443,60 @@ pub fn line_diff(old: &str, new: &str) -> Vec<DiffLine> {
     while i < n && j < m {
         let _idx = i * (m + 1) + j;
         if a[i] == b[j] {
-            ops.push(DiffLine { kind: "same".into(), old_ln: Some(old_ln), new_ln: Some(new_ln), text: a[i].to_string(), count: 1 });
-            i += 1; j += 1; old_ln += 1; new_ln += 1;
+            ops.push(DiffLine {
+                kind: "same".into(),
+                old_ln: Some(old_ln),
+                new_ln: Some(new_ln),
+                text: a[i].to_string(),
+                count: 1,
+            });
+            i += 1;
+            j += 1;
+            old_ln += 1;
+            new_ln += 1;
         } else if dp[(i + 1) * (m + 1) + j] >= dp[i * (m + 1) + (j + 1)] {
-            ops.push(DiffLine { kind: "removed".into(), old_ln: Some(old_ln), new_ln: None, text: a[i].to_string(), count: 1 });
-            i += 1; old_ln += 1;
+            ops.push(DiffLine {
+                kind: "removed".into(),
+                old_ln: Some(old_ln),
+                new_ln: None,
+                text: a[i].to_string(),
+                count: 1,
+            });
+            i += 1;
+            old_ln += 1;
         } else {
-            ops.push(DiffLine { kind: "added".into(), old_ln: None, new_ln: Some(new_ln), text: b[j].to_string(), count: 1 });
-            j += 1; new_ln += 1;
+            ops.push(DiffLine {
+                kind: "added".into(),
+                old_ln: None,
+                new_ln: Some(new_ln),
+                text: b[j].to_string(),
+                count: 1,
+            });
+            j += 1;
+            new_ln += 1;
         }
     }
     while i < n {
-        ops.push(DiffLine { kind: "removed".into(), old_ln: Some(old_ln), new_ln: None, text: a[i].to_string(), count: 1 });
-        i += 1; old_ln += 1;
+        ops.push(DiffLine {
+            kind: "removed".into(),
+            old_ln: Some(old_ln),
+            new_ln: None,
+            text: a[i].to_string(),
+            count: 1,
+        });
+        i += 1;
+        old_ln += 1;
     }
     while j < m {
-        ops.push(DiffLine { kind: "added".into(), old_ln: None, new_ln: Some(new_ln), text: b[j].to_string(), count: 1 });
-        j += 1; new_ln += 1;
+        ops.push(DiffLine {
+            kind: "added".into(),
+            old_ln: None,
+            new_ln: Some(new_ln),
+            text: b[j].to_string(),
+            count: 1,
+        });
+        j += 1;
+        new_ln += 1;
     }
     collapse_same(&ops)
 }
@@ -477,7 +514,13 @@ fn all_changed(a: &[&str], b: &[&str]) -> Vec<DiffLine> {
     let mut ops: Vec<DiffLine> = a
         .iter()
         .enumerate()
-        .map(|(i, t)| DiffLine { kind: "removed".into(), old_ln: Some(i as u32 + 1), new_ln: None, text: t.to_string(), count: 1 })
+        .map(|(i, t)| DiffLine {
+            kind: "removed".into(),
+            old_ln: Some(i as u32 + 1),
+            new_ln: None,
+            text: t.to_string(),
+            count: 1,
+        })
         .collect();
     ops.extend(b.iter().enumerate().map(|(j, t)| DiffLine {
         kind: "added".into(),
@@ -554,7 +597,14 @@ fn write_snapshot(paths: &ProjectPaths, fragment_id: &str, content: &str) {
     // 快照丢失不影响正文写入，失败仅记日志
     if journal::write_verified(paths.root(), "version_snapshot", &target, content).is_err() {
         let _ = std::fs::write(&target, content);
-        journal::record(paths.root(), "version_snapshot", &target, content.len(), false, None);
+        journal::record(
+            paths.root(),
+            "version_snapshot",
+            &target,
+            content.len(),
+            false,
+            None,
+        );
     }
     prune(paths, &dir);
 }
@@ -596,16 +646,16 @@ fn prune(paths: &ProjectPaths, dir: &PathBuf) {
     };
     let mut snaps: Vec<(u64, PathBuf)> = entries
         .flatten()
-        .filter_map(|e| {
-            parse_version_ts(&e.file_name().to_string_lossy()).map(|ts| (ts, e.path()))
-        })
+        .filter_map(|e| parse_version_ts(&e.file_name().to_string_lossy()).map(|ts| (ts, e.path())))
         .collect();
     if snaps.len() <= KEEP_VERSIONS {
         return;
     }
     snaps.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts)); // 新 → 旧
     for (_, path) in snaps.iter().skip(KEEP_VERSIONS) {
-        let bytes = std::fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
+        let bytes = std::fs::metadata(path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
         if std::fs::remove_file(path).is_ok() {
             journal::record(paths.root(), "version_prune", path, bytes, true, None);
         }
@@ -629,7 +679,13 @@ mod tests {
 
     fn write_fragment(paths: &ProjectPaths, id: &str, body: &str) {
         let content = format!("---\nid: {id}\n---\n\n{body}");
-        journal::write_verified(paths.root(), "fragment_write", &paths.fragments_dir().join(format!("{id}.md")), &content).unwrap();
+        journal::write_verified(
+            paths.root(),
+            "fragment_write",
+            &paths.fragments_dir().join(format!("{id}.md")),
+            &content,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -643,10 +699,23 @@ mod tests {
 
         // 正文未变（只动 frontmatter）→ 不新增
         let content = std::fs::read_to_string(paths.fragments_dir().join("f_0001.md")).unwrap();
-        let anchored = content.replace("---\nid: f_0001\n", "---\nid: f_0001\nanchors:\n  - entity: c_0001\n    role: appears\n");
-        journal::write_verified(paths.root(), "fragment_write", &paths.fragments_dir().join("f_0001.md"), &anchored).unwrap();
+        let anchored = content.replace(
+            "---\nid: f_0001\n",
+            "---\nid: f_0001\nanchors:\n  - entity: c_0001\n    role: appears\n",
+        );
+        journal::write_verified(
+            paths.root(),
+            "fragment_write",
+            &paths.fragments_dir().join("f_0001.md"),
+            &anchored,
+        )
+        .unwrap();
         maybe_snapshot(&paths, "f_0001");
-        assert_eq!(list_versions(&paths, "f_0001").unwrap().len(), 1, "锚点变化不应产生版本");
+        assert_eq!(
+            list_versions(&paths, "f_0001").unwrap().len(),
+            1,
+            "锚点变化不应产生版本"
+        );
 
         // 5 分钟内但正文变化 ≥200 字 → 快照
         write_fragment(&paths, "f_0001", &"雨夜。".repeat(250));
@@ -727,8 +796,16 @@ mod tests {
         let new = "第一行\n第二行改\n第三行\n第四行";
         let ops = line_diff(old, new);
 
-        let removed: Vec<&str> = ops.iter().filter(|o| o.kind == "removed").map(|o| o.text.as_str()).collect();
-        let added: Vec<&str> = ops.iter().filter(|o| o.kind == "added").map(|o| o.text.as_str()).collect();
+        let removed: Vec<&str> = ops
+            .iter()
+            .filter(|o| o.kind == "removed")
+            .map(|o| o.text.as_str())
+            .collect();
+        let added: Vec<&str> = ops
+            .iter()
+            .filter(|o| o.kind == "added")
+            .map(|o| o.text.as_str())
+            .collect();
         assert_eq!(removed, vec!["第二行"]);
         assert_eq!(added, vec!["第二行改", "第四行"]);
         // 行号对齐：removed 带旧行号，added 带新行号
@@ -764,8 +841,12 @@ mod tests {
 
         // 快照 → 当前
         let ops = diff_versions(&paths, "f_0006", Some(ts), None).unwrap();
-        assert!(ops.iter().any(|o| o.kind == "removed" && o.text == "旧文第二段"));
-        assert!(ops.iter().any(|o| o.kind == "added" && o.text == "新文第二段"));
+        assert!(ops
+            .iter()
+            .any(|o| o.kind == "removed" && o.text == "旧文第二段"));
+        assert!(ops
+            .iter()
+            .any(|o| o.kind == "added" && o.text == "新文第二段"));
 
         // 自身对比无差异
         let ops = diff_versions(&paths, "f_0006", None, None).unwrap();

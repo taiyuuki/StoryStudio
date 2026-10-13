@@ -74,10 +74,7 @@ impl Tool for CompileCheckTool {
             report.push_str(&format!("  💡 HINT [{}]: {}\n", h.code, h.message));
         }
         if !timeline.is_empty() {
-            report.push_str(&format!(
-                "时间线连续性: {} 处疑似倒流\n",
-                timeline.len()
-            ));
+            report.push_str(&format!("时间线连续性: {} 处疑似倒流\n", timeline.len()));
             for w in &timeline {
                 report.push_str(&format!("  ⚠️ WARNING [timeline_regression]: {w}\n"));
             }
@@ -104,7 +101,8 @@ impl Tool for GetStructureTool {
         ToolDef {
             name: "get_structure".into(),
             description: "获取项目文档结构概览：书籍 → 章节两级，每章附场景数。\
-            传 chapter_id 可列出该章的场景明细（各场景标题与片段数）。".into(),
+            传 chapter_id 可列出该章的场景明细（各场景标题与片段数）。"
+                .into(),
             parameters: object_schema(vec![(
                 "chapter_id",
                 "string",
@@ -235,7 +233,9 @@ impl Tool for CreateSceneTool {
         .map_err(|e| e.to_string())?;
 
         let fragment_note = match &fragment_id {
-            Some(fid) => format!("，首个片段已写入: {fid}（续写用 write_fragment_text / append_fragment_text）"),
+            Some(fid) => format!(
+                "，首个片段已写入: {fid}（续写用 write_fragment_text / append_fragment_text）"
+            ),
             None => String::new(),
         };
         Ok(format!(
@@ -456,8 +456,7 @@ impl Tool for MergeScenesTool {
         let primary = get_str(arguments, "primary_id")?;
         let secondary = get_str(arguments, "secondary_id")?;
         let paths = self.ctx.paths();
-        crate::mutations::merge_scenes(&paths, &primary, &secondary)
-            .map_err(|e| e.to_string())?;
+        crate::mutations::merge_scenes(&paths, &primary, &secondary).map_err(|e| e.to_string())?;
         Ok(format!(
             "场景已合并：{secondary} 的片段已按序并入 {primary}，{secondary} 已移除"
         ))
@@ -545,7 +544,11 @@ impl Tool for UpdateSceneTool {
         if let Some(g) = gap_raw {
             let slot = story_time.get_or_insert_with(Default::default);
             let def = slot.get_or_insert_with(StoryTimeDef::default);
-            def.gap = if g.is_empty() { None } else { Some(g.to_string()) };
+            def.gap = if g.is_empty() {
+                None
+            } else {
+                Some(g.to_string())
+            };
         }
 
         if title.is_none()
@@ -739,7 +742,11 @@ impl Tool for SaveSceneSummariesTool {
 
         let mut out = format!("已保存 {} 条场景摘要: {}", saved.len(), saved.join(", "));
         if !errors.is_empty() {
-            out.push_str(&format!("；未保存 {} 条（{}）", errors.len(), errors.join("；")));
+            out.push_str(&format!(
+                "；未保存 {} 条（{}）",
+                errors.len(),
+                errors.join("；")
+            ));
         }
         Ok(out)
     }
@@ -776,8 +783,8 @@ impl Tool for RepairProjectTool {
     }
 
     fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
-        let report = crate::mutations::repair_project(&self.ctx.project_dir)
-            .map_err(|e| e.to_string())?;
+        let report =
+            crate::mutations::repair_project(&self.ctx.project_dir).map_err(|e| e.to_string())?;
 
         if report.fragments_cleaned.is_empty()
             && report.assertions_fixed == 0
@@ -924,7 +931,9 @@ impl Tool for SetFragmentAnchorTool {
         let entity_id = get_str(arguments, "entity_id")?;
         crate::mutations::set_fragment_anchor(&self.ctx.paths(), &fragment_id, &entity_id, &role)
             .map_err(|e| e.to_string())?;
-        Ok(format!("已锚定：片段 {fragment_id} ← 实体 {entity_id}（{role}）"))
+        Ok(format!(
+            "已锚定：片段 {fragment_id} ← 实体 {entity_id}（{role}）"
+        ))
     }
 }
 
@@ -962,8 +971,8 @@ impl Tool for RemoveFragmentAnchorTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use story_project_format::init::init_project;
     use story_ai_runtime::Tool;
+    use story_project_format::init::init_project;
 
     fn setup_test_project() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
@@ -1084,14 +1093,14 @@ mod tests {
             .unwrap()
             .trim()
             .to_string();
-        let content = std::fs::read_to_string(dir.join("fragments").join(format!("{fragment_id}.md")))
-            .unwrap();
+        let content =
+            std::fs::read_to_string(dir.join("fragments").join(format!("{fragment_id}.md")))
+                .unwrap();
         assert!(content.contains("粉笔落在石板上"), "{content}");
-        let structure =
-            story_project_format::StructureFile::from_toml_str(
-                &std::fs::read_to_string(dir.join("structure.toml")).unwrap(),
-            )
-            .unwrap();
+        let structure = story_project_format::StructureFile::from_toml_str(
+            &std::fs::read_to_string(dir.join("structure.toml")).unwrap(),
+        )
+        .unwrap();
         let scene = structure
             .scene
             .iter()
@@ -1108,11 +1117,10 @@ mod tests {
             .execute(&serde_json::json!({ "chapter_id": ch, "title": "空场景" }))
             .unwrap();
         assert!(!out2.contains("首个片段"), "{out2}");
-        let structure =
-            story_project_format::StructureFile::from_toml_str(
-                &std::fs::read_to_string(dir.join("structure.toml")).unwrap(),
-            )
-            .unwrap();
+        let structure = story_project_format::StructureFile::from_toml_str(
+            &std::fs::read_to_string(dir.join("structure.toml")).unwrap(),
+        )
+        .unwrap();
         let empty_scene = structure
             .scene
             .iter()

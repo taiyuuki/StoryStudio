@@ -166,11 +166,7 @@ impl Tool for GetStoryRecapTool {
         }
         out.push_str(&format!("  章节数: {}\n", chapter_ids.len()));
         if scenes_needing_summary > 0 {
-            let shown: Vec<&str> = pending_scenes
-                .iter()
-                .take(6)
-                .map(|s| s.as_str())
-                .collect();
+            let shown: Vec<&str> = pending_scenes.iter().take(6).map(|s| s.as_str()).collect();
             let more = if pending_scenes.len() > 6 {
                 format!(" 等 {}", pending_scenes.len())
             } else {
@@ -227,10 +223,12 @@ impl Tool for GetStoryRecapTool {
                     .filter_map(|sc_id| {
                         let scene = ir.document.get_scene(sc_id)?;
                         let title = scene.title.as_deref().unwrap_or("无标题");
-                        Some(match scene.summary.as_ref().filter(|s| !s.trim().is_empty()) {
-                            Some(s) => format!("{title}：{}", format_brief(s.trim(), 40)),
-                            None => title.to_string(),
-                        })
+                        Some(
+                            match scene.summary.as_ref().filter(|s| !s.trim().is_empty()) {
+                                Some(s) => format!("{title}：{}", format_brief(s.trim(), 40)),
+                                None => title.to_string(),
+                            },
+                        )
                     })
                     .collect();
                 out.push_str(&format!("  {}\n\n", format_brief(&parts.join("；"), 300)));
@@ -279,26 +277,32 @@ impl Tool for GetStoryRecapTool {
                 }
 
                 // 摘要：优先用已存的 summary
-                let summary = if let Some(s) =
-                    scene.summary.as_ref().filter(|s| !s.trim().is_empty())
-                {
-                    Some(s.clone())
-                } else {
-                    // 缺失 → 现场生成或降级
-                    let fragments = ir.document.fragments_of_scene(sc_id);
-                    match self.summarize_scene(provider, fragments, &ir.document, suppress_generation)? {
-                        Some(gen) => {
-                            if gen.from_llm && persist_scene_summary(&paths, sc_id.as_str(), &gen.text) {
-                                persisted_count += 1;
+                let summary =
+                    if let Some(s) = scene.summary.as_ref().filter(|s| !s.trim().is_empty()) {
+                        Some(s.clone())
+                    } else {
+                        // 缺失 → 现场生成或降级
+                        let fragments = ir.document.fragments_of_scene(sc_id);
+                        match self.summarize_scene(
+                            provider,
+                            fragments,
+                            &ir.document,
+                            suppress_generation,
+                        )? {
+                            Some(gen) => {
+                                if gen.from_llm
+                                    && persist_scene_summary(&paths, sc_id.as_str(), &gen.text)
+                                {
+                                    persisted_count += 1;
+                                }
+                                if !gen.from_llm {
+                                    truncated_count += 1;
+                                }
+                                Some(gen.text)
                             }
-                            if !gen.from_llm {
-                                truncated_count += 1;
-                            }
-                            Some(gen.text)
+                            None => None,
                         }
-                        None => None,
-                    }
-                };
+                    };
 
                 if let Some(s) = summary {
                     let trimmed = match detail {
@@ -409,7 +413,12 @@ impl GetStoryRecapTool {
         // 无 provider 或被抑制 → 正文截断
         let provider = match provider {
             Some(p) if !suppress => p,
-            _ => return Ok(Some(GeneratedSummary { text: format_brief(&text, 120), from_llm: false })),
+            _ => {
+                return Ok(Some(GeneratedSummary {
+                    text: format_brief(&text, 120),
+                    from_llm: false,
+                }))
+            }
         };
 
         // 调 LLM 生成摘要
@@ -433,15 +442,24 @@ impl GetStoryRecapTool {
                 // 剥思考链：部分端点把 reasoning 内联混入 content，会污染摘要
                 let summary = crate::llm_json::strip_think(&resp.text).trim().to_string();
                 if summary.is_empty() {
-                    Ok(Some(GeneratedSummary { text: format_brief(&text, 120), from_llm: false }))
+                    Ok(Some(GeneratedSummary {
+                        text: format_brief(&text, 120),
+                        from_llm: false,
+                    }))
                 } else {
-                    Ok(Some(GeneratedSummary { text: summary, from_llm: true }))
+                    Ok(Some(GeneratedSummary {
+                        text: summary,
+                        from_llm: true,
+                    }))
                 }
             }
             Err(e) => {
                 // LLM 失败不致命，降级为正文截断
                 eprintln!("[get_story_recap] 摘要生成失败，降级为正文截断: {e}");
-                Ok(Some(GeneratedSummary { text: format_brief(&text, 120), from_llm: false }))
+                Ok(Some(GeneratedSummary {
+                    text: format_brief(&text, 120),
+                    from_llm: false,
+                }))
             }
         }
     }
@@ -738,8 +756,9 @@ impl Tool for QueryAssertionsTool {
             .filter(|a| {
                 let subj_match = subject_filter.as_ref().is_none_or(|s| s == &a.subject);
                 let pred_match = predicate_filter.as_ref().is_none_or(|p| p == &a.predicate);
-                let obj_match =
-                    object_filter.as_ref().is_none_or(|o| object_matches(&a.object, o));
+                let obj_match = object_filter
+                    .as_ref()
+                    .is_none_or(|o| object_matches(&a.object, o));
                 let status_match = status_filter == "all"
                     || status_filter == "active" && (a.status.is_empty() || a.status == "active")
                     || status_filter == a.status;
@@ -785,9 +804,7 @@ impl Tool for QueryAssertionsTool {
 }
 
 /// 渲染断言的生效区间（场景锚或绝对历法，无界边界不显示）。
-fn format_assertion_validity(
-    v: &story_project_format::knowledge_file::ValidityDef,
-) -> String {
+fn format_assertion_validity(v: &story_project_format::knowledge_file::ValidityDef) -> String {
     let bound = |t: &story_project_format::knowledge_file::StoryTimeDef| -> String {
         match &t.scene {
             Some(scene) => format!("场景 {scene}"),
@@ -973,7 +990,11 @@ impl Tool for FindMentionsTool {
                 .get_fragment(frag_id)
                 .map(|f| format_brief(&f.text, 80))
                 .unwrap_or_else(|| "（正文缺失）".to_string());
-            let times = if *count > 1 { format!(" ×{}", count) } else { String::new() };
+            let times = if *count > 1 {
+                format!(" ×{}", count)
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
                 "  {}[{}] [{}] 场景「{}」: \"{}\"\n",
                 frag_id, times, role, scene_title, text
@@ -1187,7 +1208,9 @@ impl GetCharacterStateTool {
 ///
 /// 供缺参工具（如 get_character_state 未传 entity_id）做默认回退——
 /// 阅读序的末尾即写作进度的最前沿，其 POV 通常是此刻笔下的角色。
-pub(crate) fn frontier_scene_with_pov(document: &story_ir::DocumentGraph) -> Option<&story_ir::SceneNode> {
+pub(crate) fn frontier_scene_with_pov(
+    document: &story_ir::DocumentGraph,
+) -> Option<&story_ir::SceneNode> {
     document
         .all_nodes()
         .filter_map(|(_, node)| match node {
@@ -1222,19 +1245,15 @@ impl Tool for GetCharacterStateTool {
         let (entity_id, fallback_note) = match get_str_opt(arguments, "entity_id") {
             Some(id) => (id, String::new()),
             None => {
-                let scene = frontier_scene_with_pov(&parse_output.ir.document).ok_or_else(
-                    || {
+                let scene =
+                    frontier_scene_with_pov(&parse_output.ir.document).ok_or_else(|| {
                         "缺少参数: entity_id（项目中也无线索场景可回退——\
                           请指定角色 ID，如 c_0001）"
                             .to_string()
-                    },
-                )?;
+                    })?;
                 let pov = scene.pov.as_ref().unwrap();
                 let pov_id = pov.as_str().to_string();
-                let title = scene
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| pov_id.clone());
+                let title = scene.title.clone().unwrap_or_else(|| pov_id.clone());
                 let name = parse_output
                     .ir
                     .semantic
@@ -1243,7 +1262,9 @@ impl Tool for GetCharacterStateTool {
                     .unwrap_or_else(|| pov_id.clone());
                 (
                     pov_id,
-                    format!("（未指定 entity_id，默认取写作最前沿场景「{title}」的 POV：{name}）\n\n"),
+                    format!(
+                        "（未指定 entity_id，默认取写作最前沿场景「{title}」的 POV：{name}）\n\n"
+                    ),
                 )
             }
         };
@@ -1404,7 +1425,11 @@ impl Tool for GetCharacterStateTool {
                     .get_fragment(fid)
                     .map(|f| format_brief(&f.text, 60))
                     .unwrap_or_else(|| "（正文缺失）".to_string());
-                let times = if *count > 1 { format!(" ×{}", count) } else { String::new() };
+                let times = if *count > 1 {
+                    format!(" ×{}", count)
+                } else {
+                    String::new()
+                };
                 out.push_str(&format!(
                     "  {}{} 场景「{}」: \"{}\"\n",
                     fid, times, scene_title, text
@@ -1609,15 +1634,22 @@ mod tests {
         let dir = tmp.path();
 
         // 2 章 × 30 片段，全部文本匹配"林风"（60 个片段 > 上限 50）
-        let mut structure = String::from("[book]\nid = \"b_root\"\ntitle = \"测试\"\nchapters = [\"ch_01\", \"ch_02\"]\n");
+        let mut structure = String::from(
+            "[book]\nid = \"b_root\"\ntitle = \"测试\"\nchapters = [\"ch_01\", \"ch_02\"]\n",
+        );
         for ch in ["ch_01", "ch_02"] {
-            structure.push_str(&format!("\n[chapter.{ch}]\ntitle = \"章{ch}\"\nscenes = [\"sc_{ch}_01\"]\n"));
+            structure.push_str(&format!(
+                "\n[chapter.{ch}]\ntitle = \"章{ch}\"\nscenes = [\"sc_{ch}_01\"]\n"
+            ));
         }
         for ch in ["ch_01", "ch_02"] {
             let fids: Vec<String> = (1..=30).map(|i| format!("f_{ch}_{i:02}")).collect();
             structure.push_str(&format!(
                 "\n[scene.sc_{ch}_01]\ntitle = \"场景\"\nfragments = [{}]\n",
-                fids.iter().map(|f| format!("\"{f}\"")).collect::<Vec<_>>().join(", ")
+                fids.iter()
+                    .map(|f| format!("\"{f}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         std::fs::write(dir.join("structure.toml"), structure).unwrap();
@@ -1641,7 +1673,9 @@ mod tests {
         let tool = FindMentionsTool::new(ctx);
 
         // 默认：截断到 50 条并提示缩小范围
-        let out = tool.execute(&serde_json::json!({"entity_id": "c_0001"})).unwrap();
+        let out = tool
+            .execute(&serde_json::json!({"entity_id": "c_0001"}))
+            .unwrap();
         assert!(out.contains("60 个片段"), "{out}");
         assert!(out.contains("已列出前 50 条"), "{out}");
         assert!(out.contains("scope"), "{out}");
@@ -1669,10 +1703,18 @@ mod tests {
         // 1 章 205 个场景（> 阈值 200）
         let sids: Vec<String> = (1..=205).map(|i| format!("sc_big_{i:03}")).collect();
         let mut structure = String::from("[book]\nid = \"b_root\"\ntitle = \"测试\"\nchapters = [\"ch_01\"]\n\n[chapter.ch_01]\ntitle = \"第一章\"\nscenes = [");
-        structure.push_str(&sids.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", "));
+        structure.push_str(
+            &sids
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
         structure.push_str("]\n");
         for (i, s) in sids.iter().enumerate() {
-            structure.push_str(&format!("\n[scene.{s}]\ntitle = \"场景{i}\"\nfragments = []\nsummary = \"概要{i}\"\n"));
+            structure.push_str(&format!(
+                "\n[scene.{s}]\ntitle = \"场景{i}\"\nfragments = []\nsummary = \"概要{i}\"\n"
+            ));
         }
         std::fs::write(dir.join("structure.toml"), structure).unwrap();
 
@@ -2111,7 +2153,10 @@ fragments = ["f_0001"]
         let result = tool.execute(&serde_json::json!({})).unwrap();
 
         assert!(result.contains("LLM生成的场景摘要"));
-        assert!(result.contains("自动落盘"), "应提示摘要已自动落盘: {result}");
+        assert!(
+            result.contains("自动落盘"),
+            "应提示摘要已自动落盘: {result}"
+        );
 
         // 摘要应已持久化到 structure.toml（下次回顾直接复用）
         let structure = std::fs::read_to_string(tmp.path().join("structure.toml")).unwrap();
@@ -2409,7 +2454,9 @@ race = "鬼修"
 
         let ctx = crate::tools::ToolContext::new(dir.to_path_buf());
         let tool = GetCharacterStateTool::new(ctx);
-        let out = tool.execute(&serde_json::json!({"entity_id": "c_0009"})).unwrap();
+        let out = tool
+            .execute(&serde_json::json!({"entity_id": "c_0009"}))
+            .unwrap();
         assert!(
             out.contains("档案: c_0009，阴司判官，鬼修"),
             "未出场角色也应有档案摘要行: {out}"

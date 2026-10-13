@@ -110,7 +110,10 @@ fn normalize_genre(tag: &str) -> Option<&'static str> {
 /// 供建书流水线直接取用：按题材标签解析创作指导文本。
 ///
 /// 优先项目 `guides/` 覆盖 → 内置默认；未知题材返回 None。
-pub(crate) fn resolve_guide_text(genre: &str, project_root: Option<&std::path::Path>) -> Option<String> {
+pub(crate) fn resolve_guide_text(
+    genre: &str,
+    project_root: Option<&std::path::Path>,
+) -> Option<String> {
     let name = normalize_genre(genre)?;
     if let Some(root) = project_root {
         let custom = root.join("guides").join(format!("{name}.md"));
@@ -215,8 +218,25 @@ impl GetWritingGuideTool {
 /// 按内置指导的固定顺序输出，保证结果稳定。
 fn split_compound_genre(genre: &str) -> Vec<String> {
     const KNOWN_TAGS: &[&str] = &[
-        "武侠", "悬疑", "推理", "言情", "奇幻", "玄幻", "都市", "异能", "科幻", "历史", "游戏",
-        "电竞", "军事", "仙侠", "修真", "灵异", "惊悚", "轻小说", "现实",
+        "武侠",
+        "悬疑",
+        "推理",
+        "言情",
+        "奇幻",
+        "玄幻",
+        "都市",
+        "异能",
+        "科幻",
+        "历史",
+        "游戏",
+        "电竞",
+        "军事",
+        "仙侠",
+        "修真",
+        "灵异",
+        "惊悚",
+        "轻小说",
+        "现实",
     ];
     let hits: Vec<&str> = KNOWN_TAGS
         .iter()
@@ -538,8 +558,14 @@ mod tests {
         let tool = GetWritingGuideTool::new(ctx);
 
         let result = tool.execute(&serde_json::json!({})).unwrap();
-        assert!(result.contains("江湖氛围"), "应回退到 outline 题材: {result}");
-        assert!(result.contains("已按 outline.toml 题材回退"), "got: {result}");
+        assert!(
+            result.contains("江湖氛围"),
+            "应回退到 outline 题材: {result}"
+        );
+        assert!(
+            result.contains("已按 outline.toml 题材回退"),
+            "got: {result}"
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ use story_project_format::{
 };
 
 use super::{
-    check_index, get_index, get_json_array_opt, get_str, get_str_opt, get_str_array_opt,
+    check_index, get_index, get_json_array_opt, get_str, get_str_array_opt, get_str_opt,
     normalize_object_items, object_schema, ToolContext,
 };
 
@@ -152,8 +152,7 @@ impl Tool for DesignChaptersTool {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
             {
-                let titles: Vec<&str> =
-                    at_risk.iter().map(|c| c.title.as_str()).take(5).collect();
+                let titles: Vec<&str> = at_risk.iter().map(|c| c.title.as_str()).take(5).collect();
                 return Err(format!(
                     "replace 将清空 {} 条脉络，其中 {} 条已动笔或已关联物理章节（{}{}），\
                      不可逆丢失节拍/钩子/进度。确认放弃请传 confirm=true（建议先向用户说明），\
@@ -240,13 +239,30 @@ impl Tool for GetChapterOutlineTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "get_chapter_outline".into(),
-            description: "读取章节脉络（chapters.toml），按卷分组展示各章的目标/节拍/涉及角色线索/状态。\
+            description:
+                "读取章节脉络（chapters.toml），按卷分组展示各章的目标/节拍/涉及角色线索/状态。\
             章节超过 20 章时默认列未完成章节与最近 15 章已完成；可用 volume_order 按卷、\
-            status 按状态过滤查看指定范围。写新章节前调用以获取本章设计意图。".into(),
+            status 按状态过滤查看指定范围。写新章节前调用以获取本章设计意图。"
+                    .into(),
             parameters: object_schema(vec![
-                ("volume_order", "string", "可选：只看某卷（1-based 卷序号）", false),
-                ("status", "string", "可选：只看某状态（planned/writing/completed）", false),
-                ("include_completed", "boolean", "是否包含已完成章节（默认 true）", false),
+                (
+                    "volume_order",
+                    "string",
+                    "可选：只看某卷（1-based 卷序号）",
+                    false,
+                ),
+                (
+                    "status",
+                    "string",
+                    "可选：只看某状态（planned/writing/completed）",
+                    false,
+                ),
+                (
+                    "include_completed",
+                    "boolean",
+                    "是否包含已完成章节（默认 true）",
+                    false,
+                ),
             ]),
         }
     }
@@ -333,11 +349,10 @@ impl Tool for GetChapterOutlineTool {
                 .filter(|(i, c)| c.status != "completed" || recent_done.contains(i))
                 .filter(|(_, c)| {
                     // 未完成章节也可能很多（如刚批量设计完），同样限量
-                    c.status == "completed"
-                        || {
-                            pending_shown += 1;
-                            pending_shown <= MAX_PENDING_SHOWN
-                        }
+                    c.status == "completed" || {
+                        pending_shown += 1;
+                        pending_shown <= MAX_PENDING_SHOWN
+                    }
                 })
                 .collect()
         } else {
@@ -774,10 +789,8 @@ impl Tool for PopulateScenesFromBeatsTool {
         let mut notes: Vec<String> = Vec::new();
         let default_pov = match &default_pov_input {
             Some(raw) => {
-                let (resolved, warns) = crate::mutations::resolve_character_refs(
-                    &paths,
-                    std::slice::from_ref(raw),
-                );
+                let (resolved, warns) =
+                    crate::mutations::resolve_character_refs(&paths, std::slice::from_ref(raw));
                 notes.extend(warns);
                 Some(resolved[0].clone())
             }
@@ -811,9 +824,13 @@ impl Tool for PopulateScenesFromBeatsTool {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| beat_title_head(beat));
             let scene_title = format!("第{}幕·{}", existing + i + 1, head);
-            let scene_id =
-                crate::mutations::create_scene(&paths, &chapter_id, &scene_title, default_pov.as_deref())
-                    .map_err(|e| e.to_string())?;
+            let scene_id = crate::mutations::create_scene(
+                &paths,
+                &chapter_id,
+                &scene_title,
+                default_pov.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
             // 叙事功能存完整节拍文本，写作时上下文自含
             let update = crate::mutations::SceneUpdate {
                 title: None,
@@ -842,7 +859,11 @@ impl Tool for PopulateScenesFromBeatsTool {
                 created.join("、")
             );
             if let Some(pov) = &default_pov {
-                let src = if default_pov_input.is_some() { "指定" } else { "本章主咖" };
+                let src = if default_pov_input.is_some() {
+                    "指定"
+                } else {
+                    "本章主咖"
+                };
                 msg.push_str(&format!("；默认 POV: {pov}（{src}）"));
             } else {
                 msg.push_str("；未设 POV（本章脉络无角色且未传 default_pov）");
@@ -899,10 +920,7 @@ fn ensure_volume_groups(volumes: &mut Vec<VolumeGroupDef>, file: &ChaptersFile) 
         });
     }
     (
-        format!(
-            "章节引用了未定义的卷，已补建占位卷: {}",
-            added.join("、")
-        ),
+        format!("章节引用了未定义的卷，已补建占位卷: {}", added.join("、")),
         true,
     )
 }
@@ -917,8 +935,7 @@ fn save_chapters(
 ) -> Result<String, String> {
     let (note, volumes_dirty) = ensure_volume_groups(volumes, file);
     if volumes_dirty {
-        save_outline_volumes(&ctx.paths(), volumes)
-            .map_err(|e| format!("写入卷结构失败: {e}"))?;
+        save_outline_volumes(&ctx.paths(), volumes).map_err(|e| format!("写入卷结构失败: {e}"))?;
     }
     let toml_content = file
         .to_toml_string()
@@ -947,7 +964,10 @@ fn parse_str_array(obj: &serde_json::Value, key: &str) -> Result<Vec<String>, St
 /// 解析 JSON 字符串形式的字符串数组（宽松解析）
 /// 统一走 [`crate::llm_json`] 的容错梯度：剥思考链 → 原文 → 剥 ```json 围栏 →
 /// 截取首个 '[' 到最后一个 ']' → 修复字符串内部未转义的 ASCII 引号。
-pub(crate) fn parse_json_array_lenient(raw: &str, field: &str) -> Result<Vec<serde_json::Value>, String> {
+pub(crate) fn parse_json_array_lenient(
+    raw: &str,
+    field: &str,
+) -> Result<Vec<serde_json::Value>, String> {
     crate::llm_json::parse_array(raw).map_err(|e| format!("{field}{e}"))
 }
 
@@ -1003,10 +1023,22 @@ mod tests {
         assert!(res.contains("路人甲"), "未知角色应在回执警告: {res}");
 
         let content = std::fs::read_to_string(paths.chapters_toml()).unwrap();
-        assert!(content.contains("\"t_001\""), "线索标题应归一为 ID: {content}");
-        assert!(content.contains("\"c_0001\""), "角色名应归一为 ID: {content}");
-        assert!(!content.contains("\"旧案之谜\""), "已解析的标题不应残留: {content}");
-        assert!(content.contains("\"不存在之谜\""), "未知引用按原样保留（不静默丢数据）: {content}");
+        assert!(
+            content.contains("\"t_001\""),
+            "线索标题应归一为 ID: {content}"
+        );
+        assert!(
+            content.contains("\"c_0001\""),
+            "角色名应归一为 ID: {content}"
+        );
+        assert!(
+            !content.contains("\"旧案之谜\""),
+            "已解析的标题不应残留: {content}"
+        );
+        assert!(
+            content.contains("\"不存在之谜\""),
+            "未知引用按原样保留（不静默丢数据）: {content}"
+        );
 
         // update：同样归一
         UpdateChapterOutlineTool::new(ctx.clone())
@@ -1017,8 +1049,14 @@ mod tests {
             }))
             .unwrap();
         let content = std::fs::read_to_string(paths.chapters_toml()).unwrap();
-        assert!(content.contains("\"t_001\""), "update 路径也应归一线索标题: {content}");
-        assert!(content.contains("\"c_0001\""), "update 路径也应归一角色名: {content}");
+        assert!(
+            content.contains("\"t_001\""),
+            "update 路径也应归一线索标题: {content}"
+        );
+        assert!(
+            content.contains("\"c_0001\""),
+            "update 路径也应归一角色名: {content}"
+        );
     }
 
     #[test]
@@ -1110,7 +1148,10 @@ mod tests {
 
         // 落盘文件本身
         let content = std::fs::read_to_string(ctx.paths().chapters_toml()).unwrap();
-        assert!(content.contains("\"t_004\"") || content.contains("t_004"), "{content}");
+        assert!(
+            content.contains("\"t_004\"") || content.contains("t_004"),
+            "{content}"
+        );
     }
 
     #[test]
@@ -1326,7 +1367,10 @@ mod tests {
 
         let get = GetChapterOutlineTool::new(ctx.clone());
         let out = get.execute(&serde_json::json!({})).unwrap();
-        assert!(out.contains("信皮是描的"), "beats 应保留原文引号, got: {out}");
+        assert!(
+            out.contains("信皮是描的"),
+            "beats 应保留原文引号, got: {out}"
+        );
     }
 
     #[test]
@@ -1371,14 +1415,19 @@ mod tests {
 
         // 不带 confirm → 拒绝并列明风险
         let err = design
-            .execute(&serde_json::json!({"chapters": r#"[{"title":"新版第一章"}]"#, "replace": true}))
+            .execute(
+                &serde_json::json!({"chapters": r#"[{"title":"新版第一章"}]"#, "replace": true}),
+            )
             .unwrap_err();
         assert!(err.contains("confirm=true"), "{err}");
         assert!(err.contains("已动笔"), "{err}");
 
         // 脉络未被清空
         let get = GetChapterOutlineTool::new(ctx.clone());
-        assert!(get.execute(&serde_json::json!({})).unwrap().contains("上山"));
+        assert!(get
+            .execute(&serde_json::json!({}))
+            .unwrap()
+            .contains("上山"));
 
         // 带 confirm=true → 执行清空替换
         design
@@ -1435,13 +1484,25 @@ mod tests {
         );
         assert_eq!(beat_title_head("[夜探]潜入藏经阁翻查旧档"), "夜探");
         // 标题：描述（全角/半角冒号均可，冒号前 ≤12 字）
-        assert_eq!(beat_title_head("山门对峙：林风与守门弟子起冲突"), "山门对峙");
+        assert_eq!(
+            beat_title_head("山门对峙：林风与守门弟子起冲突"),
+            "山门对峙"
+        );
         assert_eq!(beat_title_head("断崖顿悟:于断崖处领悟剑意"), "断崖顿悟");
         // 冒号前含句末标点 → 正文句子的冒号（如引语），退回窗口断句
-        assert_eq!(beat_title_head("苏白连夜赶回主殿，在殿前拦住长老：质问"), "苏白连夜赶回主殿");
+        assert_eq!(
+            beat_title_head("苏白连夜赶回主殿，在殿前拦住长老：质问"),
+            "苏白连夜赶回主殿"
+        );
         // 无标记：保持旧行为——窗口断句或 12 字硬截断
-        assert_eq!(beat_title_head("夜探藏经阁，发现空匣"), "夜探藏经阁，发现空匣");
-        assert_eq!(beat_title_head("苏白在断云峰的无为宗主殿与长老对峙"), "苏白在断云峰的无为宗主殿");
+        assert_eq!(
+            beat_title_head("夜探藏经阁，发现空匣"),
+            "夜探藏经阁，发现空匣"
+        );
+        assert_eq!(
+            beat_title_head("苏白在断云峰的无为宗主殿与长老对峙"),
+            "苏白在断云峰的无为宗主殿"
+        );
         assert_eq!(beat_title_head("断崖顿悟"), "断崖顿悟");
     }
 

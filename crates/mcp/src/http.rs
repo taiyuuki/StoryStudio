@@ -397,4 +397,3 @@ fn persisted_sessions_path() -> Result<PathBuf, StudioError> {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("mcp-sessions.json"))
 }
-

@@ -30,7 +30,10 @@ mod tests {
 
     #[test]
     fn render_fills_placeholders() {
-        let out = render("书名《{{title}}》，共 {{n}} 章", &[("title", "拾灯录"), ("n", "3")]);
+        let out = render(
+            "书名《{{title}}》，共 {{n}} 章",
+            &[("title", "拾灯录"), ("n", "3")],
+        );
         assert_eq!(out, "书名《拾灯录》，共 3 章");
     }
 

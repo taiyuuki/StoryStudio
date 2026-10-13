@@ -844,12 +844,8 @@ impl Rule for KnowledgeRegression {
                 // 按阅读序排序后走一遍，状态降级即告警
                 let mut timeline: Vec<&story_ir::StateTimelineEntry> =
                     entry.state_timeline.iter().collect();
-                timeline.sort_by_key(|e| {
-                    ctx.ir
-                        .document
-                        .reading_index(&e.scene)
-                        .unwrap_or(u32::MAX)
-                });
+                timeline
+                    .sort_by_key(|e| ctx.ir.document.reading_index(&e.scene).unwrap_or(u32::MAX));
                 for pair in timeline.windows(2) {
                     let (prev, next) = (pair[0], pair[1]);
                     if rank(&next.state) < rank(&prev.state) {
@@ -1378,7 +1374,10 @@ mod tests {
             anchors: Vec::new(),
         }));
         let codes = run_rule(&EvidenceMismatch, &ir, None, Some(&kb));
-        assert!(codes.is_empty(), "带省略号尾巴的历史摘录不应误报: {codes:?}");
+        assert!(
+            codes.is_empty(),
+            "带省略号尾巴的历史摘录不应误报: {codes:?}"
+        );
     }
 
     #[test]

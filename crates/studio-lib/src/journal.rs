@@ -28,8 +28,7 @@ pub fn now_ms() -> u64 {
 
 /// 取证日志路径：`.novelstudio/logs/write-journal.log`
 pub fn journal_path(root: &Path) -> PathBuf {
-    root
-        .join(".novelstudio")
+    root.join(".novelstudio")
         .join("logs")
         .join("write-journal.log")
 }
@@ -37,14 +36,7 @@ pub fn journal_path(root: &Path) -> PathBuf {
 /// 追加一条取证记录（best-effort，绝不向上传播错误）
 ///
 /// `note` 记录补充信息（错误消息 / 回读差异摘要等）。
-pub fn record(
-    root: &Path,
-    op: &str,
-    target: &Path,
-    bytes: usize,
-    ok: bool,
-    note: Option<&str>,
-) {
+pub fn record(root: &Path, op: &str, target: &Path, bytes: usize, ok: bool, note: Option<&str>) {
     let path = journal_path(root);
     let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
     if let Ok(meta) = std::fs::metadata(&path) {
@@ -110,7 +102,14 @@ pub fn write_verified(
                 Err(e) => format!("回读失败: {e}"),
             };
             // 回读不一致是最高级别的事故信号，单独标记
-            record(root, op, target, bytes, false, Some(&format!("verify_fail: {note}")));
+            record(
+                root,
+                op,
+                target,
+                bytes,
+                false,
+                Some(&format!("verify_fail: {note}")),
+            );
             Err(StudioError::Io(format!(
                 "这次保存似乎没有写进磁盘（{}）。请再保存一次；若反复失败，详情已记录在项目 .novelstudio/logs/ 中",
                 note
@@ -134,7 +133,13 @@ mod tests {
         let (_dir, root) = temp_root();
         let paths = story_project_format::ProjectPaths::new(&root);
         let target = paths.fragments_dir().join("f_0001.md");
-        write_verified(&root, "fragment_write", &target, "---\nid: f_0001\n---\n\n正文").unwrap();
+        write_verified(
+            &root,
+            "fragment_write",
+            &target,
+            "---\nid: f_0001\n---\n\n正文",
+        )
+        .unwrap();
 
         let log = std::fs::read_to_string(journal_path(&root)).unwrap();
         assert!(log.contains("fragment_write"));

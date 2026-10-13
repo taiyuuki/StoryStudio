@@ -173,8 +173,7 @@ pub fn list(root: &Path) -> Vec<PromptEntry> {
 /// 校验：id 在册、内容非空白（恢复默认请用 [`reset`]）、必需占位符齐全
 /// （`render()` 的 debug 断言在 release 不生效，缺失的占位符会被原样发给模型）。
 pub fn save(root: &Path, id: &str, content: &str) -> Result<(), StudioError> {
-    let spec = spec_by_id(id)
-        .ok_or_else(|| StudioError::Prompt(format!("未知提示词：{id}")))?;
+    let spec = spec_by_id(id).ok_or_else(|| StudioError::Prompt(format!("未知提示词：{id}")))?;
     if content.trim().is_empty() {
         return Err(StudioError::Prompt(
             "提示词内容不能为空；恢复内置请用「重置」".into(),
@@ -227,10 +226,7 @@ mod tests {
         std::fs::create_dir_all(&prompts_dir).unwrap();
 
         std::fs::write(prompts_dir.join("scene_summary.md"), "自定义摘要指令").unwrap();
-        assert_eq!(
-            resolve(&SCENE_SUMMARY, Some(dir.path())),
-            "自定义摘要指令"
-        );
+        assert_eq!(resolve(&SCENE_SUMMARY, Some(dir.path())), "自定义摘要指令");
         assert_eq!(
             resolve_opt(&SCENE_SUMMARY, Some(dir.path())),
             Some("自定义摘要指令".to_string())
@@ -262,10 +258,7 @@ mod tests {
         ));
 
         save(dir.path(), "scene_summary", "自定义摘要指令").unwrap();
-        assert_eq!(
-            resolve(&SCENE_SUMMARY, Some(dir.path())),
-            "自定义摘要指令"
-        );
+        assert_eq!(resolve(&SCENE_SUMMARY, Some(dir.path())), "自定义摘要指令");
     }
 
     #[test]
@@ -273,7 +266,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         save(dir.path(), "write_chapter", "自定义整章").unwrap();
         assert!(reset(dir.path(), "write_chapter").unwrap());
-        assert_eq!(resolve(&WRITE_CHAPTER, Some(dir.path())), WRITE_CHAPTER.builtin);
+        assert_eq!(
+            resolve(&WRITE_CHAPTER, Some(dir.path())),
+            WRITE_CHAPTER.builtin
+        );
         assert!(!reset(dir.path(), "write_chapter").unwrap());
     }
 

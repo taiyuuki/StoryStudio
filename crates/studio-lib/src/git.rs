@@ -204,9 +204,9 @@ fn total_words(dir: &Path) -> u64 {
             continue;
         };
         // 剥 frontmatter
-        let body = content.strip_prefix("---").and_then(|rest| {
-            rest.find("---").map(|end| &content[3 + end + 3..])
-        });
+        let body = content
+            .strip_prefix("---")
+            .and_then(|rest| rest.find("---").map(|end| &content[3 + end + 3..]));
         total += story_ir::count_words(body.unwrap_or(&content).trim()) as u64;
     }
     total
@@ -245,7 +245,9 @@ pub fn git_status(dir: &Path) -> GitStatusDto {
 pub fn git_init(dir: &Path) -> Result<GitStatusDto, StudioError> {
     let st = git_status(dir);
     if !st.available {
-        return Err(StudioError::Config("系统未安装 git，无法启用版本档案".into()));
+        return Err(StudioError::Config(
+            "系统未安装 git，无法启用版本档案".into(),
+        ));
     }
     if st.nested {
         return Err(StudioError::Config(
@@ -305,7 +307,15 @@ pub fn git_log(dir: &Path, limit: u32) -> Result<Vec<GitCommitDto>, StudioError>
     if !has_head {
         return Ok(Vec::new());
     }
-    let out = run_git_ok(dir, &["log", "-n", &limit.to_string(), "--pretty=format:%h%x1f%at%x1f%s"])?;
+    let out = run_git_ok(
+        dir,
+        &[
+            "log",
+            "-n",
+            &limit.to_string(),
+            "--pretty=format:%h%x1f%at%x1f%s",
+        ],
+    )?;
     let mut commits = Vec::new();
     for line in out.lines() {
         let mut parts = line.split('\u{1f}');
@@ -535,7 +545,11 @@ mod tests {
         assert!(st.initialized && !st.nested);
 
         // 写入正文 → 存档成功，信息带字数
-        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n林风推开门。\n").unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\n---\n林风推开门。\n",
+        )
+        .unwrap();
         let r = git_commit(dir, "第一次存档").unwrap();
         assert!(r.committed, "{:?}", r);
         let first = r.id.unwrap();
@@ -546,7 +560,11 @@ mod tests {
         assert!(r.detail.contains("没有"));
 
         // 修改正文 → 恢复到第一次 → 内容回到旧版，历史保留
-        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n完全不同的内容。\n").unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\n---\n完全不同的内容。\n",
+        )
+        .unwrap();
         let r = git_restore(dir, &first).unwrap();
         assert!(r.committed, "{:?}", r);
         let content = std::fs::read_to_string(dir.join("fragments/f_0001.md")).unwrap();
@@ -569,21 +587,39 @@ mod tests {
         let dir = tmp.path();
         git_init(dir).unwrap();
 
-        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n第一版内容。\n").unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\n---\n第一版内容。\n",
+        )
+        .unwrap();
         let a = git_commit(dir, "存档A").unwrap().id.unwrap();
 
         // 修改 f_0001 + 新增 f_0002
-        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n第二版内容，改了。\n").unwrap();
-        std::fs::write(dir.join("fragments/f_0002.md"), "---\nid: f_0002\n---\n全新段落。\n").unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\n---\n第二版内容，改了。\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0002.md"),
+            "---\nid: f_0002\n---\n全新段落。\n",
+        )
+        .unwrap();
         let b = git_commit(dir, "存档B").unwrap().id.unwrap();
 
         // 统计：f_0001 修改（有增有删）、f_0002 新增
         let files = git_diff_summary(dir, &a, Some(&b)).unwrap();
         assert_eq!(files.len(), 2, "{files:?}");
-        let f1 = files.iter().find(|f| f.path.ends_with("f_0001.md")).unwrap();
+        let f1 = files
+            .iter()
+            .find(|f| f.path.ends_with("f_0001.md"))
+            .unwrap();
         assert_eq!(f1.status, "M");
         assert!(f1.added > 0 && f1.deleted > 0, "{f1:?}");
-        let f2 = files.iter().find(|f| f.path.ends_with("f_0002.md")).unwrap();
+        let f2 = files
+            .iter()
+            .find(|f| f.path.ends_with("f_0002.md"))
+            .unwrap();
         assert_eq!(f2.status, "A");
 
         // 明细：hunk 含 del（第一版）与 add（第二版）
@@ -591,8 +627,18 @@ mod tests {
         assert!(!detail.binary);
         assert!(!detail.hunks.is_empty(), "{detail:?}");
         let all_lines: Vec<_> = detail.hunks.iter().flat_map(|h| &h.lines).collect();
-        assert!(all_lines.iter().any(|l| l.kind == "add" && l.text.contains("第二版")), "{detail:?}");
-        assert!(all_lines.iter().any(|l| l.kind == "del" && l.text.contains("第一版")), "{detail:?}");
+        assert!(
+            all_lines
+                .iter()
+                .any(|l| l.kind == "add" && l.text.contains("第二版")),
+            "{detail:?}"
+        );
+        assert!(
+            all_lines
+                .iter()
+                .any(|l| l.kind == "del" && l.text.contains("第一版")),
+            "{detail:?}"
+        );
 
         // 不存在的提交 / 危险路径 → 报错
         assert!(git_diff_summary(dir, "deadbeef", Some(&b)).is_err());
@@ -609,12 +655,23 @@ mod tests {
         let dir = tmp.path();
         git_init(dir).unwrap();
 
-        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n已存档内容。\n").unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\n---\n已存档内容。\n",
+        )
+        .unwrap();
         git_commit(dir, "存档").unwrap();
 
         // 工作区再改（未存档）→ to=None 对比工作区可见
-        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n未存档的新内容。\n").unwrap();
-        let head = run_git_ok(dir, &["rev-parse", "--short", "HEAD"]).unwrap().trim().to_string();
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\n---\n未存档的新内容。\n",
+        )
+        .unwrap();
+        let head = run_git_ok(dir, &["rev-parse", "--short", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
         let files = git_diff_summary(dir, &head, None).unwrap();
         assert_eq!(files.len(), 1, "{files:?}");
         assert_eq!(files[0].status, "M");

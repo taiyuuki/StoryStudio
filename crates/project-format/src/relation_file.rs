@@ -327,9 +327,7 @@ until = { scene = "sc_03_01" }
         ));
 
         // Roundtrip：scene 锚不丢
-        let serialized = RelationsFile::from_edges(&edges)
-            .to_toml_string()
-            .unwrap();
+        let serialized = RelationsFile::from_edges(&edges).to_toml_string().unwrap();
         assert!(serialized.contains("scene = \"sc_01_02\""), "{serialized}");
         assert!(serialized.contains("scene = \"sc_03_01\""), "{serialized}");
         let reparsed = RelationsFile::from_toml_str(&serialized).unwrap();

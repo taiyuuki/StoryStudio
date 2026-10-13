@@ -16,16 +16,16 @@ pub mod context;
 pub mod conversation;
 pub mod interactive;
 pub mod pipeline;
+pub mod prompts;
 pub mod provider;
 pub mod providers;
-pub mod prompts;
 pub mod session;
 pub mod stream_cancel;
 pub mod task;
 
 pub use agent::{
-    Agent, AgentConfig, AgentState, AgentStep, AgentTrace, Scratchpad, SubTask, TaskPlan, Tool,
-    ToolRegistry, clamp_tool_result,
+    clamp_tool_result, Agent, AgentConfig, AgentState, AgentStep, AgentTrace, Scratchpad, SubTask,
+    TaskPlan, Tool, ToolRegistry,
 };
 pub use cancel::CancelToken;
 pub use context::ContextBuilder;

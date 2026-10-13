@@ -40,9 +40,7 @@ pub fn anchor_ordinal(anchor: &str, eras: &[String]) -> Option<i64> {
     let matched = eras
         .iter()
         .enumerate()
-        .filter_map(|(idx, era)| {
-            t.strip_prefix(era.as_str()).map(|rest| (idx, era, rest))
-        })
+        .filter_map(|(idx, era)| t.strip_prefix(era.as_str()).map(|rest| (idx, era, rest)))
         .max_by_key(|(_, era, _)| era.chars().count());
 
     if let Some((era_idx, _era, rest)) = matched {
@@ -61,10 +59,7 @@ fn ymd_ordinal(s: &str, era_idx: i64) -> Option<i64> {
         .trim_start_matches('年')
         .trim_start_matches('-');
     let month_str = leading_num(after_year);
-    let month: i64 = month_str
-        .as_ref()
-        .and_then(|m| m.parse().ok())
-        .unwrap_or(0);
+    let month: i64 = month_str.as_ref().and_then(|m| m.parse().ok()).unwrap_or(0);
     let after_month = month_str
         .map(|m| after_year[m.len()..].trim_start_matches('-'))
         .unwrap_or(after_year);
@@ -101,7 +96,9 @@ mod tests {
 
     #[test]
     fn numeric_anchors_compare() {
-        assert!(anchor_ordinal("1023", &eras()).unwrap() < anchor_ordinal("1024", &eras()).unwrap());
+        assert!(
+            anchor_ordinal("1023", &eras()).unwrap() < anchor_ordinal("1024", &eras()).unwrap()
+        );
         assert!(
             anchor_ordinal("1023-3", &eras()).unwrap()
                 < anchor_ordinal("1023-9-15", &eras()).unwrap()
@@ -157,9 +154,13 @@ pub fn continuity_warnings(paths: &ProjectPaths) -> Vec<String> {
     // (scene_id, 展示锚文本, 序数)：记录最近一个可比场景
     let mut last: Option<(String, String, i64)> = None;
     for ch_id in &structure.book.chapters {
-        let Some(ch) = structure.chapter.get(ch_id) else { continue };
+        let Some(ch) = structure.chapter.get(ch_id) else {
+            continue;
+        };
         for sc_id in &ch.scenes {
-            let Some(sc) = structure.scene.get(sc_id) else { continue };
+            let Some(sc) = structure.scene.get(sc_id) else {
+                continue;
+            };
             // 绝对历法优先（拼成数字锚走同一折算），否则用历法标签锚
             // 数值锚优先（拼成数字形态走同一折算），否则用历法标签锚
             let anchor = sc.story_time.as_ref().and_then(|t| {
@@ -210,8 +211,13 @@ mod continuity_tests {
     #[test]
     fn anchor_ordinals_cover_numeric_and_era_labels() {
         let eras = vec!["创世".to_string(), "灵历".to_string()];
-        assert!(anchor_ordinal("1024-5-3", &eras).unwrap() < anchor_ordinal("1024-5-10", &eras).unwrap());
-        assert!(anchor_ordinal("灵历3217", &eras).unwrap() > anchor_ordinal("创世9999", &eras).unwrap());
+        assert!(
+            anchor_ordinal("1024-5-3", &eras).unwrap()
+                < anchor_ordinal("1024-5-10", &eras).unwrap()
+        );
+        assert!(
+            anchor_ordinal("灵历3217", &eras).unwrap() > anchor_ordinal("创世9999", &eras).unwrap()
+        );
         assert_eq!(anchor_ordinal("某个雨夜", &eras), None, "模糊锚不比较");
     }
 

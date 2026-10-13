@@ -124,7 +124,8 @@ pub fn check_fragment(
         Ok(report) => crate::ai_ledger::record(
             dir,
             "AI 审校",
-            &provider_id, &provider_model,
+            &provider_id,
+            &provider_model,
             report.tokens_used as u64,
             started.elapsed().as_millis() as u64,
             true,
@@ -133,7 +134,8 @@ pub fn check_fragment(
         Err(e) => crate::ai_ledger::record(
             dir,
             "AI 审校",
-            &provider_id, &provider_model,
+            &provider_id,
+            &provider_model,
             0,
             started.elapsed().as_millis() as u64,
             false,
@@ -236,9 +238,10 @@ fn scope_fragments(
     let scene_ids: Vec<String> = match scope {
         CheckScope::Scene => vec![id.to_string()],
         CheckScope::Chapter => {
-            let chapter = structure.chapter.get(id).ok_or_else(|| {
-                StudioError::NotFound(format!("章节 '{id}' 不存在"))
-            })?;
+            let chapter = structure
+                .chapter
+                .get(id)
+                .ok_or_else(|| StudioError::NotFound(format!("章节 '{id}' 不存在")))?;
             chapter.scenes.clone()
         }
     };
@@ -271,7 +274,8 @@ pub fn check_scope(
         Ok(report) => crate::ai_ledger::record(
             dir,
             "AI 审校",
-            &provider_id, &provider_model,
+            &provider_id,
+            &provider_model,
             report.tokens_used as u64,
             started.elapsed().as_millis() as u64,
             true,
@@ -280,7 +284,8 @@ pub fn check_scope(
         Err(e) => crate::ai_ledger::record(
             dir,
             "AI 审校",
-            &provider_id, &provider_model,
+            &provider_id,
+            &provider_model,
             0,
             started.elapsed().as_millis() as u64,
             false,
@@ -434,7 +439,10 @@ fn check_scope_inner(
             let (owner, uncertain) = attribute_quote(chunk, &bodies, &item.quote);
             item.fragment_id = Some(bodies[owner].0.clone());
             item.fragment_uncertain = uncertain;
-            if let Some(hit) = fragment_hits.iter_mut().find(|(fid, _)| *fid == bodies[owner].0) {
+            if let Some(hit) = fragment_hits
+                .iter_mut()
+                .find(|(fid, _)| *fid == bodies[owner].0)
+            {
                 hit.1 += 1;
             }
             all_items.push(item);
@@ -570,11 +578,9 @@ fn parse_report(raw: &str) -> Vec<AiCheckItem> {
     // 尝试 4：LLM 常在字符串值里嵌未转义双引号导致 JSON 破裂，
     // 把字符串内部的 ASCII 双引号转义后再试一次。
     let repaired = crate::llm_json::repair_unescaped_quotes(&cleaned);
-    if let Some(report) = try_parse_json(&repaired)
-        .or_else(|| try_parse_json(
-            &crate::llm_json::extract_json_object(&repaired).unwrap_or_default(),
-        ))
-    {
+    if let Some(report) = try_parse_json(&repaired).or_else(|| {
+        try_parse_json(&crate::llm_json::extract_json_object(&repaired).unwrap_or_default())
+    }) {
         return report_to_items(report);
     }
 
@@ -586,7 +592,11 @@ fn parse_report(raw: &str) -> Vec<AiCheckItem> {
 
     // 全部失败：降级为摘录展示（截断，避免整段原文倾泻）
     let excerpt: String = cleaned.chars().take(300).collect();
-    let ellipsis = if cleaned.chars().count() > 300 { "……" } else { "" };
+    let ellipsis = if cleaned.chars().count() > 300 {
+        "……"
+    } else {
+        ""
+    };
     vec![AiCheckItem {
         quote: String::new(),
         feature_id: "parse_error".to_string(),
@@ -838,7 +848,8 @@ mod tests {
         let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
         let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
         let f1 = crate::mutations::create_fragment(&paths, &sc, "第一段正文，字字如金。").unwrap();
-        let f2 = crate::mutations::create_fragment(&paths, &sc, "第二段正文，情绪没有名字。").unwrap();
+        let f2 =
+            crate::mutations::create_fragment(&paths, &sc, "第二段正文，情绪没有名字。").unwrap();
         (tmp, ch, sc, vec![f1, f2])
     }
 
@@ -854,7 +865,10 @@ mod tests {
         assert_eq!(report.hit_count(), 1);
 
         // quote 出现在 f2 → 归因到 f2（精确命中，非推测）
-        assert_eq!(report.items[0].fragment_id.as_deref(), Some(fids[1].as_str()));
+        assert_eq!(
+            report.items[0].fragment_id.as_deref(),
+            Some(fids[1].as_str())
+        );
         assert!(!report.items[0].fragment_uncertain);
 
         // 覆盖两个片段，命中分布正确
@@ -892,7 +906,8 @@ mod tests {
         let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
         let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
         let f1 = crate::mutations::create_fragment(&paths, &sc, "第一段正文，字字如金。").unwrap();
-        let f2 = crate::mutations::create_fragment(&paths, &sc, "他停了很久。\n\n她说不出话。").unwrap();
+        let f2 =
+            crate::mutations::create_fragment(&paths, &sc, "他停了很久。\n\n她说不出话。").unwrap();
 
         let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
             response: r#"{"items":[{"quote":"他停了很久。她说不出话。","feature_id":"13","feature_name":"段段金句","severity":"Weak","explanation":"拼接了两个段落。"}],"summary":"整体尚可。"}"#.to_string(),
@@ -915,7 +930,10 @@ mod tests {
         });
 
         let report = check_scope(tmp.path(), CheckScope::Chapter, &ch, &provider).unwrap();
-        assert_eq!(report.items[0].fragment_id.as_deref(), Some(fids[0].as_str()));
+        assert_eq!(
+            report.items[0].fragment_id.as_deref(),
+            Some(fids[0].as_str())
+        );
         assert!(
             report.items[0].fragment_uncertain,
             "对不上的引文应标记归属推测"
@@ -964,6 +982,10 @@ mod tests {
         let _ = check_fragment(tmp.path(), "f_9999", &provider);
         let ledger = crate::ai_ledger::summary(tmp.path(), 10);
         assert_eq!(ledger.total_calls, 2);
-        assert!(!ledger.recent[0].ok, "失败记录在最前: {:?}", ledger.recent[0]);
+        assert!(
+            !ledger.recent[0].ok,
+            "失败记录在最前: {:?}",
+            ledger.recent[0]
+        );
     }
 }

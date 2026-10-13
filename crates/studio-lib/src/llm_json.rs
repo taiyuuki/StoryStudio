@@ -297,7 +297,10 @@ mod tests {
 
     #[test]
     fn strip_think_variants() {
-        assert_eq!(strip_think("<think>reasoning</think>{\"a\":1}"), "{\"a\":1}");
+        assert_eq!(
+            strip_think("<think>reasoning</think>{\"a\":1}"),
+            "{\"a\":1}"
+        );
         assert_eq!(strip_think("{\"a\":1}"), "{\"a\":1}");
         // 前后混正文 + 多段思考
         assert_eq!(
@@ -307,9 +310,15 @@ mod tests {
         // 未闭合且位于开头（思考占满全文、被截断）→ 整体剥除
         assert_eq!(strip_think("<think>only reasoning"), "");
         // 未闭合且出现在中段 → 更像正文里的字面量，保留原样
-        assert_eq!(strip_think("{\"a\":1}<think>unfinished"), "{\"a\":1}<think>unfinished");
+        assert_eq!(
+            strip_think("{\"a\":1}<think>unfinished"),
+            "{\"a\":1}<think>unfinished"
+        );
         // 正文中出现 <think> 字面量概率极低，且仅成对出现时才剥
-        assert_eq!(strip_think("正文提到 <think> 标签"), "正文提到 <think> 标签");
+        assert_eq!(
+            strip_think("正文提到 <think> 标签"),
+            "正文提到 <think> 标签"
+        );
     }
 
     #[test]
@@ -317,10 +326,7 @@ mod tests {
         // 直解
         assert_eq!(parse_object(r#"{"a":1}"#).unwrap()["a"], 1);
         // 围栏
-        assert_eq!(
-            parse_object("```json\n{\"a\": 2}\n```").unwrap()["a"],
-            2
-        );
+        assert_eq!(parse_object("```json\n{\"a\": 2}\n```").unwrap()["a"], 2);
         // 前后缀散文包裹
         assert_eq!(
             parse_object("好的，结果如下：{\"a\": 3} 以上。").unwrap()["a"],
@@ -348,14 +354,13 @@ mod tests {
         assert_eq!(parse_array("```json\n[\"a\"]\n```").unwrap()[0], "a");
         // 数组对象混合：散文 + 前缀说明
         assert_eq!(
-            parse_array("结果：[{\"x\":1},{\"x\":2}] 完毕").unwrap().len(),
+            parse_array("结果：[{\"x\":1},{\"x\":2}] 完毕")
+                .unwrap()
+                .len(),
             2
         );
         // 思考链 + 围栏
-        assert_eq!(
-            parse_array("<think>hmm</think>[3]").unwrap().len(),
-            1
-        );
+        assert_eq!(parse_array("<think>hmm</think>[3]").unwrap().len(), 1);
         assert!(parse_array("{\"a\":1}").is_err());
     }
 

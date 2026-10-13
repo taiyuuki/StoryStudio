@@ -30,7 +30,6 @@ impl PrepareWritingTool {
     }
 }
 
-
 /// 最近一个已有正文的章节 ID（阅读序最后一个首场景有片段的章）。
 fn last_written_chapter(paths: &story_project_format::ProjectPaths) -> Option<String> {
     let structure = crate::mutations::load_structure(paths).ok()?;
@@ -95,28 +94,29 @@ impl Tool for PrepareWritingTool {
             .map(|v| v as usize);
 
         if scene_id_opt.is_some() && chapter_opt.is_some() {
-            return Err("scene_id 与 chapter 只能传一个（续写场景传 scene_id，写新章节传 chapter）".into());
+            return Err(
+                "scene_id 与 chapter 只能传一个（续写场景传 scene_id，写新章节传 chapter）".into(),
+            );
         }
 
-        let (scene_id, chapter_index): (Option<String>, Option<usize>) = if let Some(sid_str) =
-            scene_id_opt
-        {
-            let sid = StableId::new_unchecked(&sid_str);
-            if document.get_scene(&sid).is_none() {
-                return Err(format!("场景 '{sid_str}' 不存在"));
-            }
-            (Some(sid_str), None)
-        } else if let Some(index) = chapter_opt {
-            (None, Some(index))
-        } else {
-            // 缺参回退：写作最前沿场景（阅读序最后一个设了 POV 的场景）
-            let scene = frontier_scene_with_pov(document).ok_or_else(|| {
-                "缺少参数: scene_id 或 chapter（项目中也没有可回退的前沿场景——\
+        let (scene_id, chapter_index): (Option<String>, Option<usize>) =
+            if let Some(sid_str) = scene_id_opt {
+                let sid = StableId::new_unchecked(&sid_str);
+                if document.get_scene(&sid).is_none() {
+                    return Err(format!("场景 '{sid_str}' 不存在"));
+                }
+                (Some(sid_str), None)
+            } else if let Some(index) = chapter_opt {
+                (None, Some(index))
+            } else {
+                // 缺参回退：写作最前沿场景（阅读序最后一个设了 POV 的场景）
+                let scene = frontier_scene_with_pov(document).ok_or_else(|| {
+                    "缺少参数: scene_id 或 chapter（项目中也没有可回退的前沿场景——\
                   请传 chapter（脉络序号）准备写新章节）"
-                    .to_string()
-            })?;
-            (Some(scene.id.as_str().to_string()), None)
-        };
+                        .to_string()
+                })?;
+                (Some(scene.id.as_str().to_string()), None)
+            };
 
         // —— 脉络条目定位：场景 → 绑定章节 ID → 脉络；或直接按序号 ——
         let chapters_file: ChaptersFile =
@@ -171,7 +171,9 @@ impl Tool for PrepareWritingTool {
                 .map(|ch| ch.title.as_str())
                 .unwrap_or("未分章");
             let pov_label = scene.pov.as_ref().and_then(|p| {
-                semantic.get(p).map(|n| format!("（POV: {}）", n.display_name()))
+                semantic
+                    .get(p)
+                    .map(|n| format!("（POV: {}）", n.display_name()))
             });
             out.push_str(&format!(
                 "目标场景: {sid_str}「{}」（所属: {chapter_title}）{}\n",
@@ -216,9 +218,7 @@ impl Tool for PrepareWritingTool {
         let mut written: Vec<(u32, &story_ir::SceneNode)> = document
             .all_nodes()
             .filter_map(|(id, node)| match node {
-                story_ir::DocNode::Scene(s)
-                    if !document.fragments_of_scene(id).is_empty() =>
-                {
+                story_ir::DocNode::Scene(s) if !document.fragments_of_scene(id).is_empty() => {
                     document.reading_index(id).map(|r| (r, s))
                 }
                 _ => None,
@@ -271,11 +271,7 @@ impl Tool for PrepareWritingTool {
             .or_else(|| {
                 outline_entry
                     .and_then(|e| e.chapter_id.as_deref())
-                    .and_then(|ch| {
-                        book_chapter_ids(document)
-                            .iter()
-                            .position(|c| c == ch)
-                    })
+                    .and_then(|ch| book_chapter_ids(document).iter().position(|c| c == ch))
             })
             .or_else(|| outline_index.map(|i| i.saturating_sub(1)));
         let stale = thread_stale_warnings(&self.ctx, &scene_chapter_pos, target_ch_pos);
@@ -317,19 +313,21 @@ impl Tool for PrepareWritingTool {
                 }
             }
         }
-        if let Some(block) =
-            super::entities::render_character_lines(&self.ctx, &involved, pov_id.as_deref(), semantic)
-        {
+        if let Some(block) = super::entities::render_character_lines(
+            &self.ctx,
+            &involved,
+            pov_id.as_deref(),
+            semantic,
+        ) {
             out.push_str("\n涉及角色:\n");
             out.push_str(&block);
         }
 
         // —— 5. 角色当前状态断言（POV 优先，限量）——
-        let assertions_file: AssertionsFile =
-            std::fs::read_to_string(paths.assertions_toml())
-                .ok()
-                .and_then(|c| AssertionsFile::from_toml_str(&c).ok())
-                .unwrap_or_default();
+        let assertions_file: AssertionsFile = std::fs::read_to_string(paths.assertions_toml())
+            .ok()
+            .and_then(|c| AssertionsFile::from_toml_str(&c).ok())
+            .unwrap_or_default();
         let mut state_ids: Vec<String> = Vec::new();
         if let Some(pov) = &pov_id {
             state_ids.push(pov.clone());
@@ -348,12 +346,11 @@ impl Tool for PrepareWritingTool {
                 .get(&StableId::new_unchecked(cid))
                 .map(|n| n.display_name().to_string())
                 .unwrap_or_else(|| cid.clone());
-            let items: Vec<&story_project_format::knowledge_file::AssertionDef> =
-                assertions_file
-                    .assertions
-                    .iter()
-                    .filter(|a| a.subject == *cid && (a.status.is_empty() || a.status == "active"))
-                    .collect();
+            let items: Vec<&story_project_format::knowledge_file::AssertionDef> = assertions_file
+                .assertions
+                .iter()
+                .filter(|a| a.subject == *cid && (a.status.is_empty() || a.status == "active"))
+                .collect();
             if items.is_empty() {
                 continue;
             }
@@ -411,9 +408,7 @@ impl Tool for PrepareWritingTool {
                 } else {
                     format!("上一章为「{kind}」起笔，可保持也可错开（连续 2 章以上同型会提示）")
                 };
-                out.push_str(&format!(
-                    "\n[开场指纹] 上一章开场类型：{kind}。{advice}。"
-                ));
+                out.push_str(&format!("\n[开场指纹] 上一章开场类型：{kind}。{advice}。"));
             }
         }
 
@@ -471,7 +466,9 @@ fn book_chapter_ids(document: &story_ir::DocumentGraph) -> Vec<String> {
 }
 
 /// 场景 → 章节序位（0-based，阅读序）
-fn build_scene_chapter_pos(document: &story_ir::DocumentGraph) -> std::collections::HashMap<String, usize> {
+fn build_scene_chapter_pos(
+    document: &story_ir::DocumentGraph,
+) -> std::collections::HashMap<String, usize> {
     let mut map = std::collections::HashMap::new();
     for ch_id in book_chapter_ids(document) {
         let pos = map.len();
@@ -719,16 +716,16 @@ object = "临安城码头"
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let tool = PrepareWritingTool::new(ctx);
 
-        let out = tool
-            .execute(&serde_json::json!({ "chapter": 2 }))
-            .unwrap();
+        let out = tool.execute(&serde_json::json!({ "chapter": 2 })).unwrap();
         assert!(out.contains("第二章 码头"), "{out}");
         assert!(out.contains("1. 夜探码头"), "{out}");
         // 章节目标的前情以第一章末场景为界
         assert!(out.contains("客栈投宿"), "{out}");
 
         // 越界序号报错
-        let err = tool.execute(&serde_json::json!({ "chapter": 9 })).unwrap_err();
+        let err = tool
+            .execute(&serde_json::json!({ "chapter": 9 }))
+            .unwrap_err();
         assert!(err.contains("不存在"), "{err}");
     }
 
@@ -796,7 +793,9 @@ object = "临安城码头"
             ));
         }
         for i in 1..=12 {
-            structure.push_str(&format!("\n[scene.sc_{i:02}]\ntitle = \"场景{i}\"\nfragments = []\n"));
+            structure.push_str(&format!(
+                "\n[scene.sc_{i:02}]\ntitle = \"场景{i}\"\nfragments = []\n"
+            ));
         }
         std::fs::write(dir.join("structure.toml"), structure).unwrap();
 

@@ -249,7 +249,9 @@ pub fn cancel_book_creation() -> bool {
 }
 
 /// 包装一个阶段调用：注册取消令牌，结束/出错后注销
-fn with_cancel<T>(f: impl FnOnce(&CancelToken) -> Result<T, StudioError>) -> Result<T, StudioError> {
+fn with_cancel<T>(
+    f: impl FnOnce(&CancelToken) -> Result<T, StudioError>,
+) -> Result<T, StudioError> {
     let token = CancelToken::new();
     let slot = CANCEL_SLOT.get_or_init(|| RwLock::new(None));
     if let Ok(mut guard) = slot.write() {
@@ -399,7 +401,12 @@ pub fn create_book_project(
         o.target_words
             .unwrap_or(DEFAULT_CHAPTER_WORDS * o.chapter_count as u64),
     );
-    write_toml(&paths, "outline", &paths.root().join("outline.toml"), &outline)?;
+    write_toml(
+        &paths,
+        "outline",
+        &paths.root().join("outline.toml"),
+        &outline,
+    )?;
 
     Ok(root.display().to_string())
 }
@@ -742,7 +749,11 @@ pub fn save_book_world(root: &Path, draft: &WorldDraft) -> Result<WorldSaveRepor
         if t.title.trim().is_empty() {
             continue;
         }
-        let priority = if t.priority == "main" { "main" } else { "minor" };
+        let priority = if t.priority == "main" {
+            "main"
+        } else {
+            "minor"
+        };
         if mutations::create_thread(
             &paths,
             t.title.trim(),
@@ -783,7 +794,12 @@ pub fn ai_book_outline_batch(
     let count = if count == 0 { 12 } else { count }.clamp(1, MAX_BATCH_CHAPTERS);
     let context = outline_context(root)?;
     with_cancel(|cancel| {
-        let json = llm_json(provider, cancel, Some(root), outline_prompt(&context, count))?;
+        let json = llm_json(
+            provider,
+            cancel,
+            Some(root),
+            outline_prompt(&context, count),
+        )?;
         Ok(parse_outline_draft(&json, count as usize))
     })
 }
@@ -816,9 +832,8 @@ pub(crate) struct OutlineContext {
 fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
     let paths = ProjectPaths::new(root);
     let outline = OutlineFile::from_toml_str(
-        &std::fs::read_to_string(paths.root().join("outline.toml")).map_err(|_| {
-            StudioError::NotFound("outline.toml 不存在——请先完成开书步骤".into())
-        })?,
+        &std::fs::read_to_string(paths.root().join("outline.toml"))
+            .map_err(|_| StudioError::NotFound("outline.toml 不存在——请先完成开书步骤".into()))?,
     )
     .map_err(|e| StudioError::Config(format!("outline.toml 解析失败: {e}")))?;
 
@@ -909,13 +924,7 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
         .chapters
         .iter()
         .filter(|c| c.status == "completed")
-        .map(|c| {
-            format!(
-                "《{}》：{}",
-                c.title,
-                c.summary.clone().unwrap_or_default()
-            )
-        })
+        .map(|c| format!("《{}》：{}", c.title, c.summary.clone().unwrap_or_default()))
         .collect();
     let keep = completed_summaries.len().saturating_sub(8);
     completed_summaries.drain(0..keep);
@@ -1185,7 +1194,10 @@ fn parse_outline_draft(v: &serde_json::Value, target: usize) -> OutlineBatchDraf
 
 /// 保存章节脉络批次（追加 chapters.toml；volume_order 不在现有卷范围内
 /// 的章节归入最后一卷）。
-pub fn save_book_outline_batch(root: &Path, draft: &OutlineBatchDraft) -> Result<usize, StudioError> {
+pub fn save_book_outline_batch(
+    root: &Path,
+    draft: &OutlineBatchDraft,
+) -> Result<usize, StudioError> {
     if draft.chapters.is_empty() {
         return Err(StudioError::Config("没有可保存的章节".to_string()));
     }
@@ -1267,7 +1279,9 @@ fn llm_json(
     prompt: String,
 ) -> Result<serde_json::Value, StudioError> {
     let request = GenerateRequest {
-        system: "你为中文网络小说创作服务，只输出规定格式的 JSON，不输出任何解释或代码围栏以外的文字。".into(),
+        system:
+            "你为中文网络小说创作服务，只输出规定格式的 JSON，不输出任何解释或代码围栏以外的文字。"
+                .into(),
         messages: vec![Message::user(prompt)],
         model: String::new(),
         temperature: 0.7,
@@ -1279,14 +1293,14 @@ fn llm_json(
     };
 
     let started = std::time::Instant::now();
-    let result =
-        stream_generate_with_cancel(provider.clone(), &request, cancel, Arc::new(|_| {}));
+    let result = stream_generate_with_cancel(provider.clone(), &request, cancel, Arc::new(|_| {}));
     if let Some(root) = ledger_root {
         match &result {
             Ok(resp) => crate::ai_ledger::record(
                 root,
                 "AI 建书·大纲",
-                provider.id(), provider.model(),
+                provider.id(),
+                provider.model(),
                 resp.usage.total() as u64,
                 started.elapsed().as_millis() as u64,
                 true,
@@ -1295,7 +1309,8 @@ fn llm_json(
             Err(ref e) => crate::ai_ledger::record(
                 root,
                 "AI 建书·大纲",
-                provider.id(), provider.model(),
+                provider.id(),
+                provider.model(),
                 0,
                 started.elapsed().as_millis() as u64,
                 false,
@@ -1359,7 +1374,8 @@ fn character_id_map(paths: &ProjectPaths) -> std::collections::HashMap<String, S
         let Ok(entity) = story_project_format::EntityFile::from_toml_str(&content) else {
             continue;
         };
-        map.entry(entity.display_name).or_insert_with(|| entity.id.clone());
+        map.entry(entity.display_name)
+            .or_insert_with(|| entity.id.clone());
         for alias in entity.aliases {
             map.entry(alias).or_insert_with(|| entity.id.clone());
         }
@@ -1416,9 +1432,9 @@ fn write_entity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use story_ai_runtime::provider::{AiError, GenerateResponse, StopReason, TokenUsage};
     use story_ai_runtime::AiProvider;
-    use std::sync::Mutex;
 
     /// 按脚本顺序回放响应的 Mock Provider
     #[derive(Debug)]
@@ -1504,8 +1520,7 @@ mod tests {
     #[test]
     fn concepts_single_object_fallback() {
         let single = r#"{"title":"独苗","tagline":"t","blurb":"b","premise":"p","theme":"th","setting":"st"}"#;
-        let concepts =
-            ai_book_concepts(&options(), scripted(vec![single.to_string()])).unwrap();
+        let concepts = ai_book_concepts(&options(), scripted(vec![single.to_string()])).unwrap();
         assert_eq!(concepts.len(), 1);
         assert_eq!(concepts[0].title, "独苗");
     }
@@ -1604,13 +1619,12 @@ mod tests {
         let root = Path::new(&root);
 
         // 先落设定（角色供续排上下文引用）
-        let world =
-            ai_book_world(&concept, &options(), scripted(vec![WORLD_JSON.into()])).unwrap();
+        let world = ai_book_world(&concept, &options(), scripted(vec![WORLD_JSON.into()])).unwrap();
         save_book_world(root, &world).unwrap();
 
         // 第一批：3 章 + 1 卷
-        let draft = ai_book_outline_batch(root, 3, scripted(vec![OUTLINE_BATCH_JSON.into()]))
-            .unwrap();
+        let draft =
+            ai_book_outline_batch(root, 3, scripted(vec![OUTLINE_BATCH_JSON.into()])).unwrap();
         assert_eq!(draft.chapters.len(), 3);
         assert_eq!(draft.volumes.len(), 1);
         let saved = save_book_outline_batch(root, &draft).unwrap();
@@ -1640,7 +1654,10 @@ mod tests {
             .iter()
             .any(|(n, o)| n == "阿澈" && o.contains("守灯学徒")));
         // 地点：名称/类型/上级（parent 由 StableId 换算回名称）
-        assert!(ctx.locations.iter().any(|(n, k, _)| n == "云隐洲" && k == "continent"));
+        assert!(ctx
+            .locations
+            .iter()
+            .any(|(n, k, _)| n == "云隐洲" && k == "continent"));
         assert!(ctx
             .locations
             .iter()
@@ -1657,8 +1674,8 @@ mod tests {
         assert!(prompt.contains("张冠李戴"));
 
         // 第二批：追加 1 章 + 新卷（order=2）
-        let draft2 = ai_book_outline_batch(root, 1, scripted(vec![OUTLINE_BATCH2_JSON.into()]))
-            .unwrap();
+        let draft2 =
+            ai_book_outline_batch(root, 1, scripted(vec![OUTLINE_BATCH2_JSON.into()])).unwrap();
         save_book_outline_batch(root, &draft2).unwrap();
 
         let file = story_project_format::ChaptersFile::from_toml_str(
@@ -1687,8 +1704,8 @@ mod tests {
             premise: "主线".into(),
             ..Default::default()
         };
-        let root = create_book_project(parent.path(), &concept, &BookCreationOptions::default())
-            .unwrap();
+        let root =
+            create_book_project(parent.path(), &concept, &BookCreationOptions::default()).unwrap();
         // 草稿声称 volume_order=9（不存在）→ 归入第一卷
         let draft = OutlineBatchDraft {
             volumes: vec![VolumeItem {
@@ -1704,10 +1721,7 @@ mod tests {
         };
         save_book_outline_batch(Path::new(&root), &draft).unwrap();
         let file = story_project_format::ChaptersFile::from_toml_str(
-            &std::fs::read_to_string(
-                ProjectPaths::new(Path::new(&root)).chapters_toml(),
-            )
-            .unwrap(),
+            &std::fs::read_to_string(ProjectPaths::new(Path::new(&root)).chapters_toml()).unwrap(),
         )
         .unwrap();
         assert_eq!(file.chapters[0].volume_order, 1);
@@ -1743,7 +1757,9 @@ mod tests {
         assert!(wp.contains("【书名】《拾灯录》"));
         assert!(wp.contains("【主线】灵灯将熄"));
         assert!(wp.contains("恰好 3 个主要角色"));
-        assert!(wp.contains("[{name, role, gender, occupation, personality, background, aliases:[别名]}]"));
+        assert!(wp.contains(
+            "[{name, role, gender, occupation, personality, background, aliases:[别名]}]"
+        ));
 
         let ctx = OutlineContext {
             premise: "灵灯将熄".into(),

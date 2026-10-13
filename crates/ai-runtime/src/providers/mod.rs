@@ -391,10 +391,7 @@ pub trait ProviderAdapter: Send + Sync {
     /// 流式请求需要注入 body 的标记字段。默认 `("stream", true)`；
     /// Gemini 不接受未知字段（直接 400），返回 None 跳过注入。
     fn stream_flag(&self) -> Option<(String, serde_json::Value)> {
-        Some((
-            "stream".to_string(),
-            serde_json::Value::Bool(true),
-        ))
+        Some(("stream".to_string(), serde_json::Value::Bool(true)))
     }
 
     /// 模型名（apply_overrides 需要按模型差异映射参数，如 Gemini 3.x vs 2.5 的思考参数）
@@ -555,7 +552,10 @@ pub fn list_models(
                             .get("supportedGenerationMethods")
                             .and_then(|s| s.as_array());
                         if let Some(methods) = methods {
-                            if !methods.iter().any(|x| x.as_str() == Some("generateContent")) {
+                            if !methods
+                                .iter()
+                                .any(|x| x.as_str() == Some("generateContent"))
+                            {
                                 return None;
                             }
                         }
@@ -646,9 +646,7 @@ fn gemini_models_endpoint(api_url: Option<&str>) -> String {
             if b.ends_with("/models") {
                 return b;
             }
-            b.strip_suffix("/v1beta")
-                .map(str::to_string)
-                .unwrap_or(b)
+            b.strip_suffix("/v1beta").map(str::to_string).unwrap_or(b)
         }
         None => "https://generativelanguage.googleapis.com".to_string(),
     };
@@ -703,10 +701,7 @@ impl HttpClient {
         // 追加用户自定义头（跳过认证头，避免误覆盖）
         for (key, value) in adapter.custom_headers() {
             let lower = key.to_lowercase();
-            if lower == "authorization"
-                || lower == "x-api-key"
-                || lower == "x-goog-api-key"
-            {
+            if lower == "authorization" || lower == "x-api-key" || lower == "x-goog-api-key" {
                 continue;
             }
             req = req.set(key, value);
@@ -818,10 +813,7 @@ impl HttpStreamClient {
         // 追加用户自定义头（跳过认证头，避免误覆盖）
         for (key, value) in adapter.custom_headers() {
             let lower = key.to_lowercase();
-            if lower == "authorization"
-                || lower == "x-api-key"
-                || lower == "x-goog-api-key"
-            {
+            if lower == "authorization" || lower == "x-api-key" || lower == "x-goog-api-key" {
                 continue;
             }
             req_builder = req_builder.header(key, value);
@@ -1477,7 +1469,12 @@ mod tests {
                 "gemini-2.5 thinking={:?} 应映射 thinkingBudget={budget}",
                 adapter.thinking
             );
-            let bumped = 4096 + if budget > 0 { budget.min(24576) as usize } else { 0 };
+            let bumped = 4096
+                + if budget > 0 {
+                    budget.min(24576) as usize
+                } else {
+                    0
+                };
             assert_eq!(
                 body["generationConfig"]["maxOutputTokens"].as_u64(),
                 Some(bumped as u64)
@@ -1495,7 +1492,10 @@ mod tests {
             body["generationConfig"]["thinkingConfig"]["thinkingBudget"].as_u64(),
             Some(2048)
         );
-        assert_eq!(body["generationConfig"]["maxOutputTokens"].as_u64(), Some(4096 + 2048));
+        assert_eq!(
+            body["generationConfig"]["maxOutputTokens"].as_u64(),
+            Some(4096 + 2048)
+        );
     }
 
     #[test]
@@ -1506,7 +1506,10 @@ mod tests {
             serde_json::json!({"generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}});
         apply_overrides(&mut body, &adapter, 4096);
         assert!(body["generationConfig"].get("thinkingConfig").is_none());
-        assert_eq!(body["generationConfig"]["maxOutputTokens"].as_u64(), Some(4096));
+        assert_eq!(
+            body["generationConfig"]["maxOutputTokens"].as_u64(),
+            Some(4096)
+        );
     }
 
     #[test]
@@ -1536,7 +1539,10 @@ mod tests {
         assert_eq!(body["generationConfig"]["candidateCount"].as_u64(), Some(1));
         // 兄弟字段保留，没有被整体替换掉
         assert!((body["generationConfig"]["temperature"].as_f64().unwrap() - 0.7).abs() < 0.001);
-        assert_eq!(body["generationConfig"]["maxOutputTokens"].as_u64(), Some(4096));
+        assert_eq!(
+            body["generationConfig"]["maxOutputTokens"].as_u64(),
+            Some(4096)
+        );
     }
 
     #[test]

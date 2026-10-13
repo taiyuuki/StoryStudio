@@ -50,7 +50,8 @@ pub fn update_structure_add_fragments(
     paths: &ProjectPaths,
     scene_id: &str,
     new_frag_ids: &[String],
-) -> Result<(), StudioError> {    let structure_path = paths.structure_toml();
+) -> Result<(), StudioError> {
+    let structure_path = paths.structure_toml();
     let content = std::fs::read_to_string(&structure_path)?;
 
     let mut structure = StructureFile::from_toml_str(&content)
@@ -265,7 +266,8 @@ mod fragment_body_tests {
 
     #[test]
     fn body_strips_frontmatter() {
-        let content = "---\nid: f_0001\nanchors:\n  - entity: c_0001\n    role: appears\n---\n\n正文内容\n";
+        let content =
+            "---\nid: f_0001\nanchors:\n  - entity: c_0001\n    role: appears\n---\n\n正文内容\n";
         assert_eq!(fragment_body(content), "正文内容\n");
     }
 
@@ -325,7 +327,8 @@ mod strip_tests {
         assert!(!cleaned.contains("anchors:"));
 
         // 实体 ID 形态（规范锚点格式）同样清除
-        let body2 = "开头。\n---\nid: f_0001\nanchors:\n  - entity: c_0001\n    role: appears\n---\n结尾。";
+        let body2 =
+            "开头。\n---\nid: f_0001\nanchors:\n  - entity: c_0001\n    role: appears\n---\n结尾。";
         let (cleaned2, changed2) = strip_residue_blocks(body2);
         assert!(changed2);
         assert!(!cleaned2.contains("entity:"));

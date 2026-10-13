@@ -252,7 +252,9 @@ impl GeminiAdapter {
 /// 混入 text，下游 JSON 解析必败（ai_check 曾因此整链降级 parse_error），
 /// 纯文本消费方也会被英文推理污染。非流式/流式两处都必须滤掉。
 fn is_thought_part(part: &serde_json::Value) -> bool {
-    part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false)
+    part.get("thought")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Gemini finishReason → StopReason。
@@ -293,10 +295,7 @@ fn parse_usage_metadata(body: &serde_json::Value) -> TokenUsage {
 /// 从响应 parts 提取文本 / 工具调用（非流式 parse_response 与流式 chunk 共用）。
 ///
 /// `next_index` 供给合成 id / ToolUseStart index 的递增序号（流式跨 chunk 唯一）。
-fn extract_parts(
-    parts: &[serde_json::Value],
-    next_index: &mut usize,
-) -> (String, Vec<ToolCall>) {
+fn extract_parts(parts: &[serde_json::Value], next_index: &mut usize) -> (String, Vec<ToolCall>) {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     for part in parts {
@@ -375,8 +374,7 @@ impl ProviderAdapter for GeminiAdapter {
             return Ok(key.clone());
         }
         // AI Studio 惯用 GEMINI_API_KEY，gcloud 生态惯用 GOOGLE_API_KEY
-        api_key_from_env("GEMINI_API_KEY")
-            .or_else(|_| api_key_from_env("GOOGLE_API_KEY"))
+        api_key_from_env("GEMINI_API_KEY").or_else(|_| api_key_from_env("GOOGLE_API_KEY"))
     }
 
     fn extra_headers(&self) -> Vec<(String, String)> {
@@ -474,10 +472,7 @@ impl ProviderAdapter for GeminiAdapter {
                 }
                 Role::Tool => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        let name = last_call_names
-                            .get(tc_id)
-                            .cloned()
-                            .unwrap_or_default();
+                        let name = last_call_names.get(tc_id).cloned().unwrap_or_default();
                         let mut resp = serde_json::json!({
                             "functionResponse": {
                                 // id 缺失时按 name 匹配；合成 id 不回传
@@ -538,7 +533,9 @@ impl ProviderAdapter for GeminiAdapter {
             .pointer("/promptFeedback/blockReason")
             .and_then(|b| b.as_str())
         {
-            return Err(AiError::Parse(format!("Gemini 请求被安全策略拦截: {block}")));
+            return Err(AiError::Parse(format!(
+                "Gemini 请求被安全策略拦截: {block}"
+            )));
         }
 
         let candidate = body
@@ -599,7 +596,11 @@ impl ProviderAdapter for GeminiAdapter {
             return Vec::new();
         };
 
-        if let Some(parts) = candidate.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
+        if let Some(parts) = candidate
+            .get("content")
+            .and_then(|c| c.get("parts"))
+            .and_then(|p| p.as_array())
+        {
             for part in parts {
                 if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
                     if !t.is_empty() && !is_thought_part(part) {
@@ -787,7 +788,10 @@ mod tests {
             api_url_full: true,
             ..Default::default()
         };
-        assert_eq!(a.endpoint(), "https://my-proxy.example.com/api/chat?token=x");
+        assert_eq!(
+            a.endpoint(),
+            "https://my-proxy.example.com/api/chat?token=x"
+        );
         assert_eq!(
             a.stream_endpoint(),
             "https://my-proxy.example.com/api/chat?token=x&alt=sse"
@@ -816,7 +820,10 @@ mod tests {
         let a = adapter();
         let request = GenerateRequest {
             system: "你是小说作者".to_string(),
-            messages: vec![Message::user("续写故事"), Message::assistant("林风推开门。")],
+            messages: vec![
+                Message::user("续写故事"),
+                Message::assistant("林风推开门。"),
+            ],
             model: String::new(),
             temperature: 0.8,
             max_tokens: 4096,
@@ -824,11 +831,12 @@ mod tests {
         };
 
         let body = a.to_request_body(&request);
-        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "你是小说作者");
-        assert_eq!(body["generationConfig"]["maxOutputTokens"], 4096);
-        assert!(
-            (body["generationConfig"]["temperature"].as_f64().unwrap() - 0.8).abs() < 0.001
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"],
+            "你是小说作者"
         );
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 4096);
+        assert!((body["generationConfig"]["temperature"].as_f64().unwrap() - 0.8).abs() < 0.001);
         assert_eq!(body["contents"][0]["role"], "user");
         assert_eq!(body["contents"][0]["parts"][0]["text"], "续写故事");
         assert_eq!(body["contents"][1]["role"], "model");
@@ -855,7 +863,10 @@ mod tests {
         };
 
         let body = a.to_request_body(&request);
-        assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "get_outline");
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            "get_outline"
+        );
         assert_eq!(
             body["tools"][0]["functionDeclarations"][0]["parameters"]["type"],
             "object"
@@ -1120,7 +1131,8 @@ mod tests {
     #[test]
     fn parse_stream_text_delta() {
         let a = adapter();
-        let line = r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"你好"}]},"index":0}]}"#;
+        let line =
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"你好"}]},"index":0}]}"#;
         let events = a.parse_stream_chunks(line);
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -1150,7 +1162,12 @@ mod tests {
         let events = a.parse_stream_chunks(line);
         assert_eq!(events.len(), 2);
         match &events[0] {
-            StreamEvent::ToolUseStart { index, id, name, signature } => {
+            StreamEvent::ToolUseStart {
+                index,
+                id,
+                name,
+                signature,
+            } => {
                 assert_eq!(*index, 0);
                 assert_eq!(id, "update_thread#0");
                 assert_eq!(name, "update_thread");
@@ -1159,7 +1176,11 @@ mod tests {
             other => panic!("应为 ToolUseStart，实际: {other:?}"),
         }
         match &events[1] {
-            StreamEvent::ToolUseDelta { index, partial_json, .. } => {
+            StreamEvent::ToolUseDelta {
+                index,
+                partial_json,
+                ..
+            } => {
                 assert_eq!(*index, 0);
                 let args: serde_json::Value = serde_json::from_str(partial_json).unwrap();
                 assert_eq!(args["thread_id"], "t_007");
@@ -1183,8 +1204,12 @@ mod tests {
         let e2 = a.parse_stream_chunks(line2);
         match (&e1[0], &e2[0]) {
             (
-                StreamEvent::ToolUseStart { index: i1, id: id1, .. },
-                StreamEvent::ToolUseStart { index: i2, id: id2, .. },
+                StreamEvent::ToolUseStart {
+                    index: i1, id: id1, ..
+                },
+                StreamEvent::ToolUseStart {
+                    index: i2, id: id2, ..
+                },
             ) => {
                 assert_eq!((*i1, *i2), (0, 1));
                 assert_eq!((id1.as_str(), id2.as_str()), ("read_a#0", "read_b#1"));
@@ -1201,7 +1226,9 @@ mod tests {
         // Delta("完") + Done
         assert_eq!(events.len(), 2);
         match &events[1] {
-            StreamEvent::Done { usage, stop_reason, .. } => {
+            StreamEvent::Done {
+                usage, stop_reason, ..
+            } => {
                 assert_eq!(*stop_reason, Some(StopReason::EndTurn));
                 assert_eq!(usage.output_tokens, 10);
             }

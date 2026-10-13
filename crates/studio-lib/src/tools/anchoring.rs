@@ -35,7 +35,10 @@ struct RosterEntry {
 /// 名册上限之外的排序依据：场景里已出场/被提及的实体对指代消解最相关，
 /// 优先入册——否则长篇后期角色超过上限时，地点和道具永远排不进名册，
 /// 在锚定里"隐形"。
-fn scene_anchor_entities(paths: &ProjectPaths, fragment_id: &str) -> std::collections::HashSet<String> {
+fn scene_anchor_entities(
+    paths: &ProjectPaths,
+    fragment_id: &str,
+) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     let Some(structure) = std::fs::read_to_string(paths.structure_toml())
         .ok()
@@ -51,9 +54,15 @@ fn scene_anchor_entities(paths: &ProjectPaths, fragment_id: &str) -> std::collec
         return out;
     };
     for fid in &scene.fragments {
-        let Some(path) = paths.file_for_id(fid) else { continue };
-        let Ok(content) = std::fs::read_to_string(path) else { continue };
-        let Ok(file) = FragmentFile::parse(&content) else { continue };
+        let Some(path) = paths.file_for_id(fid) else {
+            continue;
+        };
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(file) = FragmentFile::parse(&content) else {
+            continue;
+        };
         for a in file.frontmatter.anchors {
             out.insert(a.entity);
         }
@@ -64,7 +73,10 @@ fn scene_anchor_entities(paths: &ProjectPaths, fragment_id: &str) -> std::collec
 /// 构建候选实体名册（id + 名称/别名/档案要点）。
 /// `focus` 中的实体优先（场景相关），其余按 角色→地点→道具→组织 排序补足，
 /// 合计截断到 [`ROSTER_CAP`]。
-fn build_roster(paths: &ProjectPaths, focus: &std::collections::HashSet<String>) -> Vec<RosterEntry> {
+fn build_roster(
+    paths: &ProjectPaths,
+    focus: &std::collections::HashSet<String>,
+) -> Vec<RosterEntry> {
     let mut entries = Vec::new();
     for dir in [
         paths.characters_dir(),
@@ -146,10 +158,7 @@ pub enum AnchorRun {
 ///
 /// 无 provider 时直接返回空结果（与调用方原有语义一致）。超时后工作线程
 /// detach 继续跑完落盘——调用方回执应提示「已保存、勿重试、稍后查看」。
-pub fn anchor_and_apply_bounded(
-    ctx: &ToolContext,
-    fragment_id: &str,
-) -> Result<AnchorRun, String> {
+pub fn anchor_and_apply_bounded(ctx: &ToolContext, fragment_id: &str) -> Result<AnchorRun, String> {
     anchor_and_apply_with_budget(ctx, fragment_id, ANCHOR_BUDGET)
 }
 
@@ -185,9 +194,9 @@ pub(crate) fn anchor_and_apply_with_budget(
             drop(worker); // detach：后台继续完成台账与锚点落盘
             Ok(AnchorRun::Deferred)
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(
-            "锚定线程异常退出（正文不受影响，可稍后用 anchor_fragments 补锚）".to_string(),
-        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("锚定线程异常退出（正文不受影响，可稍后用 anchor_fragments 补锚）".to_string())
+        }
     }
 }
 
@@ -196,11 +205,14 @@ fn fragment_body(paths: &ProjectPaths, fragment_id: &str) -> Result<String, Stri
     let path = paths
         .file_for_id(fragment_id)
         .ok_or_else(|| format!("无效的片段 ID: {fragment_id}"))?;
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("读取片段失败: {e}"))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取片段失败: {e}"))?;
     Ok(if let Some(rest) = content.strip_prefix("---") {
         rest.find("---")
-            .map(|end| content[3 + end + 3..].trim_start_matches(['\r', '\n']).to_string())
+            .map(|end| {
+                content[3 + end + 3..]
+                    .trim_start_matches(['\r', '\n'])
+                    .to_string()
+            })
             .unwrap_or(content.clone())
     } else {
         content.clone()
@@ -220,14 +232,24 @@ pub fn comprehension_anchor(
     // 读正文（剥 frontmatter）
     let body = fragment_body(&paths, fragment_id)?;
     if body.trim().is_empty() {
-        return Ok(AnchorOutcome { anchored: Vec::new(), unresolved: Vec::new() });
+        return Ok(AnchorOutcome {
+            anchored: Vec::new(),
+            unresolved: Vec::new(),
+        });
     }
 
     let roster = build_roster(&paths, &scene_anchor_entities(&paths, fragment_id));
     if roster.is_empty() {
-        return Ok(AnchorOutcome { anchored: Vec::new(), unresolved: Vec::new() });
+        return Ok(AnchorOutcome {
+            anchored: Vec::new(),
+            unresolved: Vec::new(),
+        });
     }
-    let roster_text: String = roster.iter().map(|e| e.line.as_str()).collect::<Vec<_>>().join("\n");
+    let roster_text: String = roster
+        .iter()
+        .map(|e| e.line.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let system = "你是小说文本的实体出场标注器。给定正文片段和实体名册，\
 找出正文中**以指代方式**出现的实体——代词（他/她/那人）、称谓（馆长/判官）、\
@@ -260,8 +282,8 @@ role 取值：appears（指代对象在场有言行）/ mentioned（被谈起）
         tools: Vec::new(),
     };
 
-    let response = super::retry_generate(provider, &request)
-        .map_err(|e| format!("锚定调用失败: {e}"))?;
+    let response =
+        super::retry_generate(provider, &request).map_err(|e| format!("锚定调用失败: {e}"))?;
     // 截断的锚定 JSON 会整体解析失败；提前报错让调用方调参重试
     crate::llm_json::ensure_not_truncated(response.stop_reason, 65536)
         .map_err(|e| format!("锚定结果{e}"))?;
@@ -326,22 +348,29 @@ fn parse_anchor_response(text: &str, roster: &[RosterEntry]) -> Result<AnchorOut
         }
     };
 
-    let mut outcome = AnchorOutcome { anchored: Vec::new(), unresolved: Vec::new() };
+    let mut outcome = AnchorOutcome {
+        anchored: Vec::new(),
+        unresolved: Vec::new(),
+    };
 
-    let valid_ids: std::collections::HashSet<&str> =
-        roster.iter().map(|e| e.id.as_str()).collect();
+    let valid_ids: std::collections::HashSet<&str> = roster.iter().map(|e| e.id.as_str()).collect();
 
     for item in &anchors_json {
         let entity = item.get("entity").and_then(|v| v.as_str()).unwrap_or("");
         if !valid_ids.contains(entity) {
             continue;
         }
-        let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("referenced");
+        let role = item
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("referenced");
         let quote = item.get("quote").and_then(|v| v.as_str()).unwrap_or("");
         if outcome.anchored.iter().any(|(id, _, _)| id == entity) {
             continue;
         }
-        outcome.anchored.push((entity.to_string(), role.to_string(), quote.to_string()));
+        outcome
+            .anchored
+            .push((entity.to_string(), role.to_string(), quote.to_string()));
     }
 
     // unresolved（对象形态才有）
@@ -350,7 +379,9 @@ fn parse_anchor_response(text: &str, roster: &[RosterEntry]) -> Result<AnchorOut
             let quote = item.get("quote").and_then(|x| x.as_str()).unwrap_or("");
             let hint = item.get("hint").and_then(|x| x.as_str()).unwrap_or("");
             if !quote.is_empty() {
-                outcome.unresolved.push((quote.to_string(), hint.to_string()));
+                outcome
+                    .unresolved
+                    .push((quote.to_string(), hint.to_string()));
             }
         }
     }
@@ -375,8 +406,9 @@ pub fn anchor_and_apply(
     let body = fragment_body(&paths, fragment_id)?;
 
     // 台账同步（best-effort：失败不阻断锚定）
-    let pending = crate::mutations::sync_unresolved_refs(&paths, fragment_id, &body, &outcome.unresolved)
-        .unwrap_or_default();
+    let pending =
+        crate::mutations::sync_unresolved_refs(&paths, fragment_id, &body, &outcome.unresolved)
+            .unwrap_or_default();
     outcome.unresolved = pending;
 
     // 已归拢目标的锚点并入 LLM 权威集（按实体去重，LLM 的 role 优先）
@@ -386,10 +418,7 @@ pub fn anchor_and_apply(
         .map(|(id, role, _)| (id.clone(), role.clone()))
         .collect();
     for r in crate::mutations::load_unresolved_refs(&paths).unwrap_or_default() {
-        if r.fragment_id == fragment_id
-            && r.status == "resolved"
-            && body.contains(&r.quote)
-        {
+        if r.fragment_id == fragment_id && r.status == "resolved" && body.contains(&r.quote) {
             if let Some(target) = &r.target {
                 if !pairs.iter().any(|(id, _)| id == target) {
                     pairs.push((target.clone(), "referenced".to_string()));
@@ -422,8 +451,9 @@ pub fn anchor_fragment_merge(
     let body = fragment_body(&paths, fragment_id)?;
 
     // 台账同步（best-effort：失败不阻断锚定），与 anchor_and_apply 一致
-    let pending = crate::mutations::sync_unresolved_refs(&paths, fragment_id, &body, &outcome.unresolved)
-        .unwrap_or_default();
+    let pending =
+        crate::mutations::sync_unresolved_refs(&paths, fragment_id, &body, &outcome.unresolved)
+            .unwrap_or_default();
     outcome.unresolved = pending;
 
     // 已归拢目标的锚点并入（按实体去重，LLM 的 role 优先）
@@ -433,10 +463,7 @@ pub fn anchor_fragment_merge(
         .map(|(id, role, _)| (id.clone(), role.clone()))
         .collect();
     for r in crate::mutations::load_unresolved_refs(&paths).unwrap_or_default() {
-        if r.fragment_id == fragment_id
-            && r.status == "resolved"
-            && body.contains(&r.quote)
-        {
+        if r.fragment_id == fragment_id && r.status == "resolved" && body.contains(&r.quote) {
             if let Some(target) = &r.target {
                 if !pairs.iter().any(|(id, _)| id == target) {
                     pairs.push((target.clone(), "referenced".to_string()));
@@ -499,7 +526,8 @@ impl Tool for AnchorFragmentsTool {
             description: "对片段执行理解锚定：用 AI 做指代消解，把\"那人\"\"佣兵\"这类\
 文字匹配认不到的出场落为显式锚点（名字/别名已自动识别，无需重跑）。\
 省略 fragment_id 则批量处理全书（每次最多 60 个片段，超出请分章执行）。\
-导入旧书稿后跑一遍即可建立完整出场索引。".into(),
+导入旧书稿后跑一遍即可建立完整出场索引。"
+                .into(),
             parameters: object_schema(vec![(
                 "fragment_id",
                 "string",
@@ -524,7 +552,9 @@ impl Tool for AnchorFragmentsTool {
                 if outcome.anchored.is_empty() && outcome.unresolved.is_empty() {
                     "无需指代锚定".to_string()
                 } else {
-                    format_anchor_note(&outcome, &self.ctx.paths()).trim().to_string()
+                    format_anchor_note(&outcome, &self.ctx.paths())
+                        .trim()
+                        .to_string()
                 }
             ));
             return Ok(summary);
@@ -566,7 +596,11 @@ impl Tool for AnchorFragmentsTool {
             if total > BATCH_CAP { "，达单次上限，请分批" } else { "" },
         );
         if !failed.is_empty() {
-            out.push_str(&format!("\n失败 {} 个：{}", failed.len(), failed.join("；")));
+            out.push_str(&format!(
+                "\n失败 {} 个：{}",
+                failed.len(),
+                failed.join("；")
+            ));
         }
         Ok(out)
     }
@@ -592,7 +626,8 @@ impl Tool for ListUnresolvedRefsTool {
             description: "列出未锚定指代台账：待处置的名册外指代（如\"摆的人\"\"写的人\"），\
             以及已忽略/已归拢的处置记录。台账随篇幅累积，中后期建议用 chapter_id /\
             volume 过滤只看相关范围；一次性龙套（背景人物泛指）可批量 ignore。\
-            待处置项用 resolve_unresolved_ref 处置。".into(),
+            待处置项用 resolve_unresolved_ref 处置。"
+                .into(),
             parameters: object_schema(vec![
                 (
                     "fragment_id",
@@ -628,8 +663,8 @@ impl Tool for ListUnresolvedRefsTool {
             None
         };
 
-        let refs = crate::mutations::load_unresolved_refs(&self.ctx.paths())
-            .map_err(|e| e.to_string())?;
+        let refs =
+            crate::mutations::load_unresolved_refs(&self.ctx.paths()).map_err(|e| e.to_string())?;
         let selected: Vec<_> = refs
             .iter()
             .filter(|r| {
@@ -687,9 +722,17 @@ impl Tool for ListUnresolvedRefsTool {
 
         let pending: Vec<_> = selected.iter().filter(|r| r.is_pending()).collect();
         let mut out = if scope.is_empty() {
-            format!("共 {} 条记录，待处置 {} 条：", selected.len(), pending.len())
+            format!(
+                "共 {} 条记录，待处置 {} 条：",
+                selected.len(),
+                pending.len()
+            )
         } else {
-            format!("范围[{scope}] 共 {} 条记录，待处置 {} 条：", selected.len(), pending.len())
+            format!(
+                "范围[{scope}] 共 {} 条记录，待处置 {} 条：",
+                selected.len(),
+                pending.len()
+            )
         };
         for r in &selected {
             let status = match r.status.as_str() {
@@ -862,7 +905,9 @@ fn parse_character_profile(
 mod tests {
     use super::*;
     use crate::tools::ToolContext;
-    use story_ai_runtime::provider::{AiError, GenerateRequest, GenerateResponse, StopReason, TokenUsage};
+    use story_ai_runtime::provider::{
+        AiError, GenerateRequest, GenerateResponse, StopReason, TokenUsage,
+    };
     use story_project_format::init::init_project;
 
     fn setup_test_project() -> tempfile::TempDir {
@@ -882,7 +927,10 @@ mod tests {
         fn generate(&self, _request: &GenerateRequest) -> Result<GenerateResponse, AiError> {
             Ok(GenerateResponse {
                 text: self.response.clone(),
-                usage: TokenUsage { input_tokens: 10, output_tokens: 20 },
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                },
                 stop_reason: StopReason::EndTurn,
                 tool_calls: Vec::new(),
             })
@@ -965,7 +1013,8 @@ mod tests {
 
         let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
         let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
-        let fid = crate::mutations::create_fragment(&paths, &sc, "那名佣兵靠在门边，一言不发。").unwrap();
+        let fid =
+            crate::mutations::create_fragment(&paths, &sc, "那名佣兵靠在门边，一言不发。").unwrap();
 
         // 用户手动锚定 c_0002（如删改稿后手动修正的出场记录）
         crate::mutations::set_fragment_anchor(&paths, &fid, "c_0002", "appears").unwrap();
@@ -1101,7 +1150,7 @@ mod tests {
             None,
             None,
         )
-            .unwrap();
+        .unwrap();
 
         let outcome = anchor_and_apply(&ctx, &provider, &fid).unwrap();
         assert!(outcome.unresolved.is_empty());
@@ -1129,7 +1178,12 @@ mod tests {
         });
         let ctx = ToolContext::new(dir.to_path_buf());
         anchor_and_apply(&ctx, &provider, &fid).unwrap();
-        assert_eq!(crate::mutations::load_unresolved_refs(&paths).unwrap().len(), 1);
+        assert_eq!(
+            crate::mutations::load_unresolved_refs(&paths)
+                .unwrap()
+                .len(),
+            1
+        );
 
         // 改稿：正文不再包含该指代（重写片段），重新锚定后台账自动清理
         crate::mutations::write_fragment_text(&paths, &fid, "现场已经清理干净。").unwrap();
@@ -1137,7 +1191,9 @@ mod tests {
             response: "{\"anchors\": [], \"unresolved\": []}".to_string(),
         });
         anchor_and_apply(&ctx, &provider_clean, &fid).unwrap();
-        assert!(crate::mutations::load_unresolved_refs(&paths).unwrap().is_empty());
+        assert!(crate::mutations::load_unresolved_refs(&paths)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1207,12 +1263,9 @@ mod tests {
 
         let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
         let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
-        let fid = crate::mutations::create_fragment(
-            &paths,
-            &sc,
-            "医生说：什么十七号。他记了下来。",
-        )
-        .unwrap();
+        let fid =
+            crate::mutations::create_fragment(&paths, &sc, "医生说：什么十七号。他记了下来。")
+                .unwrap();
 
         let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
             response: "{\"anchors\": [{\"entity\": \"l_0003\", \"role\": \"appears\", \"quote\": \"十七号\"}]}".to_string(),
@@ -1317,8 +1370,8 @@ mod tests {
         let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
         assert_eq!(refs.len(), 2);
         assert!(
-            refs.iter().all(|r| r.status == "resolved"
-                && r.target.as_deref() == Some("c_0001")),
+            refs.iter()
+                .all(|r| r.status == "resolved" && r.target.as_deref() == Some("c_0001")),
             "{refs:?}"
         );
 
@@ -1349,10 +1402,8 @@ mod tests {
 
         let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
         let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
-        let fid1 =
-            crate::mutations::create_fragment(&paths, &sc, "摆的人懂行。").unwrap();
-        let fid2 =
-            crate::mutations::create_fragment(&paths, &sc, "写的人不慌。").unwrap();
+        let fid1 = crate::mutations::create_fragment(&paths, &sc, "摆的人懂行。").unwrap();
+        let fid2 = crate::mutations::create_fragment(&paths, &sc, "写的人不慌。").unwrap();
 
         let provider: Arc<dyn AiProvider> = Arc::new(MockAnchorProvider {
             response: "{\"anchors\": [], \"unresolved\": [{\"quote\": \"摆的人\", \"hint\": \"疑似凶手\"}]}".to_string(),
@@ -1390,11 +1441,15 @@ mod tests {
         let refs = crate::mutations::load_unresolved_refs(&paths).unwrap();
         let target = refs[0].target.clone().unwrap();
         assert_ne!(target, "c_0001", "不应归拢到诱饵实体");
-        assert!(refs.iter().all(|r| r.status == "resolved" && r.target.as_deref() == Some(&target)));
+        assert!(refs
+            .iter()
+            .all(|r| r.status == "resolved" && r.target.as_deref() == Some(&target)));
         for fid in [&fid1, &fid2] {
-            let content =
-                std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
-            assert!(content.contains(&format!("entity: {target}")), "{fid}: {content}");
+            let content = std::fs::read_to_string(dir.join(format!("fragments/{fid}.md"))).unwrap();
+            assert!(
+                content.contains(&format!("entity: {target}")),
+                "{fid}: {content}"
+            );
         }
     }
 
@@ -1492,8 +1547,16 @@ title = "夜行"
 fragments = ["f_0002"]
 "#;
         std::fs::write(dir.join("structure.toml"), structure).unwrap();
-        std::fs::write(dir.join("fragments/f_0001.md"), "---\nid: f_0001\n---\n\n他看见摆的人。").unwrap();
-        std::fs::write(dir.join("fragments/f_0002.md"), "---\nid: f_0002\n---\n\n卖果子的妇人喊了一声。").unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\n---\n\n他看见摆的人。",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0002.md"),
+            "---\nid: f_0002\n---\n\n卖果子的妇人喊了一声。",
+        )
+        .unwrap();
 
         let chapters = r#"[[chapters]]
 chapter_id = "ch_01"
@@ -1543,7 +1606,10 @@ status = "ignored"
 
         // volume 过滤：第 2 卷的 2 条（含 1 条已忽略）
         let out = tool.execute(&serde_json::json!({"volume": 2})).unwrap();
-        assert!(out.contains("范围[第 2 卷] 共 2 条记录，待处置 1 条"), "{out}");
+        assert!(
+            out.contains("范围[第 2 卷] 共 2 条记录，待处置 1 条"),
+            "{out}"
+        );
         assert!(out.contains("推车的搬运工"), "{out}");
         assert!(!out.contains("摆的人"), "{out}");
 

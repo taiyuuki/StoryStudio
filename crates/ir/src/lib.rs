@@ -7,16 +7,15 @@
 //! 所有集合使用 BTreeMap / BTreeSet 以保证确定性序列化（§9）。
 
 pub mod anchor;
-pub mod text;
 pub mod document;
 pub mod id;
 pub mod ir;
 pub mod narrative;
 pub mod semantic;
+pub mod text;
 pub mod time;
 
 pub use anchor::{AnchorRole, EntityAnchor};
-pub use text::{count_words, is_cjk};
 pub use document::{BookNode, ChapterNode, DocNode, DocumentGraph, FragmentNode, SceneNode};
 pub use id::{EdgeId, IdPrefix, StableId, Symbol, SymbolTable};
 pub use ir::{Appearance, IRVersion, LocationIndex, Revision, StoryIR};
@@ -28,4 +27,5 @@ pub use semantic::{
     AttributeValue, CharacterNode, ConceptNode, Entity, EntityAttributes, EventNode, ItemNode,
     LocationNode, OrganizationNode, RelationKind, SemanticEdge, SemanticGraph, SemanticNode,
 };
+pub use text::{count_words, is_cjk};
 pub use time::{StoryCalendar, StoryTime, TimeCoord, TimePrecision, ValidityWindow};

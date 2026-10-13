@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use story_ai_runtime::{
-    AiError, AiProvider, AnthropicProvider, ApiMode, AssertionDraft, CancelToken, ContextBuilder,
-    ExtractAssertionsTask, FragmentDraft, GenerateRequest, GeminiProvider, Message, OpenAiProvider,
-    StreamEvent, Task, ThinkingConfig, WriteFragmentTask, stream_generate_with_cancel,
+    stream_generate_with_cancel, AiError, AiProvider, AnthropicProvider, ApiMode, AssertionDraft,
+    CancelToken, ContextBuilder, ExtractAssertionsTask, FragmentDraft, GeminiProvider,
+    GenerateRequest, Message, OpenAiProvider, StreamEvent, Task, ThinkingConfig, WriteFragmentTask,
 };
 use story_ir::{DocNode, SemanticNode, StableId};
 use story_parser::parse_project;
@@ -133,7 +133,8 @@ pub fn write_fragment(
             crate::ai_ledger::record(
                 dir,
                 "续写",
-                provider.id(), provider.model(),
+                provider.id(),
+                provider.model(),
                 resp.usage.total() as u64,
                 started.elapsed().as_millis() as u64,
                 true,
@@ -145,7 +146,8 @@ pub fn write_fragment(
             crate::ai_ledger::record(
                 dir,
                 "续写",
-                provider.id(), provider.model(),
+                provider.id(),
+                provider.model(),
                 0,
                 started.elapsed().as_millis() as u64,
                 false,
@@ -225,7 +227,8 @@ pub fn extract_assertions(
             crate::ai_ledger::record(
                 dir,
                 "断言抽取",
-                provider.id(), provider.model(),
+                provider.id(),
+                provider.model(),
                 resp.usage.total() as u64,
                 started.elapsed().as_millis() as u64,
                 true,
@@ -237,7 +240,8 @@ pub fn extract_assertions(
             crate::ai_ledger::record(
                 dir,
                 "断言抽取",
-                provider.id(), provider.model(),
+                provider.id(),
+                provider.model(),
                 0,
                 started.elapsed().as_millis() as u64,
                 false,
@@ -354,7 +358,8 @@ pub fn write_fragment_streaming(
         Ok(()) => crate::ai_ledger::record(
             dir,
             "续写",
-            provider.id(), provider.model(),
+            provider.id(),
+            provider.model(),
             tokens_used_ledger as u64,
             started.elapsed().as_millis() as u64,
             true,
@@ -363,7 +368,8 @@ pub fn write_fragment_streaming(
         Err(ref e) => crate::ai_ledger::record(
             dir,
             "续写",
-            provider.id(), provider.model(),
+            provider.id(),
+            provider.model(),
             tokens_used_ledger as u64,
             started.elapsed().as_millis() as u64,
             false,
@@ -490,9 +496,8 @@ pub fn complete_fragment_streaming(
             )))
         }
     };
-    let scene_id = scene_id.ok_or_else(|| {
-        StudioError::NotFound(format!("Fragment '{fragment_id}' 不属于任何场景"))
-    })?;
+    let scene_id = scene_id
+        .ok_or_else(|| StudioError::NotFound(format!("Fragment '{fragment_id}' 不属于任何场景")))?;
 
     // 2. 构建上下文：本片段之前的最近两段（各取末尾 600 字）+ POV / 场景标题
     let builder = ContextBuilder::new(&parse_output.ir);
@@ -551,7 +556,8 @@ pub fn complete_fragment_streaming(
             crate::ai_ledger::record(
                 dir,
                 "行内补全",
-                &provider_id, &provider_model,
+                &provider_id,
+                &provider_model,
                 0,
                 started.elapsed().as_millis() as u64,
                 false,
@@ -563,7 +569,8 @@ pub fn complete_fragment_streaming(
     crate::ai_ledger::record(
         dir,
         "行内补全",
-        &provider_id, &provider_model,
+        &provider_id,
+        &provider_model,
         response.usage.total() as u64,
         started.elapsed().as_millis() as u64,
         true,
@@ -616,9 +623,12 @@ pub fn complete_with_fallback(
         return first;
     }
 
-    let provider: std::sync::Arc<dyn AiProvider> = std::sync::Arc::from(
-        create_provider_for_purpose_with_thinking(purpose::COMPLETE, ThinkingConfig::Auto, "anthropic")?,
-    );
+    let provider: std::sync::Arc<dyn AiProvider> =
+        std::sync::Arc::from(create_provider_for_purpose_with_thinking(
+            purpose::COMPLETE,
+            ThinkingConfig::Auto,
+            "anthropic",
+        )?);
     complete_fragment_streaming(
         dir,
         fragment_id,
@@ -1108,7 +1118,12 @@ impl DynamicProfileProvider {
     /// 按当前配置解析底层 provider（纯函数，无 IO）
     fn resolve_from(&self, config: &GlobalAiConfig) -> Result<Box<dyn AiProvider>, StudioError> {
         let profile = config.profile_for_purpose(&self.purpose);
-        provider_from_config(config, profile, &self.provider_name, self.model_name.as_deref())
+        provider_from_config(
+            config,
+            profile,
+            &self.provider_name,
+            self.model_name.as_deref(),
+        )
     }
 
     /// 配置变化时重建底层 provider；失败时保留旧值。
@@ -1351,7 +1366,10 @@ pub fn test_profile(profile: &ProviderProfile) -> ProfileTestRecord {
         profile.api_key.as_deref(),
     ) {
         Ok(models) if !models.is_empty() => {
-            return ok(format!("连接成功，可用模型 {} 个（未消耗 token）", models.len()));
+            return ok(format!(
+                "连接成功，可用模型 {} 个（未消耗 token）",
+                models.len()
+            ));
         }
         _ => {}
     }
@@ -1489,7 +1507,10 @@ mod purpose_tests {
         config.purpose_profiles = Some(map);
 
         assert_eq!(config.profile_for_purpose(purpose::AGENT).unwrap().id, "p2");
-        assert_eq!(config.profile_for_purpose(purpose::WORKFLOW).unwrap().id, "p2");
+        assert_eq!(
+            config.profile_for_purpose(purpose::WORKFLOW).unwrap().id,
+            "p2"
+        );
         // 未分配的用途仍走激活档案
         assert_eq!(config.profile_for_purpose(purpose::WRITE).unwrap().id, "p1");
     }
@@ -1555,15 +1576,23 @@ mod purpose_tests {
         config.purpose_profiles = Some(map);
 
         // p2 是 anthropic 档案：解析出的 provider 应是 anthropic 而非默认
-        let provider =
-            provider_from_config(&config, config.profile_for_purpose(purpose::AGENT), "openai", None)
-                .unwrap();
+        let provider = provider_from_config(
+            &config,
+            config.profile_for_purpose(purpose::AGENT),
+            "openai",
+            None,
+        )
+        .unwrap();
         assert_eq!(provider.id(), "anthropic");
 
         // 未分配用途走 p1（openai）
-        let provider =
-            provider_from_config(&config, config.profile_for_purpose(purpose::WRITE), "openai", None)
-                .unwrap();
+        let provider = provider_from_config(
+            &config,
+            config.profile_for_purpose(purpose::WRITE),
+            "openai",
+            None,
+        )
+        .unwrap();
         assert_eq!(provider.id(), "openai");
     }
 
@@ -1632,23 +1661,38 @@ mod purpose_tests {
             "API 错误 (400): reasoning_effort 参数非法",
             "API 错误 (400): 不支持 minimal effort",
         ] {
-            assert!(is_thinking_rejection(&StudioError::Ai(msg.to_string())), "{msg}");
+            assert!(
+                is_thinking_rejection(&StudioError::Ai(msg.to_string())),
+                "{msg}"
+            );
         }
         // 无关错误不触发重试
-        assert!(!is_thinking_rejection(&StudioError::Ai("网络错误: 连接超时".to_string())));
-        assert!(!is_thinking_rejection(&StudioError::NotFound("f_x 不存在".to_string())));
+        assert!(!is_thinking_rejection(&StudioError::Ai(
+            "网络错误: 连接超时".to_string()
+        )));
+        assert!(!is_thinking_rejection(&StudioError::NotFound(
+            "f_x 不存在".to_string()
+        )));
     }
 
     #[test]
     fn should_retry_on_empty_text_or_thinking_rejection() {
         // 空正文（思考吃光配额）→ 重试
-        let empty = Ok(CompleteResult { text: "  ".to_string(), tokens_used: 10 });
+        let empty = Ok(CompleteResult {
+            text: "  ".to_string(),
+            tokens_used: 10,
+        });
         assert!(should_retry(&empty));
         // 有正文 → 不重试
-        let ok = Ok(CompleteResult { text: "他抬起头。".to_string(), tokens_used: 10 });
+        let ok = Ok(CompleteResult {
+            text: "他抬起头。".to_string(),
+            tokens_used: 10,
+        });
         assert!(!should_retry(&ok));
         // 思考拒收错误 → 重试
-        let rejected = Err(StudioError::Ai("API 错误 (400): thinking 已禁用".to_string()));
+        let rejected = Err(StudioError::Ai(
+            "API 错误 (400): thinking 已禁用".to_string(),
+        ));
         assert!(should_retry(&rejected));
         // 其他错误 → 不重试
         let other = Err(StudioError::Ai("认证失败: 缺少 API Key".to_string()));
@@ -1676,7 +1720,11 @@ mod preset_tests {
                 p.id
             );
             if let Some(url) = &p.api_url {
-                assert!(url.starts_with("http://") || url.starts_with("https://"), "{} 的 URL 非法", p.id);
+                assert!(
+                    url.starts_with("http://") || url.starts_with("https://"),
+                    "{} 的 URL 非法",
+                    p.id
+                );
             }
         }
         assert!(provider_preset("deepseek").is_some());
