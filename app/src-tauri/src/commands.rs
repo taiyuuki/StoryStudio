@@ -114,7 +114,9 @@ pub fn rename_scene(root: String, scene_id: String, title: String) -> R<()> {
 #[tauri::command]
 pub fn delete_scene(root: String, scene_id: String) -> R<()> {
     let _gate = write_gate(&root);
-    mutations::delete_scene(&paths(&root), &scene_id).map_err(e)
+    mutations::delete_scene(&paths(&root), &scene_id)
+        .map(|_| ())
+        .map_err(e)
 }
 
 /// 场景属性补丁（三态语义：缺省=不改 / null=清空 / 值=设置）
@@ -269,7 +271,9 @@ pub fn write_fragment(root: String, fragment_id: String, text: String) -> R<()> 
 pub fn delete_fragment(root: String, scene_id: String, fragment_id: String) -> R<()> {
     let _gate = write_gate(&root);
     let _ = scene_id;
-    mutations::delete_fragment(&paths(&root), &fragment_id).map_err(e)
+    mutations::delete_fragment(&paths(&root), &fragment_id)
+        .map(|_| ())
+        .map_err(e)
 }
 
 #[tauri::command]

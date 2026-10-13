@@ -2583,7 +2583,8 @@ impl Tool for DeleteFragmentTool {
         ToolDef {
             name: "delete_fragment".into(),
             description: "删除正文片段（.md 文件），并从所属场景的 fragments 列表移除。\
-            不会级联清理该片段上的锚点引用。删除前请先 read_fragment_text 确认内容。\
+            片段上若有线索叙事锚点（埋设/揭示/回收）会一并清除，回执会列出受影响线索。\
+            删除前请先 read_fragment_text 确认内容。\
             删除前会自动把该片段内容存进版本历史（片段菜单 → 版本历史 可找回）。"
                 .into(),
             parameters: object_schema(vec![(
@@ -2598,7 +2599,8 @@ impl Tool for DeleteFragmentTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let fragment_id = get_str(arguments, "fragment_id")?;
         let paths = self.ctx.paths();
-        crate::mutations::delete_fragment(&paths, &fragment_id).map_err(|e| e.to_string())?;
+        let notes =
+            crate::mutations::delete_fragment(&paths, &fragment_id).map_err(|e| e.to_string())?;
         let mut msg = format!("片段 {fragment_id} 已删除（已从所属场景的 fragments 列表移除）");
         // 删除前强制留底——内容仍在版本历史中可找回
         if let Some(note) = crate::history::fresh_snapshot_note(&paths, &fragment_id, true) {
@@ -2607,6 +2609,10 @@ impl Tool for DeleteFragmentTool {
         // 删除的片段若是断言证据：证据悬空警示（best-effort）
         if let Some(note) = crate::mutations::evidence_usage_note(&paths, &fragment_id, true) {
             msg.push_str(&note);
+        }
+        // 线索叙事锚点清理提示（已随删除落盘）
+        for note in notes {
+            msg.push_str(&format!("\n{note}"));
         }
         Ok(msg)
     }

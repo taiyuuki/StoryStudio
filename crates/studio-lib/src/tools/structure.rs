@@ -379,10 +379,10 @@ impl Tool for DeleteChapterTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let chapter_id = get_str(arguments, "chapter_id")?;
         let paths = self.ctx.paths();
-        let unlinked =
+        let outcome =
             crate::mutations::delete_chapter(&paths, &chapter_id).map_err(|e| e.to_string())?;
         let mut msg = format!("章节 {chapter_id} 及其下所有场景、片段已删除");
-        if let Some((outline_title, reverted)) = unlinked {
+        if let Some((outline_title, reverted)) = outcome.unlinked {
             msg.push_str(&format!(
                 "；已解除脉络「{outline_title}」的关联（设计记录保留，退回虚拟章）"
             ));
@@ -391,6 +391,9 @@ impl Tool for DeleteChapterTool {
                     "，进度 {prev} → planned（正文已删，进度随正文回退；重新动笔时会再次自动推进）"
                 ));
             }
+        }
+        for note in outcome.thread_notes {
+            msg.push_str(&format!("\n{note}"));
         }
         Ok(msg)
     }
@@ -605,7 +608,8 @@ impl Tool for DeleteSceneTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "delete_scene".into(),
-            description: "删除场景及其下所有片段（级联删除，不可恢复）。".into(),
+            description: "删除场景及其下所有片段（级联删除，不可恢复）。\
+            指向被删场景/片段的线索叙事锚点会一并清除（线索状态自动回退，回执会列出）。".into(),
             parameters: object_schema(vec![(
                 "scene_id",
                 "string",
@@ -618,8 +622,13 @@ impl Tool for DeleteSceneTool {
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let scene_id = get_str(arguments, "scene_id")?;
         let paths = self.ctx.paths();
-        crate::mutations::delete_scene(&paths, &scene_id).map_err(|e| e.to_string())?;
-        Ok(format!("场景 {scene_id} 及其下所有片段已删除"))
+        let notes =
+            crate::mutations::delete_scene(&paths, &scene_id).map_err(|e| e.to_string())?;
+        let mut msg = format!("场景 {scene_id} 及其下所有片段已删除");
+        for note in notes {
+            msg.push_str(&format!("\n{note}"));
+        }
+        Ok(msg)
     }
 }
 

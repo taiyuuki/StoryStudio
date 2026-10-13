@@ -1505,7 +1505,7 @@ pub fn rename_chapter(
 pub fn delete_chapter(
     paths: &ProjectPaths,
     chapter_id: &str,
-) -> Result<Option<(String, Option<String>)>, StudioError> {
+) -> Result<DeleteChapterOutcome, StudioError> {
     let structure_path = paths.structure_toml();
     let mut structure = load_structure(paths)?;
 
@@ -1526,8 +1526,16 @@ pub fn delete_chapter(
     structure.save(&structure_path)?;
     remove_fragment_files(paths, &doomed);
 
+    // 被删对象（场景 + 片段）上若有线索叙事锚点，就地清除防悬空
+    let mut removed_ids = chapter.scenes.clone();
+    removed_ids.extend(doomed);
+    let thread_notes = clear_thread_anchor_refs(paths, &removed_ids);
+
     let unlinked = unlink_chapter_outline(paths, chapter_id);
-    Ok(unlinked)
+    Ok(DeleteChapterOutcome {
+        unlinked,
+        thread_notes,
+    })
 }
 
 /// 删除物理章节后，把脉络表里指向它的 chapter_id 清除（退回虚拟章），
@@ -1560,6 +1568,62 @@ fn unlink_chapter_outline(
     };
     save_chapters_file(paths, &file).ok()?;
     Some((title, reverted))
+}
+
+/// delete_chapter 的回执信息
+#[derive(Debug, Default)]
+pub struct DeleteChapterOutcome {
+    /// 被解除关联的脉络（标题, 回退前状态）
+    pub unlinked: Option<(String, Option<String>)>,
+    /// 线索悬空锚点清理提示（best-effort）
+    pub thread_notes: Vec<String>,
+}
+
+/// 清除指向已删除场景/片段的线索叙事锚点（best-effort）。
+///
+/// 锚点是线索状态的唯一真相源（状态由锚点推导），正文删除后指向它的
+/// 锚点即为悬空——状态会对着不存在的正文计数，compile_check 也无从
+/// 校验。删除路径上就地清除（repair_project 兜底历史数据），返回
+/// 回执提示行；threads.toml 缺失或落盘失败时返回空（悬空锚点留给
+/// repair_project 处理，不在回执里假报成功）。
+pub fn clear_thread_anchor_refs(paths: &ProjectPaths, removed_ids: &[String]) -> Vec<String> {
+    if removed_ids.is_empty() {
+        return Vec::new();
+    }
+    let removed: std::collections::HashSet<&str> =
+        removed_ids.iter().map(String::as_str).collect();
+    let threads_path = paths.root().join("threads.toml");
+    let Ok(mut file) = ThreadsFile::load_or_default(&threads_path) else {
+        return Vec::new();
+    };
+    let mut notes = Vec::new();
+    for t in &mut file.threads {
+        let title = t.title.clone();
+        for (label, anchor) in [
+            ("埋设", &mut t.planted_at),
+            ("揭示", &mut t.revealed_at),
+            ("回收", &mut t.resolved_at),
+        ] {
+            if anchor.as_deref().is_some_and(|v| removed.contains(v)) {
+                notes.push(format!(
+                    "⚠️ 线索「{title}」的{label}锚点 {} 已随本次删除清除（状态自动回退；\
+                     如仍需要请重新 advance_thread 锚定到现存场景）",
+                    anchor.as_deref().unwrap_or_default()
+                ));
+                *anchor = None;
+            }
+        }
+    }
+    if notes.is_empty() {
+        return notes;
+    }
+    if file.save(&threads_path).is_err() {
+        eprintln!(
+            "[delete] 线索悬空锚点清理落盘失败（锚点保留，可稍后 repair_project 处理）"
+        );
+        return Vec::new();
+    }
+    notes
 }
 
 /// 创建场景
@@ -1890,7 +1954,7 @@ pub fn merge_scenes(
 /// 的片段"的半损坏状态，而正文已经没了；而 scene / chapter 级联删除此前
 /// **完全不快照**（单片段删除 `delete_fragment` 是快照的），一次误删就
 /// 是永久损失。
-pub fn delete_scene(paths: &ProjectPaths, scene_id: &str) -> Result<(), StudioError> {
+pub fn delete_scene(paths: &ProjectPaths, scene_id: &str) -> Result<Vec<String>, StudioError> {
     let structure_path = paths.structure_toml();
     let mut structure = load_structure(paths)?;
 
@@ -1908,7 +1972,11 @@ pub fn delete_scene(paths: &ProjectPaths, scene_id: &str) -> Result<(), StudioEr
 
     structure.save(&structure_path)?;
     remove_fragment_files(paths, &doomed);
-    Ok(())
+
+    // 被删对象（场景 + 片段）上若有线索叙事锚点，就地清除防悬空
+    let mut removed_ids = vec![scene_id.to_string()];
+    removed_ids.extend(doomed);
+    Ok(clear_thread_anchor_refs(paths, &removed_ids))
 }
 
 /// 从 structure 摘掉 scene 条目，返回其下片段 ID。
@@ -2666,7 +2734,10 @@ fn read_fragment_with_anchors(
 /// 删除片段
 ///
 /// 删除 .md 文件 + 从所属 scene.fragments 移除。
-pub fn delete_fragment(paths: &ProjectPaths, fragment_id: &str) -> Result<(), StudioError> {
+pub fn delete_fragment(
+    paths: &ProjectPaths,
+    fragment_id: &str,
+) -> Result<Vec<String>, StudioError> {
     let frag_path = paths
         .file_for_id(fragment_id)
         .ok_or_else(|| StudioError::Config(format!("无效的 fragment ID: {fragment_id}")))?;
@@ -2719,7 +2790,9 @@ pub fn delete_fragment(paths: &ProjectPaths, fragment_id: &str) -> Result<(), St
         ),
     }
 
-    Ok(())
+    // 片段上若有线索叙事锚点（planted/revealed/resolved 可锚到片段），
+    // 就地清除防悬空
+    Ok(clear_thread_anchor_refs(paths, &[fragment_id.to_string()]))
 }
 
 /// 在指定片段之后插入新片段到 scene.fragments（用于 split）
@@ -5474,6 +5547,81 @@ mod tests {
     }
 
     #[test]
+    fn delete_scene_clears_thread_anchors() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let frag = create_fragment(&paths, &sc, "正文").unwrap();
+        let keep_sc = create_scene(&paths, &ch, "保留场景", None).unwrap();
+
+        // 两条线索：分别锚在被删场景与被删片段上；一条锚在保留场景（不动）
+        let t1 = create_thread(&paths, "场景锚", "", "main", Some(&sc), None, None).unwrap();
+        let t2 = create_thread(&paths, "片段锚", "", "minor", Some(&frag), None, None).unwrap();
+        let t3 =
+            create_thread(&paths, "保留锚", "", "minor", Some(&keep_sc), None, None).unwrap();
+
+        let notes = delete_scene(&paths, &sc).unwrap();
+        assert_eq!(notes.len(), 2, "场景锚与片段锚都应被清除: {notes:?}");
+        assert!(notes.iter().any(|n| n.contains("场景锚") && n.contains("埋设")));
+        assert!(notes.iter().any(|n| n.contains("片段锚") && n.contains("埋设")));
+
+        let file = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
+        let by_id = |id: &str| file.threads.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(by_id(&t1).planted_at, None);
+        assert_eq!(by_id(&t2).planted_at, None);
+        assert_eq!(by_id(&t3).planted_at.as_deref(), Some(keep_sc.as_str()));
+    }
+
+    #[test]
+    fn delete_fragment_clears_thread_anchor() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let f1 = create_fragment(&paths, &sc, "片段一").unwrap();
+        let f2 = create_fragment(&paths, &sc, "片段二").unwrap();
+
+        let t1 = create_thread(&paths, "片段锚", "", "main", Some(&f1), None, None).unwrap();
+        let t2 = create_thread(&paths, "不动锚", "", "minor", Some(&f2), None, None).unwrap();
+
+        let notes = delete_fragment(&paths, &f1).unwrap();
+        assert_eq!(notes.len(), 1, "只有指向被删片段的锚点应被清除: {notes:?}");
+        assert!(notes[0].contains("片段锚"));
+
+        let file = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
+        let by_id = |id: &str| file.threads.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(by_id(&t1).planted_at, None);
+        assert_eq!(by_id(&t2).planted_at.as_deref(), Some(f2.as_str()));
+    }
+
+    #[test]
+    fn delete_chapter_clears_thread_anchors() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let keep_ch = create_chapter(&paths, "保留章").unwrap();
+        let keep_sc = create_scene(&paths, &keep_ch, "保留场景", None).unwrap();
+
+        let t1 = create_thread(&paths, "被删锚", "", "main", Some(&sc), None, None).unwrap();
+        let t2 =
+            create_thread(&paths, "保留锚", "", "minor", Some(&keep_sc), None, None).unwrap();
+
+        let outcome = delete_chapter(&paths, &ch).unwrap();
+        assert_eq!(outcome.thread_notes.len(), 1);
+        assert!(outcome.thread_notes[0].contains("被删锚"));
+
+        let file = ThreadsFile::load_or_default(&paths.threads_toml()).unwrap();
+        let by_id = |id: &str| file.threads.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(by_id(&t1).planted_at, None);
+        assert_eq!(by_id(&t2).planted_at.as_deref(), Some(keep_sc.as_str()));
+    }
+
+    #[test]
     fn create_scene_with_pov() {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
@@ -7081,8 +7229,14 @@ mod tests {
         );
 
         // 删除物理章节：脉络条目保留但退回虚拟态，返回被解除的标题
-        let unlinked = delete_chapter(&paths, &ch_id).unwrap();
-        assert_eq!(unlinked.as_ref().map(|(t, r)| (t.as_str(), r.clone())), Some(("上山", None)));
+        let outcome = delete_chapter(&paths, &ch_id).unwrap();
+        assert_eq!(
+            outcome
+                .unlinked
+                .as_ref()
+                .map(|(t, r)| (t.as_str(), r.clone())),
+            Some(("上山", None))
+        );
         let file = load_chapters_file(&paths).unwrap();
         assert_eq!(file.chapters.len(), 1, "设计记录应保留");
         assert!(file.chapters[0].chapter_id.is_none(), "chapter_id 应被清除");
@@ -7104,8 +7258,8 @@ mod tests {
         });
         save_chapters_file(&paths, &outline).unwrap();
 
-        let unlinked = delete_chapter(&paths, &ch_id).unwrap();
-        let (title, reverted) = unlinked.expect("已关联脉络应返回解除信息");
+        let outcome = delete_chapter(&paths, &ch_id).unwrap();
+        let (title, reverted) = outcome.unlinked.expect("已关联脉络应返回解除信息");
         assert_eq!(title, "冲突章");
         assert_eq!(reverted.as_deref(), Some("writing"), "应报告回退前状态");
 
