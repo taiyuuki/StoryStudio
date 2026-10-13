@@ -93,6 +93,9 @@ fn compile_impl(dir: &Path, force_full: bool) -> Result<CompileResult, StudioErr
         kb.as_ref(),
         Some(&parse_output.threads),
         &request,
+        // 全量编译，无增量续期（接入增量时传上次结果，未跑规则的诊断以
+        // Stale 续期而不是消失——那是"增量假绿"的根源）
+        None,
     );
 
     // 3.5 unused_thread 卷级分级（见下方函数注释）；thread_checks 被禁用时一并跳过

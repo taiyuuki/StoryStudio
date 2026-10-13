@@ -39,7 +39,7 @@ pub fn dry_run(
         },
     };
 
-    let diags = compile(registry, ir, location_index, kb, threads, &request);
+    let diags = compile(registry, ir, location_index, kb, threads, &request, None);
 
     let errors: Vec<_> = diags
         .0

@@ -198,7 +198,6 @@ pub struct Diagnostic {
     pub code: DiagnosticCode,
     pub message: String,
     pub loc: SourceLocation,
-    #[allow(dead_code)]
     pub lifecycle: Lifecycle,
 }
 
@@ -218,6 +217,12 @@ impl Diagnostic {
             loc,
             lifecycle: Lifecycle::Fresh,
         }
+    }
+
+    /// 设置生命周期状态（增量续期时链式使用）
+    pub fn with_lifecycle(mut self, lifecycle: Lifecycle) -> Self {
+        self.lifecycle = lifecycle;
+        self
     }
 
     /// 创建 Compiler 产出的 Error
@@ -330,7 +335,10 @@ impl Diagnostics {
 
     /// 是否包含 Error 级诊断
     pub fn has_errors(&self) -> bool {
-        self.0.iter().any(|d| d.severity == Severity::Error)
+        // Resolved 是"本次确认已修复"的墓碑（RFC-0005 §5.1），不再阻断编译
+        self.0
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.lifecycle != Lifecycle::Resolved)
     }
 
     /// 是否包含 Warning 级诊断

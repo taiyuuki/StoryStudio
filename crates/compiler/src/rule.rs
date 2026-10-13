@@ -174,7 +174,6 @@ impl RuleRegistry {
             rules_by_phase: BTreeMap::new(),
             config,
         };
-
         // 注册内置规则（RFC-0004 §5）
         // Structure 阶段
         registry.register(Box::new(crate::builtin_rules::IrInvariantChecker));
@@ -199,6 +198,14 @@ impl RuleRegistry {
     pub fn register(&mut self, rule: Box<dyn Rule>) {
         let phase = rule.phase();
         self.rules_by_phase.entry(phase).or_default().push(rule);
+    }
+
+    /// 空注册表（自定义配置，不注册内置规则）——测试与插件场景用
+    pub fn empty_with_config(config: CompilerConfig) -> Self {
+        Self {
+            rules_by_phase: BTreeMap::new(),
+            config,
+        }
     }
 
     /// 获取指定阶段的所有规则

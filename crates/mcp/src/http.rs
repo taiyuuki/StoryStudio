@@ -53,6 +53,20 @@ impl Default for HttpServerOptions {
     }
 }
 
+/// 会话缓存条目：状态 + 最近使用序号（LRU 逐出依据；用单调递增序号
+/// 而非时间戳，保证并发下逐出结果确定）
+#[derive(Debug, Clone)]
+struct CachedSession {
+    state: SessionState,
+    last_used: u64,
+}
+
+/// 会话缓存上限。外部 Agent 客户端可能不断产生新的 session-id（重连、
+/// 重启遗留、多客户端轮询），不设上限的话内存与持久化 JSON 双双无界
+/// 增长；被逐出的 session 再次出现时走自动恢复兜底，与重启遗留的
+/// 行为完全一致，逐出无感知。
+const MAX_CACHED_SESSIONS: usize = 64;
+
 /// 具备自动恢复与持久化能力的 SessionStore。
 ///
 /// 外部 Agent 客户端（Antigravity、Claude Desktop、Cursor 等）在会话中
@@ -60,40 +74,64 @@ impl Default for HttpServerOptions {
 /// 服务重启后旧 session-id 丢失，客户端连独立 SSE 流会报 404 "Session not found" 并失效。
 ///
 /// 本实现提供：
-/// 1. 活跃 Session 持久化到 `~/.story-studio/mcp-sessions.json`，重启自动加载；
+/// 1. 活跃 Session 持久化到 `~/.story-studio/mcp-sessions.json`，重启自动加载
+///    （上限 [`MAX_CACHED_SESSIONS`]，LRU 逐出）；
 /// 2. 面对未知历史 Session-Id，自动生成兼容的 SessionState（默认 2025-11-25 协议版本）
-///    透明恢复会话，彻底避免 404 导致外部客户端崩溃。
+///    透明恢复会话，彻底避免 404 导致外部客户端崩溃。兜底状态**即用即弃**，
+///    不写入缓存——旧实现每见一个未知 id 就永久插入一条，是无界增长的主因。
 #[derive(Debug, Clone)]
 pub struct AutoRecoveringSessionStore {
-    cache: Arc<RwLock<HashMap<String, SessionState>>>,
+    cache: Arc<RwLock<HashMap<String, CachedSession>>>,
     persist_path: Option<PathBuf>,
+    /// LRU 序号发号器
+    seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl AutoRecoveringSessionStore {
     pub fn new(persist_path: Option<PathBuf>) -> Self {
+        let seq = std::sync::atomic::AtomicU64::new(0);
         let mut initial = HashMap::new();
         if let Some(path) = &persist_path {
             if let Ok(content) = std::fs::read_to_string(path) {
                 if let Ok(map) = serde_json::from_str::<HashMap<String, SessionState>>(&content) {
-                    initial = map;
+                    // 旧版无上限时可能攒下超量会话：启动即截断
+                    for (id, state) in map {
+                        if initial.len() >= MAX_CACHED_SESSIONS {
+                            break;
+                        }
+                        let last_used = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        initial.insert(id, CachedSession { state, last_used });
+                    }
                 }
             }
         }
         Self {
             cache: Arc::new(RwLock::new(initial)),
             persist_path,
+            seq: Arc::new(std::sync::atomic::AtomicU64::new(
+                seq.load(std::sync::atomic::Ordering::Relaxed),
+            )),
         }
     }
 
-    fn persist_sync(&self, map: &HashMap<String, SessionState>) {
-        if let Some(path) = &self.persist_path {
-            if let Ok(json) = serde_json::to_string(map) {
-                let _ = std::fs::write(path, json);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-                }
+    fn next_seq(&self) -> u64 {
+        self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn persist_sync(&self, map: &HashMap<String, CachedSession>) {
+        let Some(path) = &self.persist_path else {
+            return;
+        };
+        // 磁盘格式保持 {session_id: SessionState}（与历史文件互通），LRU
+        // 序号只在内存里
+        let plain: HashMap<&String, &SessionState> =
+            map.iter().map(|(k, v)| (k, &v.state)).collect();
+        if let Ok(json) = serde_json::to_string(&plain) {
+            let _ = std::fs::write(path, json);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
             }
         }
     }
@@ -102,29 +140,45 @@ impl AutoRecoveringSessionStore {
 #[async_trait::async_trait]
 impl SessionStore for AutoRecoveringSessionStore {
     async fn load(&self, session_id: &str) -> Result<Option<SessionState>, SessionStoreError> {
-        let reader = self.cache.read().await;
-        if let Some(state) = reader.get(session_id) {
-            return Ok(Some(state.clone()));
+        {
+            let mut writer = self.cache.write().await;
+            if let Some(entry) = writer.get_mut(session_id) {
+                entry.last_used = self.next_seq();
+                return Ok(Some(entry.state.clone()));
+            }
         }
-        drop(reader);
 
-        // 未知或重启前遗留的 session_id：自动构造兼容的握手状态透明恢复，
-        // 避免返回 404 导致客户端报 "Session not found" 并僵死。
+        // 未知或重启前遗留的 session_id：返回即用即弃的兼容握手状态，
+        // 不写入缓存。真实状态随后由 store() 落位；纯探活 / 一次性 id
+        // 不再累积成缓存条目。
         let mut init_params = InitializeRequestParams::new(
             ClientCapabilities::default(),
             Implementation::new("recovered-client", "1.0"),
         );
         init_params.protocol_version = ProtocolVersion::V_2025_11_25;
-        let fallback = SessionState::new(init_params);
-        let mut writer = self.cache.write().await;
-        writer.insert(session_id.to_string(), fallback.clone());
-        self.persist_sync(&writer);
-        Ok(Some(fallback))
+        Ok(Some(SessionState::new(init_params)))
     }
 
     async fn store(&self, session_id: &str, state: &SessionState) -> Result<(), SessionStoreError> {
         let mut writer = self.cache.write().await;
-        writer.insert(session_id.to_string(), state.clone());
+        writer.insert(
+            session_id.to_string(),
+            CachedSession {
+                state: state.clone(),
+                last_used: self.next_seq(),
+            },
+        );
+        // 超上限逐出最久未用（序号发号器保证无并列，逐出确定）
+        while writer.len() > MAX_CACHED_SESSIONS {
+            let Some(oldest) = writer
+                .iter()
+                .min_by_key(|(_, v)| v.last_used)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            writer.remove(&oldest);
+        }
         self.persist_sync(&writer);
         Ok(())
     }
@@ -396,4 +450,98 @@ fn persisted_sessions_path() -> Result<PathBuf, StudioError> {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("mcp-sessions.json"))
+}
+
+#[cfg(test)]
+mod session_store_tests {
+    use super::*;
+
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    fn sample_state(client: &str) -> SessionState {
+        let mut params = InitializeRequestParams::new(
+            ClientCapabilities::default(),
+            Implementation::new(client, "1.0"),
+        );
+        params.protocol_version = ProtocolVersion::V_2025_11_25;
+        SessionState::new(params)
+    }
+
+    /// 未知 session-id 只拿即用即弃的兜底状态，不写缓存——无界增长的回归
+    #[test]
+    fn unknown_session_ids_do_not_accumulate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sessions.json");
+        let store = AutoRecoveringSessionStore::new(Some(path.clone()));
+
+        for i in 0..50 {
+            let sid = format!("probe-{i}");
+            let state = block_on(store.load(&sid)).unwrap();
+            assert!(state.is_some(), "未知 id 必须自动恢复（防 404）");
+        }
+
+        let cache = store.cache.try_read().unwrap();
+        assert!(
+            cache.is_empty(),
+            "未知 id 不应写入缓存，实际 {} 条",
+            cache.len()
+        );
+        drop(cache);
+        assert!(!path.exists(), "纯探活不应产生持久化文件");
+    }
+
+    /// store 超上限按 LRU 逐出：最久未用的先走，且持久化文件同步收敛
+    #[test]
+    fn store_evicts_least_recently_used_beyond_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sessions.json");
+        let store = AutoRecoveringSessionStore::new(Some(path.clone()));
+
+        // 填满后再写 10 条，前 10 条应被逐出
+        for i in 0..(MAX_CACHED_SESSIONS + 10) {
+            let sid = format!("s-{i:03}");
+            block_on(store.store(&sid, &sample_state(&sid))).unwrap();
+            // 中途触碰 s-000，让它免于被逐出
+            if i == MAX_CACHED_SESSIONS / 2 {
+                block_on(store.load("s-000")).unwrap();
+            }
+        }
+
+        let cache = store.cache.try_read().unwrap();
+        assert_eq!(cache.len(), MAX_CACHED_SESSIONS, "缓存应收敛到上限");
+        assert!(cache.contains_key("s-000"), "被触碰过的最老会话应存活");
+        assert!(!cache.contains_key("s-001"), "未触碰的更老会话应被逐出");
+        assert!(cache.contains_key(&format!("s-{:03}", MAX_CACHED_SESSIONS + 9)));
+        drop(cache);
+
+        let persisted: HashMap<String, SessionState> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.len(), MAX_CACHED_SESSIONS);
+        assert!(!persisted.contains_key("s-001"));
+    }
+
+    /// 旧版本攒下的超量持久化文件：重启加载时截断到上限
+    #[test]
+    fn oversized_persisted_file_truncates_on_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sessions.json");
+        let mut legacy = HashMap::new();
+        for i in 0..(MAX_CACHED_SESSIONS * 3) {
+            let sid = format!("legacy-{i}");
+            legacy.insert(sid.clone(), sample_state(&sid));
+        }
+        std::fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        let store = AutoRecoveringSessionStore::new(Some(path));
+        assert_eq!(
+            store.cache.try_read().unwrap().len(),
+            MAX_CACHED_SESSIONS,
+            "历史超量文件应截断到上限"
+        );
+    }
 }
