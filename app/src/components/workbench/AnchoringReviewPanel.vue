@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { EntityKind, UnresolvedRefDto } from '@/api/backend'
+import { api } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { requestFragmentReveal } from '@/composables/useFragmentReveal'
 
 const store = useWorkspaceStore()
 
@@ -51,6 +53,64 @@ async function ignoreSelected() {
   }
   const ok = await store.ignoreUnresolvedRefs(items.map((r) => [r.fragmentId, r.quote]))
   if (ok) selected.value = new Set()
+}
+
+async function deleteSelected() {
+  const items = pending.value.filter((r) => selected.value.has(keyOf(r)))
+  if (items.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `将从台账删除 ${items.length} 条记录。正文仍含该指代时，下次锚定会重新出现。`,
+      '批量删除',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  const ok = await store.deleteUnresolvedRefs(items.map((r) => [r.fragmentId, r.quote]))
+  if (ok) selected.value = new Set()
+}
+
+/** 定位到正文：跳到指代所在片段，滚动到引文处并高亮（多处匹配时连续点击逐次跳转） */
+async function jumpToRef(r: UnresolvedRefDto) {
+  if (!store.root) return
+  let sceneId: string
+  try {
+    sceneId = await api.sceneOfFragment(store.root, r.fragmentId)
+  } catch (err) {
+    ElMessage.error(`定位失败：${(err as Error).message}`)
+    return
+  }
+  // 片段不在当前场景：先切过去，等编辑器挂载完再定位
+  if (store.scene?.id !== sceneId) {
+    await store.selectScene(sceneId)
+    await nextTick()
+  }
+  requestFragmentReveal(r.fragmentId, r.quote)
+}
+
+/** 引文区点击定位（勾选框的点击不触发） */
+function onQuoteClick(r: UnresolvedRefDto, e: MouseEvent) {
+  if ((e.target as HTMLElement).closest('.ap-check')) return
+  void jumpToRef(r)
+}
+
+/** 从台账删除单条记录（不撤销已处置写入的锚点） */
+async function deleteRef(r: UnresolvedRefDto) {
+  try {
+    await ElMessageBox.confirm(
+      `将从台账删除「${r.quote}」的记录。${
+        r.status === 'resolved'
+          ? '仅清台账，不会撤销已补的锚点。'
+          : '正文仍含该指代时，下次锚定会重新出现。'
+      }`,
+      '删除记录',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  await store.deleteUnresolvedRefs([[r.fragmentId, r.quote]])
 }
 
 const entityOptions = computed(() =>
@@ -151,6 +211,14 @@ const kindOptions: { value: EntityKind; label: string }[] = [
           >
             <i class="fa-solid fa-eye-slash" /> 忽略所选{{ selectedCount > 0 ? `（${selectedCount}）` : '' }}
           </button>
+          <button
+            class="ink-btn ink-btn--sm"
+            :disabled="selectedCount === 0"
+            title="从台账移除所选记录；正文仍含该指代时下次锚定会重新出现"
+            @click="deleteSelected"
+          >
+            <i class="fa-solid fa-trash-can" /> 删除所选
+          </button>
         </template>
         <button
           v-if="refs.length > pending.length"
@@ -176,7 +244,11 @@ const kindOptions: { value: EntityKind; label: string }[] = [
       class="ap-card"
       :class="{ 'is-done': r.status !== 'pending', 'is-selected': selected.has(keyOf(r)) }"
     >
-      <div class="ap-quote">
+      <div
+        class="ap-quote"
+        title="定位到正文（多处命中时逐次跳转）"
+        @click="onQuoteClick(r, $event)"
+      >
         <label v-if="r.status === 'pending'" class="ap-check">
           <input
             type="checkbox"
@@ -189,7 +261,13 @@ const kindOptions: { value: EntityKind; label: string }[] = [
       </div>
       <div class="ap-meta">
         <span class="ap-hint">{{ r.hint || '名册中无匹配' }}</span>
-        <span class="ap-frag">{{ r.fragmentId }}</span>
+        <button
+          class="ap-frag"
+          title="定位到正文（多处命中时逐次跳转）"
+          @click="jumpToRef(r)"
+        >
+          {{ r.fragmentId }}
+        </button>
         <span v-if="r.status !== 'pending'" class="ap-status">{{ statusLabel(r) }}</span>
       </div>
 
@@ -210,6 +288,22 @@ const kindOptions: { value: EntityKind; label: string }[] = [
         </button>
         <button class="ink-btn ink-btn--sm" title="忽略，后续锚定不再提示" @click="ignore(r)">
           <i class="fa-solid fa-eye-slash" /> 忽略
+        </button>
+        <button
+          class="ink-btn ink-btn--sm"
+          title="从台账删除该记录；正文仍含此指代时下次锚定会重新出现"
+          @click="deleteRef(r)"
+        >
+          <i class="fa-solid fa-trash-can" /> 删除
+        </button>
+      </div>
+      <div v-else class="ap-actions">
+        <button
+          class="ink-btn ink-btn--sm"
+          title="从台账删除该记录（不撤销已补的锚点）"
+          @click="deleteRef(r)"
+        >
+          <i class="fa-solid fa-trash-can" /> 删除
         </button>
       </div>
 
@@ -334,6 +428,7 @@ const kindOptions: { value: EntityKind; label: string }[] = [
   font-size: 13.5px;
   font-weight: 600;
   color: var(--ink-main);
+  cursor: pointer;
 
   i {
     font-size: 11px;
@@ -350,12 +445,20 @@ const kindOptions: { value: EntityKind; label: string }[] = [
   flex-wrap: wrap;
 }
 
+// 片段徽标 = 定位按钮：跳到该片段并高亮引文
 .ap-frag {
   font-family: var(--font-mono, monospace);
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 5px;
+  border: none;
   background: var(--ink-accent-soft);
+  color: inherit;
+  cursor: pointer;
+
+  &:hover {
+    background: color-mix(in srgb, var(--ink-accent) 25%, transparent);
+  }
 }
 
 .ap-status {

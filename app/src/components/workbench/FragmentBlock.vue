@@ -39,13 +39,13 @@ const { container, view, create } = useCodeMirror({
   },
 })
 
-// 审校报告的精确定位：命中本段时滚动到引文处并高亮
+// 审校报告/锚定待审的精确定位：命中本段时滚动到引文处并高亮
 const { pending: revealPending } = useFragmentReveal()
 watch(revealPending, (req) => {
   if (!req || req.fragmentId !== props.fragment.id) return
   const v = view.value
   if (!v) return
-  if (!revealQuote(v, req.quote)) {
+  if (!revealQuote(v, req.quote, req.occurrence)) {
     // 引文已改写匹配不上：退回段首定位
     v.dispatch({ selection: { anchor: 0 }, effects: EditorView.scrollIntoView(0, { y: 'center' }) })
   }
@@ -444,10 +444,16 @@ async function moveDown() {
   overflow: hidden;
 }
 
-// 审校报告定位的命中高亮：亮起 → 保持 → 渐隐（周期与清除定时同步）
+// 审校报告/锚定待审定位的命中高亮：亮起 → 保持 → 渐隐（周期与清除定时同步）
 .frag-editor :deep(.cm-hit-flash) {
   border-radius: 3px;
   animation: hit-flash-cycle 2.4s ease-out;
+}
+
+// 同引文的其余匹配：淡色底纹，随 flash 一并被 clearHit 清除
+.frag-editor :deep(.cm-hit-dim) {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--state-warning) 12%, transparent);
 }
 
 @keyframes hit-flash-cycle {

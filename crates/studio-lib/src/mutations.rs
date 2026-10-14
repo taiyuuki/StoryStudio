@@ -3053,6 +3053,71 @@ pub fn resolve_unresolved_refs(
     Ok(out)
 }
 
+/// 批量删除未锚定指代记录：从 anchoring.toml 硬移除。
+///
+/// 与 ignore 的区别：ignore 保留记录、后续锚定不再提示；delete 直接移除
+/// 记录——正文仍包含该 quote 时，下次片段重锚定会作为全新 pending 再次
+/// 出现（sync_unresolved_refs 的 upsert 语义）。对 resolved 记录仅清台账，
+/// 不撤销已写入片段 frontmatter 的锚点。
+///
+/// refs 为 (fragment_id, quote) 列表；单条未找到直接 Err，多条未命中记入
+/// 回执继续处理其余，与 resolve_unresolved_refs 的行为对齐。
+pub fn delete_unresolved_refs(
+    paths: &ProjectPaths,
+    refs: &[(String, String)],
+) -> Result<String, StudioError> {
+    if refs.is_empty() {
+        return Err(StudioError::Config("refs 不能为空".to_string()));
+    }
+    let single = refs.len() == 1;
+    let anchoring_path = paths.anchoring_toml();
+    let mut file = AnchoringFile::load_or_default(&anchoring_path)?;
+
+    let mut missing: Vec<String> = Vec::new();
+    for (fragment_id, quote) in refs {
+        if file.index_of(fragment_id, quote).is_none() {
+            missing.push(format!("{fragment_id}「{quote}」"));
+        }
+    }
+    if single && !missing.is_empty() {
+        let (fragment_id, quote) = &refs[0];
+        return Err(StudioError::NotFound(format!(
+            "未找到指代记录：片段 {fragment_id} 的 \"{quote}\""
+        )));
+    }
+
+    let keys: Vec<(&str, &str)> = refs.iter().map(|(f, q)| (f.as_str(), q.as_str())).collect();
+    let before = file.refs.len();
+    file.refs
+        .retain(|r| !keys.contains(&(r.fragment_id.as_str(), r.quote.as_str())));
+    let removed = before - file.refs.len();
+
+    if removed > 0 {
+        if file.refs.is_empty() {
+            let _ = std::fs::remove_file(&anchoring_path);
+        } else {
+            file.save(&anchoring_path)?;
+        }
+    }
+
+    let mut out = if single {
+        format!(
+            "已删除指代 \"{}\"（正文仍在时下次锚定会重新出现）",
+            refs[0].1
+        )
+    } else {
+        format!("已删除 {removed} 条指代记录")
+    };
+    if !missing.is_empty() {
+        out.push_str(&format!(
+            "；未找到 {} 条（片段与 quote 需与台账完全一致）：{}",
+            missing.len(),
+            missing.join("、")
+        ));
+    }
+    Ok(out)
+}
+
 /// 校验实体文件存在（按 ID 前缀路由）。
 fn validate_entity_exists(paths: &ProjectPaths, entity_id: &str) -> Result<(), StudioError> {
     let path = paths
@@ -7990,6 +8055,79 @@ scope = "pov"
         assert!(is_inherit_sentinel(" 同上 "));
         assert!(is_inherit_sentinel("继承"));
         assert!(!is_inherit_sentinel("同日正午"));
+    }
+
+    // —— delete_unresolved_refs（台账硬移除）——
+
+    #[test]
+    fn delete_unresolved_refs_removes_only_targeted() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let file = AnchoringFile {
+            refs: vec![
+                pref("f_0001", "摆的人", "疑似新角色"),
+                pref("f_0001", "写的人", "疑似新角色"),
+                pref("f_0002", "灰袍女人", "名册中无匹配"),
+            ],
+        };
+        file.save(&paths.anchoring_toml()).unwrap();
+
+        let summary = delete_unresolved_refs(
+            &paths,
+            &[
+                ("f_0001".into(), "摆的人".into()),
+                ("f_0002".into(), "灰袍女人".into()),
+            ],
+        )
+        .unwrap();
+        assert!(summary.contains("2 条"));
+
+        let rest = AnchoringFile::load_or_default(&paths.anchoring_toml()).unwrap();
+        assert_eq!(rest.refs.len(), 1);
+        assert_eq!(rest.refs[0].quote, "写的人");
+        assert!(paths.anchoring_toml().exists(), "仍有记录时台账文件保留");
+    }
+
+    #[test]
+    fn delete_unresolved_refs_empties_removes_file() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let file = AnchoringFile {
+            refs: vec![pref("f_0001", "摆的人", "疑似新角色")],
+        };
+        file.save(&paths.anchoring_toml()).unwrap();
+
+        delete_unresolved_refs(&paths, &[("f_0001".into(), "摆的人".into())]).unwrap();
+        assert!(
+            !paths.anchoring_toml().exists(),
+            "台账清空应删除文件不留空文件"
+        );
+    }
+
+    #[test]
+    fn delete_unresolved_refs_single_missing_errs_multi_reports() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // 台账不存在：单条直接 Err
+        let err =
+            delete_unresolved_refs(&paths, &[("f_0001".into(), "摆的人".into())]).unwrap_err();
+        assert!(matches!(err, StudioError::NotFound(_)), "{err:?}");
+
+        // 多条混合未命中：继续处理命中的，未命中记回执
+        let file = AnchoringFile {
+            refs: vec![pref("f_0001", "写的人", "疑似新角色")],
+        };
+        file.save(&paths.anchoring_toml()).unwrap();
+        let summary = delete_unresolved_refs(
+            &paths,
+            &[
+                ("f_0001".into(), "写的人".into()),
+                ("f_0009".into(), "不存在".into()),
+            ],
+        )
+        .unwrap();
+        assert!(summary.contains("未找到 1 条"));
     }
 
     // —— cluster_pending_refs（处置建议聚类）——

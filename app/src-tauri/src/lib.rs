@@ -129,6 +129,7 @@ pub fn run() {
             commands::merge_entities,
             commands::resolve_unresolved,
             commands::ignore_unresolved_refs,
+            commands::delete_unresolved_refs,
             commands::add_relation,
             commands::remove_relation,
             commands::update_relation,

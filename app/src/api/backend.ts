@@ -1060,6 +1060,10 @@ export const api = {
   ignoreUnresolvedRefs(root: string, refs: [string, string][]) {
     return call<string>('ignore_unresolved_refs', { root, refs })
   },
+  /** 批量删除未锚定指代记录（仅清台账；正文仍含该 quote 时下次锚定会重新出现） */
+  deleteUnresolvedRefs(root: string, refs: [string, string][]) {
+    return call<string>('delete_unresolved_refs', { root, refs })
+  },
   addRelation(root: string, from: string, to: string, relation: string) {
     return call<RelationDto>('add_relation', { root, from, to, relation })
   },

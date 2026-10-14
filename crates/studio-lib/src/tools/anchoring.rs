@@ -1216,6 +1216,25 @@ impl ResolveUnresolvedRefTool {
     pub fn new(ctx: ToolContext) -> Self {
         Self { ctx }
     }
+
+    /// 从参数取指代对列表：refs 数组优先，回退 fragment_id + quote 单条形态
+    fn collect_ref_pairs(arguments: &serde_json::Value) -> Result<Vec<(String, String)>, String> {
+        if let Some(items) = super::get_json_array_opt(arguments, "refs")? {
+            if items.is_empty() {
+                return Err("refs 不能为空数组".into());
+            }
+            // 项归一化：模型常把每项序列化成字符串传入
+            let items = super::normalize_object_items(items, "refs")?;
+            return items
+                .iter()
+                .map(|item| Ok((get_str(item, "fragment_id")?, get_str(item, "quote")?)))
+                .collect();
+        }
+        Ok(vec![(
+            get_str(arguments, "fragment_id")?,
+            get_str(arguments, "quote")?,
+        )])
+    }
 }
 
 impl Tool for ResolveUnresolvedRefTool {
@@ -1226,7 +1245,9 @@ impl Tool for ResolveUnresolvedRefTool {
             action=create 为其新建档案（匿名指代用占位名，如悬疑里的凶手指代\
             \"摆的人/写的人\"可建档为「九一真凶」，真名揭晓后 merge_entities 合并）；\
             action=merge 归拢到已有实体（需 target_entity_id）；\
-            action=ignore 忽略，后续锚定不再提示。\
+            action=ignore 忽略，后续锚定不再提示；\
+            action=delete 从台账删除记录——仅清台账（不撤销已补的锚点），\
+            正文仍含该 quote 时下次锚定会重新出现，适合清理误报/垃圾记录。\
             建档/归拢会自动为所在片段补锚点。\
             create 角色时可同时传入 gender/occupation/appearance/background/personality/habits\
             一步建全档案，无需再 update_entity。\
@@ -1241,7 +1262,7 @@ impl Tool for ResolveUnresolvedRefTool {
                     "批量处置：数组，每项为原生 JSON 对象 {\"fragment_id\": \"...\", \"quote\": \"...\"}（可跨片段）。与 fragment_id/quote 二选一",
                     false,
                 ),
-                ("action", "string", "处置动作：create | merge | ignore", true),
+                ("action", "string", "处置动作：create | merge | ignore | delete", true),
                 (
                     "target_entity_id",
                     "string",
@@ -1267,6 +1288,14 @@ impl Tool for ResolveUnresolvedRefTool {
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let action = get_str(arguments, "action")?;
+
+        // delete：仅清台账（不建实体、不补锚点），批量/单条统一走删除路径
+        if action == "delete" {
+            let refs = Self::collect_ref_pairs(arguments)?;
+            return crate::mutations::delete_unresolved_refs(&self.ctx.paths(), &refs)
+                .map_err(|e| e.to_string());
+        }
+
         let profile = parse_character_profile(arguments);
 
         // 批量：refs 数组（兼容字符串与原生数组形态），action/target/name/kind/profile 对每条同样生效

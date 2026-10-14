@@ -524,6 +524,13 @@ pub fn ignore_unresolved_refs(root: String, refs: Vec<(String, String)>) -> R<St
         .map_err(e)
 }
 
+/// 批量删除未锚定指代记录（仅清台账；正文仍含该 quote 时下次锚定会重新出现）
+#[tauri::command]
+pub fn delete_unresolved_refs(root: String, refs: Vec<(String, String)>) -> R<String> {
+    let _gate = write_gate(&root);
+    mutations::delete_unresolved_refs(&paths(&root), &refs).map_err(e)
+}
+
 // ============================================================================
 // 叙事线索
 // ============================================================================

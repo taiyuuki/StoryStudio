@@ -564,6 +564,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  /** 批量删除未锚定指代记录（仅清台账；正文仍含该 quote 时下次锚定会重新出现） */
+  async function deleteUnresolvedRefs(refs: [string, string][]): Promise<boolean> {
+    if (!root.value || refs.length === 0) return false
+    try {
+      const summary = await api.deleteUnresolvedRefs(root.value, refs)
+      ElMessage.success(summary)
+      await refresh()
+      scheduleCompile()
+      return true
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+      return false
+    }
+  }
+
   async function addRelation(from: string, to: string, relation: string): Promise<void> {
     if (!root.value) return
     try {
@@ -1093,6 +1108,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mergeEntities,
     resolveUnresolved,
     ignoreUnresolvedRefs,
+    deleteUnresolvedRefs,
     addRelation,
     removeRelation,
     updateRelation,
