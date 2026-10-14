@@ -412,6 +412,48 @@ pub fn scene_metadata_gap_note(paths: &ProjectPaths, scene_or_fragment_id: &str)
     ))
 }
 
+/// story_time 的继承哨兵：传「同上」/「继承」表示沿用阅读序上一场景的现值。
+pub fn is_inherit_sentinel(raw: &str) -> bool {
+    matches!(raw.trim(), "同上" | "继承")
+}
+
+/// 解析时间继承：取阅读序上目标场景之前、最近一个设了 story_time 的场景，
+/// 克隆其时间锚。
+///
+/// 同章连续场景大多时间相同，逐场重打标签的心智负担由此收敛为一个哨兵词。
+/// 刻意保持显式（不静默继承）：时间跳切的场景仍须作者亲口声明，否则会
+/// 污染 timeline 的叙事时间倒流检测。此前全书没有任何时间锚时返回 Err。
+pub fn inherited_story_time(
+    paths: &ProjectPaths,
+    scene_id: &str,
+) -> Result<Option<story_project_format::structure_toml::StoryTimeDef>, String> {
+    let structure = load_structure(paths).map_err(|e| e.to_string())?;
+    let mut seq: Vec<&str> = Vec::new();
+    for ch_id in &structure.book.chapters {
+        if let Some(ch) = structure.chapter.get(ch_id) {
+            seq.extend(ch.scenes.iter().map(|s| s.as_str()));
+        }
+    }
+    let pos = seq
+        .iter()
+        .position(|s| *s == scene_id)
+        .ok_or_else(|| format!("场景 {scene_id} 不在结构树中，无法解析「同上」"))?;
+    for prev in seq[..pos].iter().rev() {
+        if let Some(st) = structure
+            .scene
+            .get(*prev)
+            .and_then(|sc| sc.story_time.as_ref())
+        {
+            return Ok(Some(st.clone()));
+        }
+    }
+    Err(
+        "「同上」无可继承：阅读序上此场景之前没有任何场景设置过 story_time，\
+         请直接传时间（数字如 1023-9-15，或历法/相对标签如 灵历3217年、同日正午）"
+            .into(),
+    )
+}
+
 /// 首次写入正文时自动推进脉络状态 planned → writing（幂等，单向）。
 ///
 /// completed 保持人工/质检门槛不自动推进——完成态喂给编译诊断的封卷
@@ -7551,6 +7593,45 @@ scope = "pov"
         )
         .unwrap();
         assert!(scene_metadata_gap_note(&paths, &sc).is_none());
+    }
+
+    // —— inherited_story_time（「同上」哨兵）——
+
+    #[test]
+    fn inherited_story_time_clones_latest_anchor() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = create_chapter(&paths, "章").unwrap();
+        let sc1 = create_scene(&paths, &ch, "场景一", None).unwrap();
+        let sc2 = create_scene(&paths, &ch, "场景二", None).unwrap();
+        let sc3 = create_scene(&paths, &ch, "场景三", None).unwrap();
+
+        // 前面没有任何时间锚 → Err（无可继承源）
+        let err = inherited_story_time(&paths, &sc3).unwrap_err();
+        assert!(err.contains("无可继承"), "{err}");
+
+        // sc1 设标签锚、sc2 不设 → sc3 的「同上」应跳过 sc2 继承 sc1
+        update_scene(
+            &paths,
+            &sc1,
+            &SceneUpdate {
+                story_time: Some(Some(story_project_format::structure_toml::StoryTimeDef {
+                    anchor: Some("翌日清晨".into()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let st = inherited_story_time(&paths, &sc3)
+        .unwrap()
+        .expect("应继承到 Some");
+        assert_eq!(st.anchor.as_deref(), Some("翌日清晨"));
+
+        // 哨兵识别：容空白，不误伤普通标签
+        assert!(is_inherit_sentinel(" 同上 "));
+        assert!(is_inherit_sentinel("继承"));
+        assert!(!is_inherit_sentinel("同日正午"));
     }
 
     // —— insert_fragment_after / move_fragment / merge_fragments ——

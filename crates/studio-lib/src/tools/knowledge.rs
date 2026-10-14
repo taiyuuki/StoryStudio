@@ -1454,7 +1454,7 @@ impl Tool for WriteFragmentTextTool {
                 (
                     "scene_time",
                     "string",
-                    "顺手附带故事时间：数字（1023-9-15 / 1023）或历法标签（灵历3217年），写入 scene.story_time",
+                    "顺手附带故事时间：数字（1023-9-15 / 1023）、历法/相对标签（灵历3217年、翌日清晨、同日正午——非数字一律按标签原样保存），或「同上」沿用阅读序上一场景的时间锚，写入 scene.story_time",
                     false,
                 ),
                 (
@@ -1562,8 +1562,21 @@ impl Tool for WriteFragmentTextTool {
         {
             msg.push_str(&note);
         }
-        // 顺手附带的场景元数据：同一次调用落盘，省一次 update_scene 往返
+        // 顺手附带的场景元数据：同一次调用落盘，省一次 update_scene 往返。
+        // 「同上」哨兵 = 继承阅读序上一场景的时间锚（连续场景免重打标签）
+        let mut story_time_inherited = false;
         let story_time = match &scene_time_raw {
+            Some(raw) if crate::mutations::is_inherit_sentinel(raw) => {
+                story_time_inherited = true;
+                match crate::mutations::inherited_story_time(&paths, &scene_id) {
+                    Ok(def) => def,
+                    Err(e) => {
+                        return Err(format!(
+                            "scene_time 解析失败: {e}（正文已写入，仅元数据未落）"
+                        ))
+                    }
+                }
+            }
             Some(raw) => match super::structure::parse_story_time(raw) {
                 Ok(def) => def,
                 Err(e) => {
@@ -1587,6 +1600,9 @@ impl Tool for WriteFragmentTextTool {
                 Ok(fields) => {
                     let fields: Vec<String> = fields.iter().map(|f| f.to_string()).collect();
                     msg.push_str(&format!("\n✅ 已同步场景元数据: {}", fields.join(", ")));
+                    if story_time_inherited {
+                        msg.push_str("（story_time 继承上一场景现值）");
+                    }
                 }
                 Err(e) => msg.push_str(&format!("\n⚠️ 场景元数据落盘失败: {e}（正文已写入）")),
             }
@@ -3571,6 +3587,75 @@ fragments = []
             .unwrap();
         assert!(res.contains("缺少"), "应提示元数据缺失: {res}");
         assert!(res.contains("update_scene"), "应引导补齐动作: {res}");
+    }
+
+    #[test]
+    fn write_fragment_scene_time_inherits_sentinel() {
+        // 「同上」哨兵：scene_time 继承阅读序上一场景的现值
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let structure = r#"[book]
+id = "b_root"
+title = "测试"
+chapters = ["ch_01"]
+
+[chapter.ch_01]
+title = "第一章"
+scenes = ["sc_01_01", "sc_01_02"]
+
+[scene.sc_01_01]
+title = "开场"
+fragments = ["f_0001"]
+
+[scene.sc_01_01.story_time]
+anchor = "翌日清晨"
+
+[scene.sc_01_02]
+title = "后续"
+fragments = []
+"#;
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+        std::fs::write(
+            dir.join("fragments/f_0001.md"),
+            "---\nid: f_0001\n---\n夜雨初起的开场正文。",
+        )
+        .unwrap();
+
+        let tool = WriteFragmentTextTool::new(ToolContext::new(dir.to_path_buf()));
+        let res = tool
+            .execute(&serde_json::json!({
+                "scene_id": "sc_01_02",
+                "text": "这是后续场景的正文，与前场时间相同。",
+                "scene_time": "同上"
+            }))
+            .unwrap();
+        assert!(res.contains("已同步场景元数据"), "{res}");
+        assert!(res.contains("继承上一场景"), "{res}");
+
+        // 落盘验证：sc_01_02 复制了 sc_01_01 的时间锚
+        let content = std::fs::read_to_string(dir.join("structure.toml")).unwrap();
+        assert!(content.contains("[scene.sc_01_02.story_time]"), "{content}");
+        assert!(
+            content.matches("翌日清晨").count() == 2,
+            "两个场景应各有一份时间锚: {content}"
+        );
+    }
+
+    #[test]
+    fn write_fragment_scene_time_inherit_without_source_errors() {
+        // 无可继承源：报错但注明正文已写入（不误导重试）
+        let tmp = setup_test_project();
+        write_structure_with_scene(tmp.path());
+        let tool = WriteFragmentTextTool::new(ToolContext::new(tmp.path().to_path_buf()));
+        let err = tool
+            .execute(&serde_json::json!({
+                "scene_id": "sc_01_01",
+                "text": "全书首个场景，之前没有任何时间锚。",
+                "scene_time": "同上"
+            }))
+            .unwrap_err();
+        assert!(err.contains("无可继承"), "{err}");
+        assert!(err.contains("正文已写入"), "{err}");
     }
 
     #[test]

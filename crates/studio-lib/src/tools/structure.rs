@@ -521,7 +521,7 @@ impl Tool for UpdateSceneTool {
                 (
                     "story_time",
                     "string",
-                    "故事时间锚：数字（1023-9-15 / 1023）或历法标签（灵历3217年、某个雨夜）。\
+                    "故事时间锚：数字（1023-9-15 / 1023）、历法/相对标签（灵历3217年、某个雨夜、同日正午——非数字一律按标签原样保存），或「同上」沿用阅读序上一场景的现值。\
                     标签按项目历法（worldview/timeline.toml 的 eras）比较，解析不了仅作展示。传空字符串清除",
                     false,
                 ),
@@ -544,10 +544,14 @@ impl Tool for UpdateSceneTool {
         let summary_raw = arguments.get("summary").and_then(|v| v.as_str());
         let story_time_raw = arguments.get("story_time").and_then(|v| v.as_str());
         let gap_raw = arguments.get("gap").and_then(|v| v.as_str());
+        let paths = self.ctx.paths();
 
-        // story_time 解析: 数字 / 历法标签 / ""(清除)；gap 可与任一形态组合
+        // story_time 解析: 数字 / 历法标签 / 「同上」继承 / ""(清除)；gap 可与任一形态组合
         let mut story_time = match story_time_raw {
             None => None, // 参数未提供 = 不修改
+            Some(s) if crate::mutations::is_inherit_sentinel(s) => {
+                Some(crate::mutations::inherited_story_time(&paths, &scene_id)?)
+            }
             Some(s) => Some(parse_story_time(s)?),
         };
         if let Some(g) = gap_raw {
@@ -579,7 +583,6 @@ impl Tool for UpdateSceneTool {
             story_time,
         };
 
-        let paths = self.ctx.paths();
         let changes = crate::mutations::update_scene(&paths, &scene_id, &update)
             .map_err(|e| e.to_string())?;
 
@@ -1201,6 +1204,36 @@ mod tests {
         assert!(content.contains("year = 1023"), "{content}");
         assert!(content.contains("month = 9"), "{content}");
         assert!(content.contains("day = 15"), "{content}");
+
+        // 「同上」继承：新场景沿用上一场景现值（此时为数值锚 1023-9-15）
+        let sc2 = crate::mutations::create_scene(&paths, &ch, "场景二", None).unwrap();
+        tool.execute(&serde_json::json!({
+            "scene_id": sc2,
+            "story_time": "同上"
+        }))
+        .unwrap();
+        let content = std::fs::read_to_string(dir.join("structure.toml")).unwrap();
+        assert_eq!(
+            content.matches("year = 1023").count(),
+            2,
+            "继承后两个场景应各有一份数值锚: {content}"
+        );
+    }
+
+    #[test]
+    fn update_scene_rejects_inherit_without_source() {
+        // 全书首个场景之前没有任何时间锚：「同上」无从继承，应报错
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = story_project_format::ProjectPaths::new(dir);
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+
+        let tool = UpdateSceneTool::new(ToolContext::new(dir.to_path_buf()));
+        let err = tool
+            .execute(&serde_json::json!({ "scene_id": sc, "story_time": "同上" }))
+            .unwrap_err();
+        assert!(err.contains("无可继承"), "{err}");
     }
 
     /// 批量锚定：一次调用为片段锚定多个实体（混合 ID 字符串与 {entity_id, role}），
