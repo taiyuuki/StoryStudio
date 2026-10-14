@@ -30,6 +30,54 @@ impl PrepareWritingTool {
     }
 }
 
+/// 上章钩子承接提示：本章开头尚未落笔、上一章已写且规划了章末钩子时，
+/// 返回提示行。
+///
+/// 章末钩子不是线索（伏笔沉寂预警只扫 threads.toml，覆盖不到 hook 字段），
+/// 长篇连载中最易遗忘的就是上一章结尾留下的张力——动笔准备时把钩子
+/// 显式带到眼前。本章已有正文（开头已写）或上一章未动笔（钩子还是
+/// 规划态、写它时自会处理）时不再提示。
+fn prev_chapter_hook_note(
+    chapters: &[ChapterOutlineDef],
+    outline_index: usize, // 1-based，当前目标章
+    document: &story_ir::DocumentGraph,
+) -> Option<String> {
+    let prev = chapters.get(outline_index.checked_sub(2)?)?;
+    let hook = prev
+        .hook
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())?;
+    // 上一章是虚拟章（未落实结构）→ 正文必然未写，钩子无从承接
+    let prev_ch_id = prev.chapter_id.as_deref()?;
+    let prev_written = document
+        .scenes_of_chapter(&StableId::new_unchecked(prev_ch_id))
+        .iter()
+        .any(|sc| !document.fragments_of_scene(sc).is_empty());
+    if !prev_written {
+        return None;
+    }
+    // 本章已有正文 → 开场承接的时机已过
+    if let Some(cur_ch_id) = chapters[outline_index - 1]
+        .chapter_id
+        .as_deref()
+    {
+        let cur_written = document
+            .scenes_of_chapter(&StableId::new_unchecked(cur_ch_id))
+            .iter()
+            .any(|sc| !document.fragments_of_scene(sc).is_empty());
+        if cur_written {
+            return None;
+        }
+    }
+    Some(format!(
+        "\n[上章钩子承接] 第{}章「{}」的章末钩子：{hook}——\
+         本章开头应有意识地承接（或明确切换时间线/视角），勿让上章张力悬空\n",
+        outline_index - 1,
+        prev.title
+    ))
+}
+
 /// 最近一个已有正文的章节 ID（阅读序最后一个首场景有片段的章）。
 fn last_written_chapter(paths: &story_project_format::ProjectPaths) -> Option<String> {
     let structure = crate::mutations::load_structure(paths).ok()?;
@@ -53,6 +101,7 @@ impl Tool for PrepareWritingTool {
         ToolDef {
             name: "prepare_writing".into(),
             description: "动笔前的一站式上下文聚合：一次调用返回本章脉络（目标/节拍/钩子/状态）、\
+            上章钩子承接提示（本章开头未落笔时带出上一章的章末钩子，防连载遗忘伏笔张力）、\
             前情回顾（目标之前最近几个已写场景）、本章线索认知快照（各观察者最新认知）、\
             伏笔沉寂预警（主线已埋未收且超过阈值章数无动静的线索）、\
             涉及角色速查（外貌/习惯/个性 + 真名遮蔽）、角色当前状态断言、题材提示与写作要点。\
@@ -195,6 +244,12 @@ impl Tool for PrepareWritingTool {
                 .filter(|s| !s.is_empty())
             {
                 out.push_str(&format!("    梗概: {}\n", truncate_line(summary, 120)));
+            }
+            // —— 1.5 上章钩子承接 ——
+            if let Some(idx) = outline_index {
+                if let Some(note) = prev_chapter_hook_note(&chapters_file.chapters, idx, document) {
+                    out.push_str(&note);
+                }
             }
         }
 
@@ -634,6 +689,7 @@ chapter_id = "ch_01"
 title = "第一章 雨夜"
 volume_order = 1
 status = "completed"
+hook = "黑衣人夜探客栈，林风浑然不觉"
 
 [[chapters]]
 chapter_id = "ch_02"
@@ -721,12 +777,66 @@ object = "临安城码头"
         assert!(out.contains("1. 夜探码头"), "{out}");
         // 章节目标的前情以第一章末场景为界
         assert!(out.contains("客栈投宿"), "{out}");
+        // 上章钩子承接：ch_01 已写且有钩子，准备 ch_02 时应带出
+        assert!(out.contains("[上章钩子承接]"), "{out}");
+        assert!(out.contains("黑衣人夜探客栈"), "{out}");
 
         // 越界序号报错
         let err = tool
             .execute(&serde_json::json!({ "chapter": 9 }))
             .unwrap_err();
         assert!(err.contains("不存在"), "{err}");
+    }
+
+    /// 第一章无上一章 → 无钩子承接提示
+    #[test]
+    fn prepare_no_prev_hook_for_first_chapter() {
+        let tmp = setup();
+        write_fixture(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = PrepareWritingTool::new(ctx);
+
+        let out = tool.execute(&serde_json::json!({ "scene_id": "sc_01_01" })).unwrap();
+        assert!(!out.contains("[上章钩子承接]"), "{out}");
+    }
+
+    /// 本章已有正文（开场已写）→ 承接时机已过，不再提示
+    #[test]
+    fn prepare_no_prev_hook_after_chapter_started() {
+        let tmp = setup();
+        write_fixture(tmp.path());
+        // 给 ch_02 的场景落一个片段 → 本章已动笔
+        std::fs::write(
+            tmp.path().join("fragments/f_0009.md"),
+            "---\nid: f_0009\n---\n码头夜色沉沉。",
+        )
+        .unwrap();
+        let structure = std::fs::read_to_string(tmp.path().join("structure.toml"))
+            .unwrap()
+            .replace("fragments = []", "fragments = [\"f_0009\"]");
+        std::fs::write(tmp.path().join("structure.toml"), structure).unwrap();
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = PrepareWritingTool::new(ctx);
+        let out = tool.execute(&serde_json::json!({ "chapter": 2 })).unwrap();
+        assert!(!out.contains("[上章钩子承接]"), "{out}");
+    }
+
+    /// 上一章未动笔（钩子还是规划态）→ 无从承接，不提示
+    #[test]
+    fn prepare_no_prev_hook_when_prev_unwritten() {
+        let tmp = setup();
+        write_fixture(tmp.path());
+        // 抹掉 ch_01 的正文（片段列表清空）
+        let structure = std::fs::read_to_string(tmp.path().join("structure.toml"))
+            .unwrap()
+            .replace("fragments = [\"f_0001\"]", "fragments = []");
+        std::fs::write(tmp.path().join("structure.toml"), structure).unwrap();
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = PrepareWritingTool::new(ctx);
+        let out = tool.execute(&serde_json::json!({ "chapter": 2 })).unwrap();
+        assert!(!out.contains("[上章钩子承接]"), "{out}");
     }
 
     #[test]
