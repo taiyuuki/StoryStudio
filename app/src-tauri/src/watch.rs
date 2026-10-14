@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use notify::RecursiveMode;
-use notify_debouncer_full::{new_debouncer, DebouncedEvent, DebounceEventResult, Debouncer};
+use notify_debouncer_full::{new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer};
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -489,7 +489,8 @@ mod tests {
         std::fs::write(dir.path().join(".novelstudio/stats.json"), "{}").unwrap();
 
         let got = wait_for(Duration::from_secs(5), || {
-            sink.0.lock()
+            sink.0
+                .lock()
                 .unwrap()
                 .iter()
                 .find(|f| f.as_str() == "structure.toml")
