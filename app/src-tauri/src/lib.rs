@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod dto;
+pub mod watch;
 
 use tauri::{LogicalPosition, LogicalSize, WebviewUrl, WebviewWindowBuilder};
 
@@ -206,6 +207,10 @@ pub fn run() {
             commands::mcp_server_start,
             commands::mcp_server_stop,
             commands::mcp_server_status,
+            // 文件监听（RFC-0019：磁盘 → 前端实时同步）
+            commands::watch_start,
+            commands::watch_stop,
+            commands::watch_status,
         ])
         .run(tauri::generate_context!())
         .expect("StoryStudio 启动失败");

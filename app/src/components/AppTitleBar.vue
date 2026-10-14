@@ -4,12 +4,16 @@ import { useRouter } from 'vue-router'
 const router = useRouter()
 import { computed, onMounted, shallowRef } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { ElMessage } from 'element-plus'
+import { api } from '@/api/backend'
 import { useUiStore } from '@/stores/ui'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 defineProps<{ title?: string }>()
 const emit = defineEmits<{ backHome: [] }>()
 
 const ui = useUiStore()
+const workspace = useWorkspaceStore()
 const isMac = shallowRef(true)
 const maximized = shallowRef(false)
 
@@ -17,6 +21,23 @@ const isTauri = computed(() => !!window.__TAURI_INTERNALS__)
 const needsControls = computed(() => isTauri.value && !isMac.value)
 
 const themeIcon = computed(() => (ui.theme === 'theme-ink' ? 'fa-regular fa-moon' : 'fa-solid fa-sun'))
+
+/** 文件监听断开警示（RFC-0019 §6.4）：仅失败停止时显示，点击重启 */
+const watchBroken = computed(
+  () =>
+    !!workspace.root &&
+    workspace.watchState?.state === 'stopped' &&
+    !!workspace.watchState.reason,
+)
+
+async function restartWatch() {
+  if (!workspace.root) return
+  try {
+    workspace.watchState = await api.watchStart(workspace.root)
+  } catch (err) {
+    ElMessage.error(`重启文件监听失败：${(err as Error).message}`)
+  }
+}
 
 onMounted(async () => {
   isMac.value = /mac/i.test(navigator.userAgent)
@@ -62,6 +83,14 @@ async function close() {
     </div>
 
     <div class="tb-right">
+      <button
+        v-if="watchBroken"
+        class="ink-icon-btn tb-watch-warn"
+        title="文件监听已断开，外部修改不会自动同步；点击重启"
+        @click="restartWatch"
+      >
+        <i class="fa-solid fa-tower-broadcast" />
+      </button>
       <button
         class="ink-icon-btn"
         :title="ui.theme === 'theme-ink' ? '切到暗夜水墨' : '切到素宣墨白'"
@@ -116,6 +145,15 @@ async function close() {
   width: 28px;
   height: 28px;
   flex-shrink: 0;
+}
+
+.tb-watch-warn {
+  color: var(--ink-warning);
+
+  &:hover {
+    color: var(--ink-warning);
+    background: var(--surface-2);
+  }
 }
 
 .tb-logo {

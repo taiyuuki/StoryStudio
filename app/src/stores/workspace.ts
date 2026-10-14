@@ -1,6 +1,6 @@
 // 工作区 — 项目数据编排（单一数据源，所有面板从这里读写）
 import { defineStore } from 'pinia'
-import { computed, reactive, ref, shallowRef } from 'vue'
+import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type {
   ChapterDto,
@@ -14,11 +14,16 @@ import type {
   SceneDetailDto,
   ScenePatch,
   ThreadDto,
+  WatchStatusDto,
   WordStatsSummaryDto,
   WorkspaceDto,
 } from '@/api/backend'
-import { api } from '@/api/backend'
+import { api, onFsChanged, onWatchState } from '@/api/backend'
 import { useUiStore } from './ui'
+// 循环依赖安全：useBookStore 只在本 store 的事件回调里延迟调用，
+// book store 初始化也只在函数体内解引用本 store——两个 setup 都不会
+// 在初始化路径上触发对方（见 busyWriting / watch(busyWriting)）
+import { useBookStore } from './book'
 
 export type SaveState = 'dirty' | 'saving' | 'saved' | 'error'
 
@@ -82,6 +87,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // MCP 服务跟随项目（工具注册表绑定项目目录）：已运行则重启指向新书，
       // 未运行但偏好开启则随项目自动启动；失败静默，不阻塞项目打开
       void mcpFollowProject(data.root)
+      // 文件监听同样跟随项目（RFC-0019 §6.3），失败静默
+      void watchFollowProject(data.root)
       return true
     } catch (err) {
       ElMessage.error((err as Error).message)
@@ -126,6 +133,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // MCP 服务跟随「当前打开的项目」：关闭项目即停服务，
     // 避免外部 Agent 仍能读写已关闭的书；偏好保留，重开项目自动恢复
     void api.mcpServerStop().catch(() => {})
+    // 文件监听同停（RFC-0019：监听生命周期 = 当前打开的项目）
+    void api.watchStop().catch(() => {})
+    watchState.value = null
   }
 
   // ── 场景 / 片段 ────────────────────────────────────────
@@ -181,6 +191,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // ── 保存（单飞互斥：同一片段同时只有一次写请求，期间的新版本补跑）──
   const saveInFlight = new Set<string>()
   const pendingSaveText = new Map<string, string>()
+  /** 保存单飞期间该片段正在落盘的文本（watcher 冲突检测要排除自己的在途写入） */
+  const savingText = new Map<string, string>()
 
   function readSaveState(fragmentId: string): SaveState {
     return fragmentSave[fragmentId] ?? 'saved'
@@ -196,6 +208,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     saveInFlight.add(fragmentId)
     fragmentSave[fragmentId] = 'saving'
+    savingText.set(fragmentId, text)
     try {
       await api.writeFragment(root.value, fragmentId, text)
       // 途中有新编辑（防抖计时器又武装了，或已暂存待补跑）则本次落盘文本已过时：
@@ -214,6 +227,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       // 途中有新编辑则保持 dirty，不误报已保存（计时器武装也算，不只看暂存）
       fragmentSave[fragmentId] = newerEdits ? 'dirty' : 'saved'
+      // 保存成功即冲突解除（用户版本已落盘成为最新真相）
+      conflictedNotified.delete(fragmentId)
       scheduleCompile()
       void refreshStats()
     } catch (err) {
@@ -221,6 +236,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       ElMessage.error((err as Error).message)
     } finally {
       saveInFlight.delete(fragmentId)
+      savingText.delete(fragmentId)
       const pending = pendingSaveText.get(fragmentId)
       if (pending !== undefined) {
         pendingSaveText.delete(fragmentId)
@@ -771,6 +787,205 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  // ── 文件监听（RFC-0019）：磁盘 → 前端实时同步 ────────────
+  //
+  // 磁盘是真相源，界面是镜像：MCP 写入与外部编辑器改 TOML 经 watcher
+  // 事件秒级同步到 store。去重不问来源，只问"前端是否已知这份内容"——
+  // 内容相等即 no-op，正确性建立在内容合并（L2）上，UI 自己保存的回推
+  // 因此对用户不可见。
+
+  /** 监听状态（watch_start 返回值 / project-watch-state 事件） */
+  const watchState = ref<WatchStatusDto | null>(null)
+
+  /** 批处理间隔：固定间隔而非 trailing 防抖——持续写入流下最坏延迟有界（§3 Goal 1） */
+  const FS_BATCH_MS = 300
+  let fsPending = new Set<string>()
+  let fsBatchTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** AI 续写 / 逐章流水线运行中（§10.1 暂存触发） */
+  function busyWriting(): boolean {
+    return aiWriting.value || useBookStore().running
+  }
+
+  function onFsFiles(files: string[]): void {
+    if (!root.value || files.length === 0) return
+    if (busyWriting()) {
+      stashFsFiles(files)
+      return
+    }
+    for (const f of files) fsPending.add(f)
+    if (!fsBatchTimer) {
+      fsBatchTimer = setTimeout(() => {
+        fsBatchTimer = null
+        const batch = fsPending
+        fsPending = new Set()
+        routeFsBatch(batch)
+      }, FS_BATCH_MS)
+    }
+  }
+
+  /** §8.2 分流：场景级变更重拉当前场景，其余整树刷新；编译与统计总跟随 */
+  function routeFsBatch(files: Set<string>): void {
+    const sceneScope = [...files].some(
+      (f) => f.startsWith('fragments/') || f === 'structure.toml' || f === 'chapters.toml',
+    )
+    if (sceneScope) {
+      void refreshSceneFromDisk()
+      // 结构文件决定章节树形态，树也要跟（ws 整树替换是本 store 既有惯例）
+      if (files.has('structure.toml') || files.has('chapters.toml')) void refresh()
+    } else {
+      void refresh()
+    }
+    scheduleCompile()
+    void refreshStats()
+  }
+
+  /** 重拉当前场景并按 §8.1 合并；场景在磁盘上消失则清空并提示（§10） */
+  async function refreshSceneFromDisk(): Promise<void> {
+    const sceneId = scene.value?.id
+    if (!root.value || !sceneId) return
+    let fresh: SceneDetailDto
+    try {
+      fresh = await api.getScene(root.value, sceneId)
+    } catch {
+      scene.value = null
+      void refresh()
+      ElMessage.warning('当前场景已被外部删除')
+      return
+    }
+    if (scene.value?.id !== sceneId) return // 拉取期间用户已切换场景，放弃合并
+    mergeSceneFromDisk(fresh)
+  }
+
+  /** 冲突提示去重：同一段提示过就不再重复（保存成功后清除） */
+  const conflictedNotified = new Set<string>()
+
+  function notifyConflict(fragmentId: string): void {
+    if (conflictedNotified.has(fragmentId)) return
+    conflictedNotified.add(fragmentId)
+    ElMessage.warning('本段在磁盘上已被外部修改，保存时将以你正在编辑的内容为准')
+  }
+
+  /**
+   * §8.1 片段合并——与 saveFragment 的防闪回守卫同源：
+   * saved 且 text 相同 → 不赋值（CodeMirror 不换文档，滚动/选区不动）；
+   * dirty / saving / error → 绝不回写 text，盘面内容变化即冲突提示。
+   */
+  function mergeSceneFromDisk(fresh: SceneDetailDto): void {
+    const cur = scene.value
+    if (!cur || cur.id !== fresh.id) return
+    // 场景元数据不在编辑器保护范围，照单跟随
+    cur.title = fresh.title
+    cur.pov = fresh.pov
+    cur.mood = fresh.mood
+    cur.function = fresh.function
+    cur.summary = fresh.summary
+    cur.storyTime = fresh.storyTime
+
+    const stateOf = (id: string) => fragmentSave[id] ?? 'saved'
+    const freshById = new Map(fresh.fragments.map((f) => [f.id, f]))
+    const anyUnsaved = cur.fragments.some((f) => stateOf(f.id) !== 'saved')
+
+    for (const f of cur.fragments) {
+      const nf = freshById.get(f.id)
+      if (!nf) {
+        // 磁盘已删除：dirty 片段保留待用户处理（提示冲突），saved 随盘移除
+        if (stateOf(f.id) !== 'saved') notifyConflict(f.id)
+        continue
+      }
+      f.anchors = nf.anchors
+      if (stateOf(f.id) === 'saved') {
+        if (nf.text !== f.text) {
+          f.text = nf.text
+          f.wordCount = nf.wordCount
+        } else if (nf.wordCount !== f.wordCount) {
+          f.wordCount = nf.wordCount
+        }
+      } else if (nf.text !== f.text && nf.text !== savingText.get(f.id)) {
+        // f.text 是最近一次落盘内容，盘面与它不同即外部改写；
+        // saving 态排除自己刚写进去的那份在途文本
+        notifyConflict(f.id)
+      }
+    }
+
+    const removedSaved = new Set(
+      cur.fragments
+        .filter((f) => !freshById.has(f.id) && stateOf(f.id) === 'saved')
+        .map((f) => f.id),
+    )
+    const added = fresh.fragments.filter((nf) => !cur.fragments.some((f) => f.id === nf.id))
+    for (const nf of added) fragmentSave[nf.id] = 'saved'
+
+    if (!anyUnsaved) {
+      // 全部已保存：完全跟随盘面（顺序 / 增 / 删）
+      cur.fragments = fresh.fragments.map((nf) => cur.fragments.find((f) => f.id === nf.id) ?? nf)
+    } else {
+      // 有未保存编辑：保持现有顺序、尾部追加新增，重排等保存后自然对齐
+      cur.fragments = cur.fragments.filter((f) => !removedSaved.has(f.id)).concat(added)
+    }
+  }
+
+  /** §10.1 暂存：AI 流式 / 流水线批量写期间不实时分流，结束瞬间合成大批次补推 */
+  const STASH_TIMEOUT_MS = 5 * 60_000
+  let stashActive = false
+  let stashFiles = new Set<string>()
+  let stashTimer: ReturnType<typeof setTimeout> | null = null
+
+  function stashFsFiles(files: string[]): void {
+    if (!stashActive) {
+      stashActive = true
+      stashTimer = setTimeout(() => {
+        // 超时降级：流水线异常挂住——全量兜底并恢复实时处理
+        exitStash(false)
+        void refresh()
+        scheduleCompile()
+      }, STASH_TIMEOUT_MS)
+    }
+    for (const f of files) stashFiles.add(f)
+  }
+
+  /** 退出暂存；flush=true 把累积路径作为合成大批次走 §8.2 分流 */
+  function exitStash(flush: boolean): void {
+    if (stashTimer) {
+      clearTimeout(stashTimer)
+      stashTimer = null
+    }
+    const batch = stashFiles
+    stashFiles = new Set()
+    stashActive = false
+    if (flush && batch.size > 0 && root.value) routeFsBatch(batch)
+  }
+
+  // 流结束（busyWriting 回落）即补推暂存批次
+  watch(busyWriting, (busy, was) => {
+    if (was && !busy && stashActive) exitStash(true)
+  })
+
+  /** 事件订阅（store 单例，只注册一次；非 Tauri 环境静默失败） */
+  async function setupFsWatch(): Promise<void> {
+    try {
+      await onFsChanged(onFsFiles)
+      await onWatchState((st) => {
+        watchState.value = st
+        if (st.state === 'stopped' && st.reason) {
+          ElMessage.warning(`文件监听已停止：${st.reason}`)
+        }
+      })
+    } catch {
+      // 纯浏览器环境无 Tauri 事件可订阅
+    }
+  }
+  void setupFsWatch()
+
+  /** 文件监听跟随项目（对偶 mcpFollowProject）：随打开启动，切书自动重启 */
+  async function watchFollowProject(newRoot: string): Promise<void> {
+    try {
+      watchState.value = await api.watchStart(newRoot)
+    } catch {
+      // 监听不可用不阻塞项目打开
+    }
+  }
+
   // ── 编译 ────────────────────────────────────────────────
   let compileTimer: ReturnType<typeof setTimeout> | null = null
   function scheduleCompile() {
@@ -896,6 +1111,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     stats,
     refreshStats,
     setDailyGoal,
+    watchState,
     runCompile,
     aiStreamText,
     aiWriteScene,

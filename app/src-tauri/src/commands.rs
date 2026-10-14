@@ -11,6 +11,7 @@ use story_studio_lib as lib;
 use story_studio_lib::mutations::{self, EntityKind, SceneUpdate};
 
 use crate::dto::*;
+use crate::watch;
 
 type R<T> = Result<T, String>;
 
@@ -1979,6 +1980,62 @@ pub fn mcp_server_stop() -> R<()> {
 pub fn mcp_server_status() -> R<McpServerStatusDto> {
     let slot = mcp_slot().lock().unwrap();
     Ok(mcp_status_from(slot.as_ref()))
+}
+
+// ============================================================================
+// 文件监听（RFC-0019）— 磁盘 → 前端实时同步
+// ============================================================================
+
+/// 进程内至多一个项目监听实例（对偶 MCP_HTTP_SLOT）
+static WATCH_SLOT: std::sync::OnceLock<std::sync::Mutex<Option<watch::WatcherHandle>>> =
+    std::sync::OnceLock::new();
+
+fn watch_slot() -> &'static std::sync::Mutex<Option<watch::WatcherHandle>> {
+    WATCH_SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 启动项目文件监听（RFC-0019 §6.3）。
+///
+/// 幂等：项目一致时直接返回现状；项目变化时先停旧再启新（切书由前端
+/// 重调覆盖）。变更批次与状态迁移分别经 `project-fs-changed` /
+/// `project-watch-state` 事件推送（watch.rs）。
+#[tauri::command]
+pub fn watch_start(app: tauri::AppHandle, root: String) -> R<watch::WatchStatusDto> {
+    let root_path = std::path::PathBuf::from(&root);
+    // 句柄持有规范化路径，比较口径对齐（项目锁注册表同款处理）
+    let canonical = std::fs::canonicalize(&root_path).unwrap_or_else(|_| root_path.clone());
+    let mut slot = watch_slot().lock().unwrap();
+    if let Some(h) = slot.as_ref() {
+        if h.root() == canonical.as_path() {
+            return Ok(h.status_dto());
+        }
+        slot.as_mut().unwrap().stop();
+        *slot = None;
+    }
+    let handle = watch::WatcherHandle::spawn(app, &root_path);
+    let dto = handle.status_dto();
+    *slot = Some(handle);
+    Ok(dto)
+}
+
+/// 停止项目文件监听（未运行时为空操作）
+#[tauri::command]
+pub fn watch_stop() -> R<()> {
+    let mut slot = watch_slot().lock().unwrap();
+    if let Some(mut h) = slot.take() {
+        h.stop();
+    }
+    Ok(())
+}
+
+/// 查询文件监听状态（§6.4：前端角标与手动重启依据）
+#[tauri::command]
+pub fn watch_status() -> R<watch::WatchStatusDto> {
+    let slot = watch_slot().lock().unwrap();
+    Ok(slot
+        .as_ref()
+        .map(|h| h.status_dto())
+        .unwrap_or_else(watch::WatchStatusDto::idle))
 }
 
 // ============================================================================

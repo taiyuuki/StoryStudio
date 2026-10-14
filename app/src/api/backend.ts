@@ -1,5 +1,6 @@
 // 后端 API — invoke 封装 + 全部 DTO 类型（与 src-tauri/src/dto.rs 一一对应）
 import { invoke, Channel } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 
 // ============================================================================
 // 类型
@@ -480,6 +481,23 @@ export interface McpServerStatusDto {
   readOnly: boolean
   projectDir: string
   toolCount: number
+}
+
+/** 文件监听状态（RFC-0019 §6.4） */
+export interface WatchStatusDto {
+  /** "running" | "retrying" | "stopped" */
+  state: 'running' | 'retrying' | 'stopped' | string
+  /** 监听的项目根（未运行时为空串） */
+  root: string
+  /** 退避重建的失败序号（0 = 无失败） */
+  attempt: number
+  /** 停止 / 重建原因（用户主动停止为 null） */
+  reason: string | null
+}
+
+/** 磁盘变更批次（RFC-0019 §6.5：只携带路径，不携带数据） */
+export interface FsChangedEvent {
+  files: string[]
 }
 
 export interface ExportOutputDto {
@@ -1435,4 +1453,30 @@ export const api = {
   mcpServerStatus() {
     return call<McpServerStatusDto>('mcp_server_status')
   },
+
+  // ── 文件监听（RFC-0019：磁盘 → 前端实时同步）─────────────
+  /** 启动项目文件监听（幂等；项目变化时后端自动停旧启新） */
+  watchStart(root: string) {
+    return call<WatchStatusDto>('watch_start', { root })
+  },
+  watchStop() {
+    return call<void>('watch_stop')
+  },
+  watchStatus() {
+    return call<WatchStatusDto>('watch_status')
+  },
+}
+
+// ============================================================================
+// 文件监听事件订阅（RFC-0019 §6.4/§6.5）
+// ============================================================================
+
+/** 订阅磁盘变更批次（files 为相对项目的 '/' 分隔路径）；返回取消订阅 */
+export function onFsChanged(cb: (files: string[]) => void): Promise<() => void> {
+  return listen<FsChangedEvent>('project-fs-changed', (e) => cb(e.payload.files))
+}
+
+/** 订阅监听状态迁移（running/retrying/stopped）；返回取消订阅 */
+export function onWatchState(cb: (st: WatchStatusDto) => void): Promise<() => void> {
+  return listen<WatchStatusDto>('project-watch-state', (e) => cb(e.payload))
 }

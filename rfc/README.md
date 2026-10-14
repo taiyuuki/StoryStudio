@@ -4,7 +4,8 @@ Story Studio 的设计文档集。RFC-0001 ~ RFC-0018 写于 2026-07-10 ~ 07-12�
 先于代码仓库（2026-09-30 初始化）近三个月，是 crates/ 下 48 个源文件注释中
 `RFC-xxxx §x.x` 引用的出处。
 
-状态于 2026-10-12 对照代码库逐篇核对。
+状态于 2026-10-12 对照代码库逐篇核对。RFC-0019 起为代码期设计文档
+（为已落地功能补设计，或为新功能先立设计再实现）。
 
 ## 状态一览
 
@@ -28,8 +29,10 @@ Story Studio 的设计文档集。RFC-0001 ~ RFC-0018 写于 2026-07-10 ~ 07-12�
 | [0016](RFC-0016.md) | Story Outline | ✅ Implemented | outline.toml + 续排大纲 |
 | [0017](RFC-0017.md) | Narrative Threads | ✅ Implemented | threads.toml + 状态推导 |
 | [0018](RFC-0018.md) | Story Mechanics | ❌ Not Implemented | 现有豁免均为规则内硬编码特例 |
+| [0019](RFC-0019.md) | File Watch & Live Sync | ✅ Implemented | Phase 1 落地；Phase 2 可选项（L3 记账 / 聚焦兜底 / 冲突 diff）未做 |
 
-合计：Implemented 12 / Partially 3 / Not Implemented 2。
+0001 ~ 0018 合计：Implemented 12 / Partially 3 / Not Implemented 2；
+0019 起为 Draft / Implemented 状态随实现更新。
 
 ## 状态含义
 
@@ -51,5 +54,5 @@ RFC-0001 ~ 0018 覆盖 2026-07 的基础设计期。此后（尤其 2026-09 仓�
 - **桌面端体验** —— 码字统计双账本、整章阅读视图、全文检索、
   提示词覆盖、AI 档案设置页、水墨主题
 
-这些功能的权威描述在 `app/README.md` 与代码本身。若后续要为其中某块
-补设计文档，建议从 RFC-0019 起编号。
+这些功能的权威描述在 `app/README.md` 与代码本身。RFC-0019 即为其中
+**MCP 服务的前端可感知性**补的第一份设计文档；其余若需补档，从 RFC-0020 起编号。

@@ -27,3 +27,8 @@ story-studio-lib = { workspace = true }
 story-compiler = { workspace = true }
 story-ai-runtime = { workspace = true }
 story-mcp = { workspace = true }
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
+
+[dev-dependencies]
+tempfile = { workspace = true }
