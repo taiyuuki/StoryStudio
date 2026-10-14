@@ -8022,7 +8022,7 @@ scope = "pov"
         write_cluster_entity(dir, "entities/organizations", "o_0001", "太虚天宫");
         write_cluster_entity(dir, "entities/characters", "c_0001", "白芷凝");
 
-        let refs = vec![
+        let refs = [
             pref(
                 "f_000F",
                 "中年道人",
@@ -8063,7 +8063,7 @@ scope = "pov"
         write_cluster_entity(dir, "entities/organizations", "o_0001", "太虚天宫");
         write_cluster_entity(dir, "entities/characters", "c_0001", "白芷凝");
 
-        let refs = vec![
+        let refs = [
             pref("f_01", "二师姐", "疑似指向白芷凝"),
             pref("f_02", "丹道长老", "白芷凝，名册内角色"),
             // 含组织名的隶属语境 + 新角色字样 → 不归拢到太虚天宫
@@ -8095,7 +8095,7 @@ scope = "pov"
     #[test]
     fn cluster_ignores_dialogue_mentions() {
         let tmp = setup_test_project();
-        let refs = vec![
+        let refs = [
             pref("f_0017", "刘瘸子", "仅对话提及，山下欠酒债之人"),
             pref("f_0017", "王寡妇", "苏白提及的村头欠肉钱之人"),
         ];
@@ -8113,7 +8113,7 @@ scope = "pov"
     #[test]
     fn cluster_same_quote_across_fragments() {
         let tmp = setup_test_project();
-        let refs = vec![
+        let refs = [
             pref("f_01", "黑衣斥候", "疑似新角色，先锋斥候"),
             pref("f_02", "黑衣斥候", "疑似新角色"),
         ];
@@ -8131,7 +8131,7 @@ scope = "pov"
     #[test]
     fn cluster_requires_two_members() {
         let tmp = setup_test_project();
-        let refs = vec![pref("f_01", "高个子", "疑似新角色")];
+        let refs = [pref("f_01", "高个子", "疑似新角色")];
         let pending: Vec<&UnresolvedRefDef> = refs.iter().collect();
         assert!(cluster_pending_refs(&ProjectPaths::new(tmp.path()), &pending).is_empty());
     }
