@@ -737,8 +737,14 @@ const UNRESOLVED_GUIDANCE: &str =
      真名揭露当章调 reveal_character_name 切换。";
 
 /// 把锚定结果格式化为回执片段（无内容返回空串）
+/// 待审指代积压预警阈值：全书 pending 条数达到该值时，写入回执提醒先处置。
+///
+/// 台账的闭环是「上报 → 尽快处置 → 实体进名册 → 同类指代不再上报」；
+/// 连续写作不处置时，同一个名册外角色会以不同称呼逐片段重复上报
+/// （实测一章半就能滚出十几条），积压信号必须尽早进入写作者视野。
+const BACKLOG_WARN_THRESHOLD: usize = 5;
+
 pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) -> String {
-    let _ = roster_paths;
     let mut note = String::new();
     if !outcome.anchored.is_empty() {
         note.push_str("\n理解锚定（指代出场已落锚点）：");
@@ -752,6 +758,18 @@ pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) 
             note.push_str(&format!("\n  - \"{quote}\"（{hint}）"));
         }
         note.push_str(&format!("\n{UNRESOLVED_GUIDANCE}"));
+    }
+    // 全书积压预警（含非本片段的历史条目）：处置滞后会让同一角色以不同
+    // 称呼逐片段重复上报，越早清账后续越省
+    let backlog = crate::mutations::load_unresolved_refs(roster_paths)
+        .map(|rs| rs.iter().filter(|r| r.is_pending()).count())
+        .unwrap_or(0);
+    if backlog >= BACKLOG_WARN_THRESHOLD {
+        note.push_str(&format!(
+            "\n⚠️ 全书待审指代已积压 {backlog} 条，建议暂停写作先处置：\
+             list_unresolved_refs 查看建议分组，resolve_unresolved_ref 用 refs 批量\
+             建档/归拢/忽略——及早建档后实体进名册，同类指代不再重复上报",
+        ));
     }
     note
 }
@@ -1279,6 +1297,51 @@ mod tests {
                 tool_calls: Vec::new(),
             })
         }
+    }
+
+    #[test]
+    fn format_anchor_note_warns_backlog() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // 台账 5 条 pending → 触发积压预警（含非本片段的历史条目）
+        let ledger = (1..=5)
+            .map(|i| {
+                format!(
+                    "[[ref]]\nfragment_id = \"f_00{:02}\"\nquote = \"指代{}\"\n\
+                     hint = \"疑似新角色\"\nstatus = \"pending\"\n\n",
+                    i, i
+                )
+            })
+            .collect::<String>();
+        std::fs::write(paths.anchoring_toml(), ledger).unwrap();
+
+        let note = format_anchor_note(&AnchorOutcome::default(), &paths);
+        assert!(note.contains("积压 5 条"), "{note}");
+        assert!(note.contains("list_unresolved_refs"), "{note}");
+
+        // 低于阈值不提示
+        let ledger4 = (1..=4)
+            .map(|i| {
+                format!(
+                    "[[ref]]\nfragment_id = \"f_00{:02}\"\nquote = \"指代{}\"\n\
+                     hint = \"疑似新角色\"\nstatus = \"pending\"\n\n",
+                    i, i
+                )
+            })
+            .collect::<String>();
+        std::fs::write(paths.anchoring_toml(), ledger4).unwrap();
+        let note = format_anchor_note(&AnchorOutcome::default(), &paths);
+        assert!(!note.contains("积压"), "{note}");
+
+        // ignored/resolved 不计入积压
+        let ledger_mix = "[[ref]]\nfragment_id = \"f_0001\"\nquote = \"指代一\"\n\
+            hint = \"疑似新角色\"\nstatus = \"ignored\"\n\n[[ref]]\nfragment_id = \"f_0002\"\n\
+            quote = \"指代二\"\nhint = \"疑似新角色\"\nstatus = \"resolved\"\ntarget = \"c_0001\"\n\n"
+            .to_string();
+        std::fs::write(paths.anchoring_toml(), ledger_mix).unwrap();
+        let note = format_anchor_note(&AnchorOutcome::default(), &paths);
+        assert!(!note.contains("积压"), "{note}");
     }
 
     #[test]
