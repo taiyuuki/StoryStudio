@@ -198,36 +198,35 @@ const kindOptions: { value: EntityKind; label: string }[] = [
         锚定待审 · {{ pending.length }} 条
         <template v-if="refs.length > pending.length">（已处置 {{ refs.length - pending.length }}）</template>
       </span>
-      <div class="ap-head-actions">
-        <template v-if="!showAll && pending.length > 0">
-          <button class="ink-btn ink-btn--sm" @click="toggleSelectAll">
-            {{ allSelected ? '取消全选' : '全选' }}
-          </button>
-          <button
-            class="ink-btn ink-btn--sm"
-            :disabled="selectedCount === 0"
-            title="忽略所选的一次性背景指代，后续锚定不再提示"
-            @click="ignoreSelected"
-          >
-            <i class="fa-solid fa-eye-slash" /> 忽略所选{{ selectedCount > 0 ? `（${selectedCount}）` : '' }}
-          </button>
-          <button
-            class="ink-btn ink-btn--sm"
-            :disabled="selectedCount === 0"
-            title="从台账移除所选记录；正文仍含该指代时下次锚定会重新出现"
-            @click="deleteSelected"
-          >
-            <i class="fa-solid fa-trash-can" /> 删除所选
-          </button>
-        </template>
-        <button
-          v-if="refs.length > pending.length"
-          class="ink-btn ink-btn--sm"
-          @click="showAll = !showAll"
-        >
-          {{ showAll ? '只看待处置' : '看已处置' }}
-        </button>
-      </div>
+      <button
+        v-if="refs.length > pending.length"
+        class="ink-btn ink-btn--sm"
+        @click="showAll = !showAll"
+      >
+        {{ showAll ? '只看待处置' : '看已处置' }}
+      </button>
+    </div>
+
+    <div v-if="!showAll && pending.length > 0" class="ap-bulk">
+      <button class="ink-btn ink-btn--sm" @click="toggleSelectAll">
+        {{ allSelected ? '取消全选' : '全选' }}
+      </button>
+      <button
+        class="ink-btn ink-btn--sm"
+        :disabled="selectedCount === 0"
+        title="忽略所选的一次性背景指代，后续锚定不再提示"
+        @click="ignoreSelected"
+      >
+        <i class="fa-solid fa-eye-slash" /> 忽略所选{{ selectedCount > 0 ? `（${selectedCount}）` : '' }}
+      </button>
+      <button
+        class="ink-btn ink-btn--sm"
+        :disabled="selectedCount === 0"
+        title="从台账移除所选记录；正文仍含该指代时下次锚定会重新出现"
+        @click="deleteSelected"
+      >
+        <i class="fa-solid fa-trash-can" /> 删除所选
+      </button>
     </div>
 
     <div v-if="visible.length === 0" class="ap-empty">
@@ -359,13 +358,20 @@ const kindOptions: { value: EntityKind; label: string }[] = [
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px 10px;
+  flex-wrap: wrap;
   font-size: 12px;
 }
 
-.ap-head-actions {
+// 批量操作独立一行：侧栏拖窄时整按钮换行兜底，按钮文字不折行
+.ap-bulk {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+
+  .ink-btn {
+    white-space: nowrap;
+  }
 }
 
 .ap-check {
