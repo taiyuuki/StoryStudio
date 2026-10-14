@@ -721,6 +721,63 @@ fn window_break_head(src: &str) -> String {
     chars[..max].iter().collect()
 }
 
+/// auto_titles 的模型提炼：一次批量调用为所有待命名节拍生成 4-6 字短标题。
+///
+/// 只负责调用与解析；失败由调用方兜底（回退 beat_title_head）。返回项数
+/// 与节拍数一致，空串/超长等不合格项由调用方经 sanitize_llm_title 逐个回退。
+fn generate_beat_titles(
+    provider: &std::sync::Arc<dyn story_ai_runtime::provider::AiProvider>,
+    beats: &[String],
+) -> Result<Vec<String>, String> {
+    use story_ai_runtime::provider::{GenerateRequest, Message};
+    let numbered: Vec<String> = beats
+        .iter()
+        .enumerate()
+        .map(|(i, b)| format!("{}. {b}", i + 1))
+        .collect();
+    let system = "你是网文场景命名器。为每个节拍提炼一个 4-6 字的场景短标题：\
+概括该节拍的事件核心，动宾或偏正结构，不带标点、不带「第N幕」类前缀、\
+不照抄节拍开头。只输出一个 JSON 字符串数组（顺序与数量同节拍），\
+如 [\"遗蜕留书\",\"逍遥殿议事\"]，不要输出其他内容。";
+    let request = GenerateRequest {
+        system: system.into(),
+        messages: vec![Message::user(numbered.join("\n"))],
+        model: String::new(),
+        temperature: 0.3,
+        max_tokens: 48 * beats.len().max(1) + 64,
+        tools: Vec::new(),
+    };
+    let resp = super::retry_generate(provider, &request)?;
+    let raw = crate::llm_json::strip_think(&resp.text);
+    crate::llm_json::ensure_not_truncated(resp.stop_reason, request.max_tokens as u32)?;
+    let arr = crate::llm_json::parse_array(&raw)?;
+    let titles: Vec<String> = arr
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default().to_string())
+        .collect();
+    if titles.len() != beats.len() {
+        return Err(format!(
+            "标题数量不符（期望 {} 个，得到 {} 个）",
+            beats.len(),
+            titles.len()
+        ));
+    }
+    Ok(titles)
+}
+
+/// 模型标题的落地清洗：去包裹引号/书名号、压平空白、超 12 字截断、空则 None
+/// （None 位由调用方回退 beat_title_head）。
+fn sanitize_llm_title(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches(|c: char| {
+        matches!(c, '"' | '“' | '”' | '「' | '」' | '『' | '』' | '《' | '》' | '\'')
+    });
+    let collapsed: String = trimmed.split_whitespace().collect();
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(collapsed.chars().take(12).collect())
+}
+
 pub struct PopulateScenesFromBeatsTool {
     ctx: ToolContext,
 }
@@ -734,7 +791,7 @@ impl Tool for PopulateScenesFromBeatsTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "populate_scenes_from_beats".into(),
-            description: "按章节脉络的节拍（beats）一键生成场景骨架：每个节拍创建一个待写场景\n            （标题取节拍摘要、叙事功能存完整节拍文本），并同步到脉络的 scenes 列表。\n            场景标题优先取节拍的前缀标记（【标题】… / [标题]… / 标题：…），\n            无标记时在 8-12 字窗口断句；也可用 titles 显式指定精简标题。\n            POV 默认取本章脉络的第一个角色（本章主咖），可用 default_pov 覆盖。\n            前提：该章已 create_chapter 落实（chapter_id 已回填）。\n            生成的是骨架，写正文仍用 write_fragment_text 逐场景推进。"
+            description: "按章节脉络的节拍（beats）一键生成场景骨架：每个节拍创建一个待写场景\n            （叙事功能存完整节拍文本），并同步到脉络的 scenes 列表。\n            场景标题按优先级取：titles 显式指定（推荐——断句启发式产不出「遗蜕留书」这类语义标题）＞\n            节拍前缀标记（【标题】… / [标题]… / 标题：…）＞ 8-12 字窗口断句；\n            也可传 auto_titles=true 让模型从节拍批量提炼 4-6 字短标题（无 provider 或失败自动回退断句）。\n            POV 默认取本章脉络的第一个角色（本章主咖），可用 default_pov 覆盖。\n            前提：该章已 create_chapter 落实（chapter_id 已回填）。\n            生成的是骨架，写正文仍用 write_fragment_text 逐场景推进。"
                 .into(),
             parameters: object_schema(vec![
                 (
@@ -746,7 +803,13 @@ impl Tool for PopulateScenesFromBeatsTool {
                 (
                     "titles",
                     "array",
-                    "可选：显式指定本次新生成场景的精简标题（字符串数组，按序对应第 i 个新场景；无需带「第N幕·」前缀）。提供数少于新场景时其余按节拍自动提取，多余忽略",
+                    "可选（推荐）：显式指定本次新生成场景的标题（字符串数组，按序对应第 i 个新场景；推荐 4-6 字语义短标题，如「遗蜕留书」，无需带「第N幕·」前缀）。提供数少于新场景时其余按节拍自动提取，多余忽略",
+                    false,
+                ),
+                (
+                    "auto_titles",
+                    "boolean",
+                    "可选：让模型从节拍文本批量提炼 4-6 字场景短标题（一次 LLM 调用；无 provider 或调用失败自动回退节拍断句）。显式 titles 对应位置优先于模型提炼。默认 false",
                     false,
                 ),
                 (
@@ -814,14 +877,63 @@ impl Tool for PopulateScenesFromBeatsTool {
             }
         }
 
+        // auto_titles：标题由模型从节拍提炼（opt-in）。模型一律看到本章全部
+        // 新节拍——标题要放在整章语境里统筹（避免同章标题撞车），显式 titles
+        // 覆盖的位置不采用其结果。失败/缺项逐个回退 beat_title_head，不阻断
+        // 骨架生成——截断启发式产不出「遗蜕留书」这类语义标题，但也不能让
+        // 标题生成拖垮结构工具的确定性。
+        let auto_titles = arguments
+            .get("auto_titles")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let mut llm_titles: Vec<Option<String>> = vec![None; new_count];
+        if auto_titles && new_count > 0 {
+            let all_new_beats: Vec<String> = beats[existing..].to_vec();
+            match self.ctx.provider.as_ref() {
+                Some(provider) => match generate_beat_titles(provider, &all_new_beats) {
+                    Ok(list) => {
+                        let mut used = 0;
+                        for (i, raw) in list.iter().enumerate() {
+                            let explicit = titles
+                                .as_ref()
+                                .and_then(|ts| ts.get(i))
+                                .is_some_and(|s| !s.trim().is_empty());
+                            if explicit {
+                                continue;
+                            }
+                            if let Some(t) = sanitize_llm_title(raw) {
+                                llm_titles[i] = Some(t);
+                                used += 1;
+                            }
+                        }
+                        if used > 0 {
+                            notes.push(format!(
+                                "auto_titles：{used}/{new_count} 个新场景标题由模型提炼（显式 titles 优先），其余回退节拍断句"
+                            ));
+                        } else {
+                            notes
+                                .push("auto_titles 返回标题均为空，全部回退节拍断句".into());
+                        }
+                    }
+                    Err(e) => notes.push(format!(
+                        "auto_titles 调用失败，标题回退节拍断句: {e}"
+                    )),
+                },
+                None => notes.push(
+                    "auto_titles 需要 provider（当前未配置），标题按节拍断句提取".into(),
+                ),
+            }
+        }
+
         let mut created = Vec::new();
         for (i, beat) in beats.iter().skip(existing).enumerate() {
-            // 显式 titles 按序覆盖；否则从节拍提取标题头（前缀标记 > 窗口断句）
+            // 标题优先级：显式 titles > 模型提炼（auto_titles）> 前缀标记/窗口断句
             let head = titles
                 .as_ref()
                 .and_then(|ts| ts.get(i))
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
+                .or_else(|| llm_titles.get(i).cloned().flatten())
                 .unwrap_or_else(|| beat_title_head(beat));
             let scene_title = format!("第{}幕·{}", existing + i + 1, head);
             let scene_id = crate::mutations::create_scene(
@@ -1472,6 +1584,131 @@ mod tests {
         // 脉络 scenes 列表已同步 3 个场景 ID
         let file = crate::mutations::load_chapters_file(&paths).unwrap();
         assert_eq!(file.chapters[0].scenes.len(), 3);
+    }
+
+    // —— auto_titles：模型提炼场景短标题 ——
+
+    /// Mock provider，返回固定文本（模拟模型输出）
+    #[derive(Debug)]
+    struct MockTitleProvider {
+        response: String,
+    }
+
+    impl story_ai_runtime::provider::AiProvider for MockTitleProvider {
+        fn id(&self) -> &str {
+            "mock-title"
+        }
+        fn generate(
+            &self,
+            _request: &story_ai_runtime::provider::GenerateRequest,
+        ) -> Result<story_ai_runtime::provider::GenerateResponse, story_ai_runtime::provider::AiError>
+        {
+            use story_ai_runtime::provider::{GenerateResponse, StopReason, TokenUsage};
+            Ok(GenerateResponse {
+                text: self.response.clone(),
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                },
+                stop_reason: StopReason::EndTurn,
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    fn setup_populate_project(provider: Option<std::sync::Arc<dyn story_ai_runtime::provider::AiProvider>>) -> (TempDir, ToolContext) {
+        let tmp = tempfile::tempdir().unwrap();
+        init_project(tmp.path(), "test-novel").unwrap();
+        let ctx = match provider {
+            Some(p) => ToolContext::with_provider(tmp.path().to_path_buf(), p),
+            None => ToolContext::new(tmp.path().to_path_buf()),
+        };
+        let design = DesignChaptersTool::new(ctx.clone());
+        design
+            .execute(&serde_json::json!({
+                "chapters": r#"[{"title":"上山","beats":["【山门对峙】林风与守门弟子起冲突","苏白在云梦大泽问道峰留下坐化假象，凡人苏白被迫接掌空壳宗门"]}]"#
+            }))
+            .unwrap();
+        let paths = story_project_format::ProjectPaths::new(&ctx.project_dir);
+        crate::mutations::create_chapter(&paths, "上山").unwrap();
+        (tmp, ctx)
+    }
+
+    #[test]
+    fn populate_auto_titles_uses_llm_with_fallback() {
+        // 模型返回两条标题：第 2 条（无显式 titles 覆盖的节拍）用模型提炼
+        let (_tmp, ctx) = setup_populate_project(Some(std::sync::Arc::new(MockTitleProvider {
+            response: r#"["遗蜕留书","逍遥殿议事"]"#.to_string(),
+        })));
+        let tool = PopulateScenesFromBeatsTool::new(ctx.clone());
+        // 显式 titles 只覆盖第 1 个场景 → 第 2 个走模型提炼
+        let out = tool
+            .execute(&serde_json::json!({
+                "index": 1,
+                "titles": ["显式标题"],
+                "auto_titles": true
+            }))
+            .unwrap();
+        assert!(out.contains("第1幕·显式标题"), "{out}");
+        assert!(out.contains("第2幕·逍遥殿议事"), "{out}");
+        assert!(out.contains("1/2 个新场景标题由模型提炼"), "{out}");
+
+        // 场景标题已落盘
+        let paths = story_project_format::ProjectPaths::new(&ctx.project_dir);
+        let structure =
+            story_project_format::StructureFile::from_toml_str(
+                &std::fs::read_to_string(paths.structure_toml()).unwrap(),
+            )
+            .unwrap();
+        let titles: Vec<&str> = structure
+            .scene
+            .values()
+            .filter_map(|s| s.title.as_deref())
+            .collect();
+        assert!(titles.contains(&"第2幕·逍遥殿议事"), "{titles:?}");
+    }
+
+    #[test]
+    fn populate_auto_titles_falls_back_on_bad_output() {
+        // 模型输出不是合法 JSON → 全部回退节拍断句，不阻断骨架生成
+        let (_tmp, ctx) = setup_populate_project(Some(std::sync::Arc::new(MockTitleProvider {
+            response: "抱歉，我不会命名。".to_string(),
+        })));
+        let tool = PopulateScenesFromBeatsTool::new(ctx);
+        let out = tool
+            .execute(&serde_json::json!({ "index": 1, "auto_titles": true }))
+            .unwrap();
+        assert!(out.contains("2 个场景骨架"), "{out}");
+        assert!(out.contains("auto_titles 调用失败"), "{out}");
+        // 第 1 节拍有【】标记 → 前缀提取仍生效
+        assert!(out.contains("第1幕·山门对峙"), "{out}");
+    }
+
+    #[test]
+    fn populate_auto_titles_without_provider_notes_fallback() {
+        let (_tmp, ctx) = setup_populate_project(None);
+        let tool = PopulateScenesFromBeatsTool::new(ctx);
+        let out = tool
+            .execute(&serde_json::json!({ "index": 1, "auto_titles": true }))
+            .unwrap();
+        assert!(out.contains("需要 provider"), "{out}");
+        assert!(out.contains("第1幕·山门对峙"), "{out}");
+    }
+
+    #[test]
+    fn sanitize_llm_title_strips_quotes_and_caps_length() {
+        assert_eq!(
+            sanitize_llm_title("  \"遗蜕留书\" "),
+            Some("遗蜕留书".to_string())
+        );
+        assert_eq!(sanitize_llm_title("「逍遥殿议事」"), Some("逍遥殿议事".to_string()));
+        assert_eq!(sanitize_llm_title("   "), None);
+        assert_eq!(sanitize_llm_title(""), None);
+        // 超 12 字截断
+        assert_eq!(
+            sanitize_llm_title("一个非常非常非常长的场景标题名称溢出"),
+            Some("一个非常非常非常长的场景".to_string())
+        );
     }
 
     /// 节拍标题头提取：前缀标记优先（【】/[]/冒号），无标记退回窗口断句。
