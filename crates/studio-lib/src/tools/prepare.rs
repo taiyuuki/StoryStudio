@@ -104,7 +104,8 @@ impl Tool for PrepareWritingTool {
             上章钩子承接提示（本章开头未落笔时带出上一章的章末钩子，防连载遗忘伏笔张力）、\
             前情回顾（目标之前最近几个已写场景）、本章线索认知快照（各观察者最新认知）、\
             伏笔沉寂预警（主线已埋未收且超过阈值章数无动静的线索）、\
-            涉及角色速查（外貌/习惯/个性 + 真名遮蔽）、角色当前状态断言、题材提示与写作要点。\
+            涉及角色速查（场景级聚焦：本幕在场上/本章待命两档，含外貌/习惯/个性与真名遮蔽）、\
+            角色当前状态断言、题材提示与写作要点。\
             续写已有场景传 scene_id；写新章节传 chapter（脉络序号，1-based）；\
             两者都省略时默认取写作最前沿场景。\
             替代动笔前依次调用 get_chapter_outline / get_story_recap / get_character_state /\
@@ -337,7 +338,11 @@ impl Tool for PrepareWritingTool {
             }
         }
 
-        // —— 4. 涉及角色速查（脉络名单 ∪ POV ∪ 目标场景锚定角色）——
+        // —— 4. 涉及角色速查（场景级聚焦：本幕在场上 / 本章待命两档）——
+        // 在场判定：POV（镜头所在）∪ 本场景片段已锚定角色 ∪ 节拍文本
+        // （function/title）点名的角色。脉络名单里其余角色收进「待命」
+        // 一档——高亮而不隐藏：待命角色只列称呼不铺档案，出场前再调档，
+        // 速查区聚焦真正要下笔的人，同时不丢「本章还有谁可用」的信息。
         let pov_id: Option<String> = scene_id.as_deref().and_then(|s| {
             document
                 .get_scene(&StableId::new_unchecked(s))
@@ -351,6 +356,7 @@ impl Tool for PrepareWritingTool {
                 involved.push(pov.clone());
             }
         }
+        let mut anchored_chars: Vec<String> = Vec::new();
         if let Some(sid_str) = &scene_id {
             let sid = StableId::new_unchecked(sid_str);
             for aid in document
@@ -364,18 +370,76 @@ impl Tool for PrepareWritingTool {
                     .map(|n| n.type_name() == "character")
                     .unwrap_or(false);
                 if is_char && !involved.iter().any(|c| c == &aid) {
-                    involved.push(aid);
+                    involved.push(aid.clone());
+                }
+                if is_char && !anchored_chars.iter().any(|c| c == &aid) {
+                    anchored_chars.push(aid);
                 }
             }
         }
-        if let Some(block) = super::entities::render_character_lines(
-            &self.ctx,
-            &involved,
-            pov_id.as_deref(),
-            semantic,
-        ) {
-            out.push_str("\n涉及角色:\n");
-            out.push_str(&block);
+        // 节拍点名文本：目标场景的 function（populate 存的完整节拍）+ 标题
+        let named_text = scene_id
+            .as_deref()
+            .and_then(|s| document.get_scene(&StableId::new_unchecked(s)))
+            .map(|sc| {
+                let mut t = sc.function.clone().unwrap_or_default();
+                if let Some(title) = sc.title.as_deref() {
+                    t.push(' ');
+                    t.push_str(title);
+                }
+                t
+            })
+            .unwrap_or_default();
+        let on_stage: Vec<String> = involved
+            .iter()
+            .filter(|c| {
+                pov_id.as_deref() == Some(c.as_str())
+                    || anchored_chars.iter().any(|a| a == *c)
+                    || character_named_in(&paths, c, &named_text)
+            })
+            .cloned()
+            .collect();
+        let standby: Vec<String> = involved
+            .iter()
+            .filter(|c| !on_stage.contains(c))
+            .cloned()
+            .collect();
+
+        if on_stage.is_empty() || standby.is_empty() {
+            // 无聚焦信息（无 POV/锚点/节拍点名），或全员在场：维持单一平铺名单
+            if let Some(block) = super::entities::render_character_lines(
+                &self.ctx,
+                &involved,
+                pov_id.as_deref(),
+                semantic,
+            ) {
+                out.push_str("\n涉及角色:\n");
+                out.push_str(&block);
+            }
+        } else {
+            if let Some(block) = super::entities::render_character_lines(
+                &self.ctx,
+                &on_stage,
+                pov_id.as_deref(),
+                semantic,
+            ) {
+                out.push_str("\n涉及角色（本幕在场上，据 POV/锚点/节拍点名）:\n");
+                out.push_str(&block);
+            }
+            let labels: Vec<String> = standby
+                .iter()
+                .map(|cid| {
+                    let name = semantic
+                        .get(&StableId::new_unchecked(cid))
+                        .map(|n| n.display_name().to_string())
+                        .unwrap_or_else(|| cid.clone());
+                    format!("{name}（{cid}）")
+                })
+                .collect();
+            out.push_str(&format!(
+                "\n本章待命角色（脉络名单其余角色，出场前可用 get_character_state 调档）: {}\n",
+                labels.join("、")
+            ));
         }
 
         // —— 5. 角色当前状态断言（POV 优先，限量）——
@@ -478,6 +542,34 @@ impl Tool for PrepareWritingTool {
         );
         Ok(out)
     }
+}
+
+/// 角色是否被文本点名（display_name / 非空 alias 出现即命中）。
+///
+/// 与写入回执的 mentioned_entity_briefs 同口径，但只查单个候选、
+/// 返回布尔——场景级聚焦（节拍文本点名谁，谁就在场上）用。
+fn character_named_in(
+    paths: &story_project_format::ProjectPaths,
+    cid: &str,
+    text: &str,
+) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    let Some(path) = paths.file_for_id(cid) else {
+        return false;
+    };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(entity) = story_project_format::EntityFile::from_toml_str(&content) else {
+        return false;
+    };
+    (!entity.display_name.is_empty() && text.contains(&entity.display_name))
+        || entity
+            .aliases
+            .iter()
+            .any(|a| !a.is_empty() && text.contains(a))
 }
 
 /// 压平 TOML 值为单行短串（断言对象用）
@@ -652,6 +744,15 @@ personality = "内敛寡言，外冷内热"
         )
         .unwrap();
 
+        std::fs::write(
+            dir.join("entities/characters/c_0002.toml"),
+            r#"id = "c_0002"
+display_name = "叶孤鸿"
+aliases = ["叶老"]
+"#,
+        )
+        .unwrap();
+
         let structure = r#"[book]
 id = "b_root"
 title = "测试"
@@ -674,6 +775,7 @@ fragments = ["f_0001"]
 [scene.sc_02_01]
 title = "码头对峙"
 pov = "c_0001"
+function = "林风在码头狭路相逢，与跟踪者对峙"
 fragments = []
 "#;
         std::fs::write(dir.join("structure.toml"), structure).unwrap();
@@ -699,7 +801,7 @@ status = "planned"
 goal = "林风在码头与跟踪者对峙"
 beats = ["夜探码头", "狭路相逢"]
 hook = "跟踪者亮出信物"
-characters = ["c_0001"]
+characters = ["c_0001", "c_0002"]
 threads = ["t_0001"]
 "#;
         std::fs::write(dir.join("chapters.toml"), chapters).unwrap();
@@ -837,6 +939,47 @@ object = "临安城码头"
         let tool = PrepareWritingTool::new(ctx);
         let out = tool.execute(&serde_json::json!({ "chapter": 2 })).unwrap();
         assert!(!out.contains("[上章钩子承接]"), "{out}");
+    }
+
+    /// 场景级聚焦：节拍点名 + POV 的角色进「本幕在场上」档，
+    /// 脉络名单其余角色收进「本章待命」档（只列称呼不铺档案）
+    #[test]
+    fn prepare_focuses_characters_by_scene() {
+        let tmp = setup();
+        write_fixture(tmp.path());
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = PrepareWritingTool::new(ctx);
+
+        let out = tool.execute(&serde_json::json!({ "scene_id": "sc_02_01" })).unwrap();
+        // sc_02_01 的节拍只点名林风（又是 POV）→ 在场上；叶孤鸿进待命
+        assert!(out.contains("涉及角色（本幕在场上"), "{out}");
+        assert!(out.contains("本章待命角色"), "{out}");
+        assert!(out.contains("叶孤鸿（c_0002）"), "{out}");
+        // 待命角色只进一行名单，不应有速查列表行（档案行）
+        assert!(!out.contains("- 叶孤鸿"), "{out}");
+
+        // 章级目标（无 scene_id）没有节拍上下文 → 回退单一平铺名单
+        let out = tool.execute(&serde_json::json!({ "chapter": 2 })).unwrap();
+        assert!(out.contains("\n涉及角色:\n"), "{out}");
+        assert!(!out.contains("本幕在场上"), "{out}");
+    }
+
+    /// 别名点名同样算在场：c_0002 的别名「叶老」出现在节拍里时，
+    /// 两人都在场上，无待命档
+    #[test]
+    fn prepare_alias_mention_counts_as_on_stage() {
+        let tmp = setup();
+        write_fixture(tmp.path());
+        let structure = std::fs::read_to_string(tmp.path().join("structure.toml"))
+            .unwrap()
+            .replace("林风在码头狭路相逢，与跟踪者对峙", "叶老现身码头，林风狭路相逢");
+        std::fs::write(tmp.path().join("structure.toml"), structure).unwrap();
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = PrepareWritingTool::new(ctx);
+        let out = tool.execute(&serde_json::json!({ "scene_id": "sc_02_01" })).unwrap();
+        assert!(out.contains("\n涉及角色:\n"), "{out}");
+        assert!(!out.contains("本章待命角色"), "{out}");
     }
 
     #[test]
