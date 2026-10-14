@@ -58,10 +58,7 @@ fn prev_chapter_hook_note(
         return None;
     }
     // 本章已有正文 → 开场承接的时机已过
-    if let Some(cur_ch_id) = chapters[outline_index - 1]
-        .chapter_id
-        .as_deref()
-    {
+    if let Some(cur_ch_id) = chapters[outline_index - 1].chapter_id.as_deref() {
         let cur_written = document
             .scenes_of_chapter(&StableId::new_unchecked(cur_ch_id))
             .iter()
@@ -548,11 +545,7 @@ impl Tool for PrepareWritingTool {
 ///
 /// 与写入回执的 mentioned_entity_briefs 同口径，但只查单个候选、
 /// 返回布尔——场景级聚焦（节拍文本点名谁，谁就在场上）用。
-fn character_named_in(
-    paths: &story_project_format::ProjectPaths,
-    cid: &str,
-    text: &str,
-) -> bool {
+fn character_named_in(paths: &story_project_format::ProjectPaths, cid: &str, text: &str) -> bool {
     if text.trim().is_empty() {
         return false;
     }
@@ -898,7 +891,9 @@ object = "临安城码头"
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let tool = PrepareWritingTool::new(ctx);
 
-        let out = tool.execute(&serde_json::json!({ "scene_id": "sc_01_01" })).unwrap();
+        let out = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_01_01" }))
+            .unwrap();
         assert!(!out.contains("[上章钩子承接]"), "{out}");
     }
 
@@ -950,7 +945,9 @@ object = "临安城码头"
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let tool = PrepareWritingTool::new(ctx);
 
-        let out = tool.execute(&serde_json::json!({ "scene_id": "sc_02_01" })).unwrap();
+        let out = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_02_01" }))
+            .unwrap();
         // sc_02_01 的节拍只点名林风（又是 POV）→ 在场上；叶孤鸿进待命
         assert!(out.contains("涉及角色（本幕在场上"), "{out}");
         assert!(out.contains("本章待命角色"), "{out}");
@@ -972,12 +969,17 @@ object = "临安城码头"
         write_fixture(tmp.path());
         let structure = std::fs::read_to_string(tmp.path().join("structure.toml"))
             .unwrap()
-            .replace("林风在码头狭路相逢，与跟踪者对峙", "叶老现身码头，林风狭路相逢");
+            .replace(
+                "林风在码头狭路相逢，与跟踪者对峙",
+                "叶老现身码头，林风狭路相逢",
+            );
         std::fs::write(tmp.path().join("structure.toml"), structure).unwrap();
 
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let tool = PrepareWritingTool::new(ctx);
-        let out = tool.execute(&serde_json::json!({ "scene_id": "sc_02_01" })).unwrap();
+        let out = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_02_01" }))
+            .unwrap();
         assert!(out.contains("\n涉及角色:\n"), "{out}");
         assert!(!out.contains("本章待命角色"), "{out}");
     }

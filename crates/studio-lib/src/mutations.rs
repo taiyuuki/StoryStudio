@@ -7624,9 +7624,12 @@ scope = "pov"
         )
         .unwrap();
         let st = inherited_story_time(&paths, &sc3)
-        .unwrap()
-        .expect("应继承到 Some");
+            .unwrap()
+            .expect("应继承到 Some");
         assert_eq!(st.anchor.as_deref(), Some("翌日清晨"));
+        // 紧随已设值场景的 sc2 同样直接继承 sc1
+        let st2 = inherited_story_time(&paths, &sc2).unwrap().unwrap();
+        assert_eq!(st2.anchor.as_deref(), Some("翌日清晨"));
 
         // 哨兵识别：容空白，不误伤普通标签
         assert!(is_inherit_sentinel(" 同上 "));

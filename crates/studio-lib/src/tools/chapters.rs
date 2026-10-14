@@ -769,7 +769,10 @@ fn generate_beat_titles(
 /// （None 位由调用方回退 beat_title_head）。
 fn sanitize_llm_title(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches(|c: char| {
-        matches!(c, '"' | '“' | '”' | '「' | '」' | '『' | '』' | '《' | '》' | '\'')
+        matches!(
+            c,
+            '"' | '“' | '”' | '「' | '」' | '『' | '』' | '《' | '》' | '\''
+        )
     });
     let collapsed: String = trimmed.split_whitespace().collect();
     if collapsed.is_empty() {
@@ -911,17 +914,14 @@ impl Tool for PopulateScenesFromBeatsTool {
                                 "auto_titles：{used}/{new_count} 个新场景标题由模型提炼（显式 titles 优先），其余回退节拍断句"
                             ));
                         } else {
-                            notes
-                                .push("auto_titles 返回标题均为空，全部回退节拍断句".into());
+                            notes.push("auto_titles 返回标题均为空，全部回退节拍断句".into());
                         }
                     }
-                    Err(e) => notes.push(format!(
-                        "auto_titles 调用失败，标题回退节拍断句: {e}"
-                    )),
+                    Err(e) => notes.push(format!("auto_titles 调用失败，标题回退节拍断句: {e}")),
                 },
-                None => notes.push(
-                    "auto_titles 需要 provider（当前未配置），标题按节拍断句提取".into(),
-                ),
+                None => {
+                    notes.push("auto_titles 需要 provider（当前未配置），标题按节拍断句提取".into())
+                }
             }
         }
 
@@ -1616,7 +1616,9 @@ mod tests {
         }
     }
 
-    fn setup_populate_project(provider: Option<std::sync::Arc<dyn story_ai_runtime::provider::AiProvider>>) -> (TempDir, ToolContext) {
+    fn setup_populate_project(
+        provider: Option<std::sync::Arc<dyn story_ai_runtime::provider::AiProvider>>,
+    ) -> (TempDir, ToolContext) {
         let tmp = tempfile::tempdir().unwrap();
         init_project(tmp.path(), "test-novel").unwrap();
         let ctx = match provider {
@@ -1655,11 +1657,10 @@ mod tests {
 
         // 场景标题已落盘
         let paths = story_project_format::ProjectPaths::new(&ctx.project_dir);
-        let structure =
-            story_project_format::StructureFile::from_toml_str(
-                &std::fs::read_to_string(paths.structure_toml()).unwrap(),
-            )
-            .unwrap();
+        let structure = story_project_format::StructureFile::from_toml_str(
+            &std::fs::read_to_string(paths.structure_toml()).unwrap(),
+        )
+        .unwrap();
         let titles: Vec<&str> = structure
             .scene
             .values()
@@ -1701,7 +1702,10 @@ mod tests {
             sanitize_llm_title("  \"遗蜕留书\" "),
             Some("遗蜕留书".to_string())
         );
-        assert_eq!(sanitize_llm_title("「逍遥殿议事」"), Some("逍遥殿议事".to_string()));
+        assert_eq!(
+            sanitize_llm_title("「逍遥殿议事」"),
+            Some("逍遥殿议事".to_string())
+        );
         assert_eq!(sanitize_llm_title("   "), None);
         assert_eq!(sanitize_llm_title(""), None);
         // 超 12 字截断
