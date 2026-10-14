@@ -2525,6 +2525,360 @@ pub fn load_unresolved_refs(paths: &ProjectPaths) -> Result<Vec<UnresolvedRefDef
     Ok(refs)
 }
 
+// ============================================================================
+// 待审指代聚类（处置建议）
+// ============================================================================
+
+/// 聚类组的处置建议
+#[derive(Debug, PartialEq)]
+pub enum RefClusterSuggestion {
+    /// hint 点名了名册内实体 → 建议 merge 归拢
+    MergeInto { entity_id: String, name: String },
+    /// 多条 hint 共同点名名册外线索（人名/组织名等）→ 建议建档后批量归拢。
+    /// 线索可能并列多个（如「钱通」「四海商会」——同一覆盖集内互不包含的
+    /// 候选都保留，按长度升序），由处置者自行判断用哪个建档案
+    CreateNamed(Vec<String>),
+    /// 仅对话/提及层面的龙套（锚定 hint 的「仅对话提及」标注，或旧台账
+    /// hint 含「提及」）→ 建议忽略
+    IgnoreMentioned,
+    /// 同称呼跨片段重现，无身份线索 → 疑似同一对象
+    SameQuote,
+}
+
+/// 一个聚类组：≥2 条待处置指代（fragment_id, quote）
+#[derive(Debug)]
+pub struct RefCluster {
+    pub members: Vec<(String, String)>,
+    pub suggestion: RefClusterSuggestion,
+}
+
+/// hint 样板词与跨人共现的泛称——出现即无区分度，不作为聚类线索。
+/// 同组织不同角色的 hint 常共享职务词（长老/执事/使者），不排除会把
+/// 两个不同的人错误并组。
+const STOP_HINT_NGRAMS: &[&str] = &[
+    "疑似",
+    "新角色",
+    "新人物",
+    "角色",
+    "人物",
+    "指代",
+    "名册",
+    "外角色",
+    "在场",
+    "下属",
+    "负责",
+    "呈报",
+    "汇报",
+    "领命",
+    "指向",
+    "建议",
+    "忽略",
+    "对话",
+    "提及",
+    "出场",
+    "言行",
+    "长老",
+    "首座",
+    "执事",
+    "使者",
+    "大人",
+    "掌柜",
+    "弟子",
+    "守卫",
+    "杀手",
+    "斥候",
+    "死士",
+    "道人",
+    "老者",
+    "女人",
+    "男人",
+    "身影",
+    "强者",
+    "之人",
+];
+
+/// 把待处置指代按「疑似同一对象」聚类（确定性线索，不调 LLM）。
+///
+/// 规则按信号强度依次消耗条目：
+/// 1. hint 含「提及」（含锚定规则 5 的「仅对话提及」标注）→ 建议忽略组；
+/// 2. hint 点名了名册内**角色**（display_name/alias 最长命中；组织/地点名
+///    在 hint 里几乎总是隶属语境而非归拢目标，命中「新角色/新人物」等
+///    字样时同样跳过——那是「某已知势力的新人物」，不是指代目标本身）
+///    → 建议归拢组；
+/// 3. 多条 hint 共享同一名册外 2-4 字线索（排除样板词与已知实体名）→
+///    建议建档组（同一覆盖集的并列线索全保留）；
+/// 4. 同称呼（或互为包含的称呼）跨片段重现 → 疑似同一对象组。
+/// 只输出 ≥2 条的组（单条留在平铺清单即可）；组按成员数降序。
+pub fn cluster_pending_refs(
+    paths: &ProjectPaths,
+    pending: &[&UnresolvedRefDef],
+) -> Vec<RefCluster> {
+    if pending.len() < 2 {
+        return Vec::new();
+    }
+    let known_all = known_entity_names(paths, false);
+    let known_chars = known_entity_names(paths, true);
+    let mut assigned = vec![false; pending.len()];
+    let mut clusters: Vec<RefCluster> = Vec::new();
+
+    // —— 规则 1：仅对话/提及龙套 → 建议忽略 ——
+    let mut members = Vec::new();
+    for (i, r) in pending.iter().enumerate() {
+        if r.hint.contains("提及") {
+            members.push((r.fragment_id.clone(), r.quote.clone()));
+            assigned[i] = true;
+        }
+    }
+    if members.len() >= 2 {
+        clusters.push(RefCluster {
+            members,
+            suggestion: RefClusterSuggestion::IgnoreMentioned,
+        });
+    } else if !members.is_empty() {
+        // 只有一条提及类 → 回滚，留给后续规则/平铺
+        for (i, r) in pending.iter().enumerate() {
+            if r.hint.contains("提及") {
+                assigned[i] = false;
+            }
+        }
+    }
+
+    // —— 规则 2：hint 点名名册内角色 → 建议归拢 ——
+    for (i, r) in pending.iter().enumerate() {
+        if assigned[i] {
+            continue;
+        }
+        let suggests_new = ["新角色", "新人物", "新组织", "新地点", "新势力"]
+            .iter()
+            .any(|k| r.hint.contains(k));
+        if suggests_new {
+            continue;
+        }
+        if let Some((id, name)) = longest_known_name_in(&known_chars, &r.hint) {
+            let entry = (r.fragment_id.clone(), r.quote.clone());
+            assigned[i] = true;
+            match clusters.iter_mut().find(|c| {
+                matches!(&c.suggestion,
+                        RefClusterSuggestion::MergeInto { entity_id, .. } if *entity_id == id)
+            }) {
+                Some(c) => c.members.push(entry),
+                None => clusters.push(RefCluster {
+                    members: vec![entry],
+                    suggestion: RefClusterSuggestion::MergeInto {
+                        entity_id: id,
+                        name,
+                    },
+                }),
+            }
+        }
+    }
+
+    // —— 规则 3：共享名册外线索（2-4 字 CJK n-gram）→ 建议建档 ——
+    // 候选 → 覆盖的未分组条目集合；按覆盖集去重并列线索，集合大者优先。
+    // 提取前先剥掉样板词（以非 CJK 字符回填切断跨界 n-gram，防止
+    // 「疑似新角色」跨界切出「似新角」这类垃圾候选）
+    let mut coverage: Vec<(String, std::collections::BTreeSet<usize>)> = Vec::new();
+    for (i, r) in pending.iter().enumerate() {
+        if assigned[i] {
+            continue;
+        }
+        for cand in cjk_ngrams(&strip_stopwords(&r.hint), 2, 4) {
+            // 与已知实体名互为包含的片段（组织名/部门名）无区分度，排除
+            if known_all
+                .iter()
+                .any(|(_, n)| cand.contains(n.as_str()) || n.contains(&cand))
+            {
+                continue;
+            }
+            match coverage.iter_mut().find(|(c, _)| *c == cand) {
+                Some((_, set)) => {
+                    set.insert(i);
+                }
+                None => coverage.push((
+                    cand,
+                    std::iter::once(i).collect::<std::collections::BTreeSet<usize>>(),
+                )),
+            }
+        }
+    }
+    // 按覆盖大小降序处理；同一覆盖集收集全部候选作为并列线索
+    let mut coverage_sets: Vec<(std::collections::BTreeSet<usize>, Vec<String>)> = Vec::new();
+    for (cand, set) in coverage {
+        if set.len() < 2 {
+            continue;
+        }
+        match coverage_sets.iter_mut().find(|(s, _)| *s == set) {
+            Some((_, cands)) => cands.push(cand),
+            None => coverage_sets.push((set, vec![cand])),
+        }
+    }
+    coverage_sets.sort_by_key(|(set, _)| std::cmp::Reverse(set.len()));
+    for (set, mut cands) in coverage_sets {
+        let free: std::collections::BTreeSet<usize> =
+            set.iter().copied().filter(|i| !assigned[*i]).collect();
+        if free.len() < 2 {
+            continue;
+        }
+        // 并列线索内互为包含的只留长者（「王玄通」吸收「玄通」），展示取前 3
+        cands.sort_by_key(|c| std::cmp::Reverse(c.chars().count()));
+        let mut kept: Vec<String> = Vec::new();
+        for c in &cands {
+            if !kept.iter().any(|k| k.contains(c.as_str())) {
+                kept.push(c.clone());
+            }
+        }
+        kept.reverse(); // 展示按长度升序
+        kept.truncate(3);
+        let members = free
+            .iter()
+            .map(|i| (pending[*i].fragment_id.clone(), pending[*i].quote.clone()))
+            .collect();
+        for i in free {
+            assigned[i] = true;
+        }
+        clusters.push(RefCluster {
+            members,
+            suggestion: RefClusterSuggestion::CreateNamed(kept),
+        });
+    }
+
+    // —— 规则 4：同称呼（含互为包含）跨片段 → 疑似同一对象 ——
+    let mut by_quote: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, r) in pending.iter().enumerate() {
+        if assigned[i] {
+            continue;
+        }
+        match by_quote.iter_mut().find(|(q, _)| *q == r.quote) {
+            Some((_, v)) => v.push(i),
+            None => by_quote.push((r.quote.clone(), vec![i])),
+        }
+    }
+    // 包含合并：短称呼是长称呼子串的组并为一组（如「黑衣斥候」⊂长称呼）
+    let mut merged: Vec<(String, Vec<usize>)> = Vec::new();
+    for (q, idxs) in by_quote {
+        let mut target: Option<usize> = None;
+        for (j, (mq, _)) in merged.iter().enumerate() {
+            if mq.contains(&q) || q.contains(mq.as_str()) {
+                target = Some(j);
+                break;
+            }
+        }
+        match target {
+            Some(j) => merged[j].1.extend(idxs),
+            None => merged.push((q, idxs)),
+        }
+    }
+    for (_, idxs) in merged {
+        if idxs.len() < 2 {
+            continue;
+        }
+        let members = idxs
+            .iter()
+            .map(|i| (pending[*i].fragment_id.clone(), pending[*i].quote.clone()))
+            .collect();
+        for i in idxs {
+            assigned[i] = true;
+        }
+        clusters.push(RefCluster {
+            members,
+            suggestion: RefClusterSuggestion::SameQuote,
+        });
+    }
+
+    clusters.sort_by_key(|c| std::cmp::Reverse(c.members.len()));
+    clusters
+}
+
+/// 名册内实体名 → (entity_id, name)，长度 ≥2 才有区分度。
+/// display_name 与别名都算。`characters_only` 为 true 时只收角色
+/// （归拢目标判定用——组织/地点名出现在 hint 里通常是隶属语境）。
+fn known_entity_names(paths: &ProjectPaths, characters_only: bool) -> Vec<(String, String)> {
+    let dirs: Vec<std::path::PathBuf> = if characters_only {
+        vec![paths.characters_dir()]
+    } else {
+        vec![
+            paths.characters_dir(),
+            paths.locations_dir(),
+            paths.items_dir(),
+            paths.organizations_dir(),
+        ]
+    };
+    let mut out = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if !fname.ends_with(".toml") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(entity) = story_project_format::EntityFile::from_toml_str(&content) else {
+                continue;
+            };
+            let id = fname.trim_end_matches(".toml").to_string();
+            for name in std::iter::once(entity.display_name.clone())
+                .chain(entity.aliases.iter().cloned())
+                .filter(|n| n.chars().count() >= 2)
+            {
+                out.push((id.clone(), name));
+            }
+        }
+    }
+    out
+}
+
+/// hint 中出现的最长已知实体名（最长命中避免别名/全名歧义）
+fn longest_known_name_in(known: &[(String, String)], hint: &str) -> Option<(String, String)> {
+    known
+        .iter()
+        .filter(|(_, n)| hint.contains(n.as_str()))
+        .max_by_key(|(_, n)| n.chars().count())
+        .cloned()
+}
+
+/// 从 hint 中剥掉全部样板词（以非 CJK 字符回填，切断跨界 n-gram），
+/// 供聚类线索提取前清洗。
+fn strip_stopwords(text: &str) -> String {
+    let mut s = text.to_string();
+    for st in STOP_HINT_NGRAMS {
+        if s.contains(st) {
+            s = s.replace(st, "·");
+        }
+    }
+    s
+}
+
+/// 提取 CJK 连续段中 [min_len, max_len] 长度的全部子串
+fn cjk_ngrams(text: &str, min_len: usize, max_len: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let is_cjk = |c: char| ('\u{4E00}'..='\u{9FFF}').contains(&c);
+    let mut run: Vec<char> = Vec::new();
+    let flush = |run: &mut Vec<char>, out: &mut Vec<String>| {
+        for start in 0..run.len() {
+            for len in min_len..=max_len {
+                if start + len > run.len() {
+                    break;
+                }
+                out.push(run[start..start + len].iter().collect());
+            }
+        }
+        run.clear();
+    };
+    for c in text.chars() {
+        if is_cjk(c) {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut out);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 /// 对未锚定指代做处置。
 ///
 /// action：
@@ -7635,6 +7989,150 @@ scope = "pov"
         assert!(is_inherit_sentinel(" 同上 "));
         assert!(is_inherit_sentinel("继承"));
         assert!(!is_inherit_sentinel("同日正午"));
+    }
+
+    // —— cluster_pending_refs（处置建议聚类）——
+
+    fn pref(fid: &str, quote: &str, hint: &str) -> UnresolvedRefDef {
+        UnresolvedRefDef {
+            fragment_id: fid.to_string(),
+            quote: quote.to_string(),
+            hint: hint.to_string(),
+            status: "pending".to_string(),
+            target: None,
+        }
+    }
+
+    fn write_cluster_entity(dir: &std::path::Path, sub: &str, id: &str, name: &str) {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        std::fs::write(
+            dir.join(format!("{sub}/{id}.toml")),
+            format!("id = \"{id}\"\ndisplay_name = \"{name}\"\n"),
+        )
+        .unwrap();
+    }
+
+    /// 多条 hint 共同点名名册外人名 → 建档组；已知组织名/样板词不作线索；
+    /// 单条提及类不回滚成组；无关单条留在平铺
+    #[test]
+    fn cluster_groups_shared_unknown_name() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        write_cluster_entity(dir, "entities/organizations", "o_0001", "太虚天宫");
+        write_cluster_entity(dir, "entities/characters", "c_0001", "白芷凝");
+
+        let refs = vec![
+            pref(
+                "f_000F",
+                "中年道人",
+                "王玄通，太虚天宫执法殿首座金丹长老，名册外角色",
+            ),
+            pref(
+                "f_0010",
+                "中年道人",
+                "疑似新角色王玄通（太虚天宫执法殿长老）",
+            ),
+            pref("f_0012", "使者大人", "王玄通，疑似新角色"),
+            pref("f_0017", "刘瘸子", "仅对话提及，山下欠酒债之人"),
+        ];
+        let pending: Vec<&UnresolvedRefDef> = refs.iter().collect();
+        let clusters = cluster_pending_refs(&ProjectPaths::new(dir), &pending);
+
+        assert_eq!(clusters.len(), 1, "{clusters:?}");
+        let c = &clusters[0];
+        assert_eq!(c.members.len(), 3);
+        assert!(c.members.contains(&("f_0012".into(), "使者大人".into())));
+        match &c.suggestion {
+            RefClusterSuggestion::CreateNamed(clues) => {
+                assert!(clues.contains(&"王玄通".to_string()), "{clues:?}");
+                // 已知组织名与样板词不得成为线索
+                assert!(!clues.iter().any(|x| x.contains("太虚天宫")), "{clues:?}");
+            }
+            other => panic!("应为建档组: {other:?}"),
+        }
+        // 无关单条（刘瘸子）不被拉进任何组
+        assert!(!c.members.iter().any(|(f, _)| f == "f_0017"));
+    }
+
+    /// hint 点名名册内角色 → 归拢组；点名组织名只当隶属语境，不归拢到组织
+    #[test]
+    fn cluster_merges_into_known_character_not_org() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        write_cluster_entity(dir, "entities/organizations", "o_0001", "太虚天宫");
+        write_cluster_entity(dir, "entities/characters", "c_0001", "白芷凝");
+
+        let refs = vec![
+            pref("f_01", "二师姐", "疑似指向白芷凝"),
+            pref("f_02", "丹道长老", "白芷凝，名册内角色"),
+            // 含组织名的隶属语境 + 新角色字样 → 不归拢到太虚天宫
+            pref("f_03", "监察使", "疑似太虚天宫观天台下属新角色"),
+            pref("f_04", "监察使", "疑似新角色，太虚天宫下属"),
+        ];
+        let pending: Vec<&UnresolvedRefDef> = refs.iter().collect();
+        let clusters = cluster_pending_refs(&ProjectPaths::new(dir), &pending);
+
+        // 归拢组（白芷凝）+ 同称呼组（监察使×2，跨片段）
+        assert_eq!(clusters.len(), 2, "{clusters:?}");
+        let merge = clusters
+            .iter()
+            .find(|c| matches!(c.suggestion, RefClusterSuggestion::MergeInto { .. }))
+            .expect("应有归拢组");
+        assert_eq!(merge.members.len(), 2);
+        match &merge.suggestion {
+            RefClusterSuggestion::MergeInto { entity_id, name } => {
+                assert_eq!(entity_id, "c_0001");
+                assert_eq!(name, "白芷凝");
+            }
+            other => panic!("{other:?}"),
+        }
+        // 组织绝不能成为归拢目标
+        assert!(!format!("{:?}", clusters).contains("o_0001"));
+    }
+
+    /// 仅对话提及的龙套（≥2 条）→ 建议忽略组
+    #[test]
+    fn cluster_ignores_dialogue_mentions() {
+        let tmp = setup_test_project();
+        let refs = vec![
+            pref("f_0017", "刘瘸子", "仅对话提及，山下欠酒债之人"),
+            pref("f_0017", "王寡妇", "苏白提及的村头欠肉钱之人"),
+        ];
+        let pending: Vec<&UnresolvedRefDef> = refs.iter().collect();
+        let clusters = cluster_pending_refs(&ProjectPaths::new(tmp.path()), &pending);
+        assert_eq!(clusters.len(), 1, "{clusters:?}");
+        assert_eq!(clusters[0].members.len(), 2);
+        assert!(matches!(
+            clusters[0].suggestion,
+            RefClusterSuggestion::IgnoreMentioned
+        ));
+    }
+
+    /// 同称呼跨片段、无身份线索 → 疑似同一对象组
+    #[test]
+    fn cluster_same_quote_across_fragments() {
+        let tmp = setup_test_project();
+        let refs = vec![
+            pref("f_01", "黑衣斥候", "疑似新角色，先锋斥候"),
+            pref("f_02", "黑衣斥候", "疑似新角色"),
+        ];
+        let pending: Vec<&UnresolvedRefDef> = refs.iter().collect();
+        let clusters = cluster_pending_refs(&ProjectPaths::new(tmp.path()), &pending);
+        // 「斥候」在 STOP 列表 → 不走建档组，落同称呼组
+        assert_eq!(clusters.len(), 1, "{clusters:?}");
+        assert!(matches!(
+            clusters[0].suggestion,
+            RefClusterSuggestion::SameQuote
+        ));
+    }
+
+    /// 不足两条不聚组；单条返回空
+    #[test]
+    fn cluster_requires_two_members() {
+        let tmp = setup_test_project();
+        let refs = vec![pref("f_01", "高个子", "疑似新角色")];
+        let pending: Vec<&UnresolvedRefDef> = refs.iter().collect();
+        assert!(cluster_pending_refs(&ProjectPaths::new(tmp.path()), &pending).is_empty());
     }
 
     // —— insert_fragment_after / move_fragment / merge_fragments ——

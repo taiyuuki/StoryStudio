@@ -990,9 +990,11 @@ impl Tool for ListUnresolvedRefsTool {
         ToolDef {
             name: "list_unresolved_refs".into(),
             description: "列出未锚定指代台账：待处置的名册外指代（如\"摆的人\"\"写的人\"），\
-            以及已忽略/已归拢的处置记录。台账随篇幅累积，中后期建议用 chapter_id /\
-            volume 过滤只看相关范围；一次性龙套（背景人物泛指）可批量 ignore。\
-            待处置项用 resolve_unresolved_ref 处置。"
+            以及已忽略/已归拢的处置记录。回执尾部附**建议分组**：按 hint 线索把疑似\
+            同一对象的多种称呼聚类（点名已有实体的归拢组 / 共享名册外线索的建档组 /\
+            仅对话提及的忽略组 / 同称呼跨片段组），同组可用 resolve_unresolved_ref \
+            的 refs 一次批量处置。台账随篇幅累积，中后期建议用 chapter_id /\
+            volume 过滤只看相关范围；一次性龙套（背景人物泛指）可批量 ignore。"
                 .into(),
             parameters: object_schema(vec![
                 (
@@ -1086,7 +1088,11 @@ impl Tool for ListUnresolvedRefsTool {
             scope.push_str(&format!("第 {v} 卷"));
         }
 
-        let pending: Vec<_> = selected.iter().filter(|r| r.is_pending()).collect();
+        let pending: Vec<&story_project_format::UnresolvedRefDef> = selected
+            .iter()
+            .copied()
+            .filter(|r| r.is_pending())
+            .collect();
         let mut out = if scope.is_empty() {
             format!(
                 "共 {} 条记录，待处置 {} 条：",
@@ -1113,6 +1119,61 @@ impl Tool for ListUnresolvedRefsTool {
                 "\n  - {}「{}」（{}）：{}",
                 r.fragment_id, r.quote, r.hint, status
             ));
+        }
+
+        // 建议分组（确定性线索聚类）：≥2 条的组才展示，单条已在上方平铺
+        let clusters = crate::mutations::cluster_pending_refs(&self.ctx.paths(), &pending);
+        if !clusters.is_empty() {
+            out.push_str(
+                "\n建议分组（按 hint 线索确定性聚类，供处置参考；同组用 refs 一次批量处置）：",
+            );
+            for c in &clusters {
+                let members: Vec<String> = c
+                    .members
+                    .iter()
+                    .map(|(f, q)| format!("{f}「{q}」"))
+                    .collect();
+                match &c.suggestion {
+                    crate::mutations::RefClusterSuggestion::MergeInto { entity_id, name } => {
+                        out.push_str(&format!(
+                            "\n  - hint 点名已有实体 {name}（{entity_id}），{} 条：{}\n    \
+                             → 建议 action=merge target_entity_id={entity_id} 的 refs 一次归拢本组",
+                            c.members.len(),
+                            members.join("、")
+                        ));
+                    }
+                    crate::mutations::RefClusterSuggestion::CreateNamed(clues) => {
+                        let clues = clues
+                            .iter()
+                            .map(|x| format!("「{x}」"))
+                            .collect::<Vec<_>>()
+                            .join("、");
+                        out.push_str(&format!(
+                            "\n  - 疑似同一未建档对象（线索：{clues}），{} 条：{}\n    \
+                             → 先建档（角色 create_character / 组织 create_organization / 地点 create_location），\
+                             再用 action=create 或 merge 的 refs 一次归拢本组",
+                            c.members.len(),
+                            members.join("、")
+                        ));
+                    }
+                    crate::mutations::RefClusterSuggestion::IgnoreMentioned => {
+                        out.push_str(&format!(
+                            "\n  - 仅对话/提及层面的龙套，{} 条：{}\n    \
+                             → 建议 action=ignore 批量忽略",
+                            c.members.len(),
+                            members.join("、")
+                        ));
+                    }
+                    crate::mutations::RefClusterSuggestion::SameQuote => {
+                        out.push_str(&format!(
+                            "\n  - 同称呼跨片段重现（疑似同一对象），{} 条：{}\n    \
+                             → 确认身份后归拢（可能与上方某组是同一人）",
+                            c.members.len(),
+                            members.join("、")
+                        ));
+                    }
+                }
+            }
         }
         Ok(out)
     }
@@ -1301,6 +1362,39 @@ mod tests {
                 tool_calls: Vec::new(),
             })
         }
+    }
+
+    #[test]
+    fn list_unresolved_refs_renders_clusters() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+        std::fs::create_dir_all(dir.join("entities/organizations")).unwrap();
+        std::fs::write(
+            dir.join("entities/organizations/o_0001.toml"),
+            "id = \"o_0001\"\ndisplay_name = \"太虚天宫\"\n",
+        )
+        .unwrap();
+        let ledger = concat!(
+            "[[ref]]\nfragment_id = \"f_000F\"\nquote = \"中年道人\"\n",
+            "hint = \"王玄通，太虚天宫执法殿首座金丹长老，名册外角色\"\nstatus = \"pending\"\n\n",
+            "[[ref]]\nfragment_id = \"f_0012\"\nquote = \"使者大人\"\n",
+            "hint = \"王玄通，疑似新角色\"\nstatus = \"pending\"\n\n",
+            "[[ref]]\nfragment_id = \"f_0017\"\nquote = \"刘瘸子\"\n",
+            "hint = \"仅对话提及，山下欠酒债之人\"\nstatus = \"pending\"\n\n",
+            "[[ref]]\nfragment_id = \"f_0017\"\nquote = \"王寡妇\"\n",
+            "hint = \"苏白提及的村头欠肉钱之人\"\nstatus = \"pending\"\n\n",
+        );
+        std::fs::write(paths.anchoring_toml(), ledger).unwrap();
+
+        let tool = ListUnresolvedRefsTool::new(ToolContext::new(dir.to_path_buf()));
+        let out = tool.execute(&serde_json::json!({})).unwrap();
+        assert!(out.contains("建议分组"), "{out}");
+        // 建档组：hint 共同点名王玄通，且给了建档引导
+        assert!(out.contains("王玄通"), "{out}");
+        assert!(out.contains("create_character"), "{out}");
+        // 忽略组：两条「提及」类龙套
+        assert!(out.contains("忽略"), "{out}");
     }
 
     #[test]
