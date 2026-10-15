@@ -232,6 +232,15 @@ impl Tool for AiCheckTool {
 // ai_check_chapter / ai_check_scene — 范围级批量检测
 // ============================================================================
 
+/// 批量检测的总时限：超时分块转后台，最终报告经回执接力送达。
+///
+/// MCP 客户端对单次调用的硬超时普遍在 30~60 秒（PI 实测 60s，部分宿主
+/// 可低至 30s），25 秒收口给报告组装与回执格式化留出余量。各块已并行
+/// 执行，常规章节（1~2 块）在快速 provider 下秒级收齐、同步返回；
+/// 思考型 provider 单块就要 30~50 秒，本就不可能在同步窗口内完成——
+/// 转后台是它们的常态路径，回执接力保证结果不丢。
+const SCOPE_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
+
 pub struct AiCheckScopeTool {
     ctx: ToolContext,
     scope: ai_check::CheckScope,
@@ -273,7 +282,9 @@ impl Tool for AiCheckScopeTool {
             name: self.name.into(),
             description: format!(
                 "对整个{}做 AI 写作特征批量检测（检测特征与 ai_check_fragment 相同），\
-                正文按阅读序聚合、超长自动分块，命中项标注所在片段。\
+                正文按阅读序聚合、超长自动分块（并行检测），命中项标注所在片段。\
+                超过时限会转后台继续，最终报告随后续工具调用的回执自动送达——\
+                收到「已转后台」提示属正常，请勿重试。\
                 {}交付前过一遍用它，不用逐片段调用。",
                 self.label,
                 if self.scope == ai_check::CheckScope::Chapter {
@@ -297,27 +308,66 @@ impl Tool for AiCheckScopeTool {
         })?;
 
         let dir = self.ctx.project_dir.clone();
-        let report = ai_check::check_scope(&dir, self.scope, &scope_id, provider)
-            .map_err(|e| format!("AI 检测失败: {e}"))?;
-
-        // 开场型特征需要跨章视野（chapter 范围直接用 scope_id，scene 反查所属章）
-        let opening_stat = if report
-            .items
-            .iter()
-            .any(|i| is_opening_feature(&i.feature_id, &i.feature_name))
-        {
-            let chapter = if report.scope == "chapter" {
-                Some(scope_id.clone())
-            } else {
-                chapter_of_scene(&dir, &scope_id)
-            };
-            chapter.and_then(|c| opening_streak(&dir, &c))
-        } else {
-            None
-        };
-
-        Ok(format_batch_report_for_llm(&report, opening_stat))
+        let label = self.label;
+        // 后台收齐后：格式化整份报告，经回执接力随下一次工具回执送达
+        let bg_ctx = self.ctx.clone();
+        let bg_dir = dir.clone();
+        let bg_scope_id = scope_id.clone();
+        let run = ai_check::check_scope_bounded(
+            &dir,
+            self.scope,
+            &scope_id,
+            provider,
+            SCOPE_CHECK_BUDGET,
+            move |result| match result {
+                Ok(report) => {
+                    let opening_stat = opening_stat_for_report(&bg_dir, &report, &bg_scope_id);
+                    bg_ctx.push_receipt_note(format!(
+                        "\n📬 后台 AI 检测完成（此前超时转后台的{label}检测，结果送达）：\n{}",
+                        format_batch_report_for_llm(&report, opening_stat).trim_start()
+                    ));
+                }
+                Err(e) => bg_ctx.push_receipt_note(format!(
+                    "\n📬 后台{label}检测失败：{e}（可稍后重试本检测）"
+                )),
+            },
+        )
+        .map_err(|e| format!("AI 检测失败: {e}"))?;
+        match run {
+            ai_check::ScopeCheckRun::Done(report) => {
+                let opening_stat = opening_stat_for_report(&dir, &report, &scope_id);
+                Ok(format_batch_report_for_llm(&report, opening_stat))
+            }
+            ai_check::ScopeCheckRun::Deferred { completed, total } => Ok(format!(
+                "{label} {scope_id} 检测超过 {} 秒时限（{completed}/{total} 个分块已收齐），\
+                 其余分块转后台继续。最终报告将随你下一次工具调用的回执自动送达，\
+                 无需主动查询；请勿因本提示重试本检测（重跑会重复消耗 token）。",
+                SCOPE_CHECK_BUDGET.as_secs()
+            )),
+        }
     }
+}
+
+/// 报告含开场型特征时计算跨章统计（chapter 直接用 scope_id，scene 反查
+/// 所属章）。同步回执与后台送达回执共用。
+fn opening_stat_for_report(
+    dir: &std::path::Path,
+    report: &ai_check::AiCheckBatchReport,
+    scope_id: &str,
+) -> Option<(usize, &'static str)> {
+    if !report
+        .items
+        .iter()
+        .any(|i| is_opening_feature(&i.feature_id, &i.feature_name))
+    {
+        return None;
+    }
+    let chapter = if report.scope == "chapter" {
+        Some(scope_id.to_string())
+    } else {
+        chapter_of_scene(dir, scope_id)
+    };
+    chapter.and_then(|c| opening_streak(dir, &c))
 }
 
 /// 把批量检测报告格式化为给 LLM 看的纯文本

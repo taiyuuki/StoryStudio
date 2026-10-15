@@ -29,6 +29,10 @@ pub struct ToolContext {
     /// GatedTool 包装层随下一次工具回执带给调用方 Agent——MCP 等
     /// 请求-响应调用方没有服务端推送通道，这是唯一确定性送达路径。
     anchor_delivery: Arc<Mutex<anchoring::AnchorDeliveryState>>,
+    /// 通用后台回执接力队列（Arc 共享，与 anchor_delivery 同一模式）。
+    /// 锚定之外的后台任务（如超时转后台的 AI 检测）把完成回执记入此处，
+    /// 同样由 GatedTool 随下一次工具回执送达。
+    receipt_notes: Arc<Mutex<Vec<String>>>,
 }
 
 /// 解析缓存状态：上次解析结果 + 文件 hash 缓存
@@ -62,6 +66,7 @@ impl Clone for ToolContext {
             provider: self.provider.clone(),
             parse_state: Arc::clone(&self.parse_state),
             anchor_delivery: Arc::clone(&self.anchor_delivery),
+            receipt_notes: Arc::clone(&self.receipt_notes),
         }
     }
 }
@@ -77,6 +82,7 @@ impl ToolContext {
                 extra_hashes: [None; 2],
             })),
             anchor_delivery: Arc::new(Mutex::new(anchoring::AnchorDeliveryState::default())),
+            receipt_notes: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -91,12 +97,27 @@ impl ToolContext {
                 extra_hashes: [None; 2],
             })),
             anchor_delivery: Arc::new(Mutex::new(anchoring::AnchorDeliveryState::default())),
+            receipt_notes: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// 后台锚定送达队列句柄（GatedTool 回执接力与锚定 worker 共用）
     pub(crate) fn anchor_delivery(&self) -> &Arc<Mutex<anchoring::AnchorDeliveryState>> {
         &self.anchor_delivery
+    }
+
+    /// 通用后台回执队列句柄（GatedTool 回执接力与后台任务 worker 共用）
+    pub(crate) fn receipt_notes(&self) -> &Arc<Mutex<Vec<String>>> {
+        &self.receipt_notes
+    }
+
+    /// 记录一条待送达的后台回执（后台任务完成时调用；锚定走
+    /// anchor_delivery 的专属队列）
+    pub(crate) fn push_receipt_note(&self, note: String) {
+        self.receipt_notes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(note);
     }
 
     pub(super) fn paths(&self) -> ProjectPaths {
@@ -463,6 +484,16 @@ pub(super) fn check_index(label: &str, index: usize, len: usize) -> Result<(), S
     }
 }
 
+/// 取走通用回执队列中的全部待送达回执（ToolContext 与 GatedTool 共用；
+/// GatedTool 持有裸 Arc，不便走 ToolContext 方法）
+pub(crate) fn take_receipt_notes_from(queue: &Mutex<Vec<String>>) -> Vec<String> {
+    std::mem::take(
+        &mut *queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 /// 带重试的 LLM 调用 —— 供工具内部（如 rewrite_fragment、get_story_recap）使用。
 ///
 /// 对速率限制（429）、服务端错误（5xx）、网络错误自动重试，指数退避（1s, 2s, 4s...），
@@ -739,5 +770,24 @@ mod tests {
             fifth.threads.all().count() >= 1,
             "threads.toml 变化后应重读线索"
         );
+    }
+
+    /// 通用回执接力队列：push 后 take 一次取空（顺序保持），再 take 为空；
+    /// ctx.clone() 共享同一队列
+    #[test]
+    fn receipt_notes_push_take_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        assert!(take_receipt_notes_from(ctx.receipt_notes()).is_empty());
+
+        ctx.push_receipt_note("后台任务结果A".to_string());
+        ctx.push_receipt_note("后台任务结果B".to_string());
+
+        let cloned = ctx.clone();
+        let notes = take_receipt_notes_from(cloned.receipt_notes());
+        assert_eq!(notes, vec!["后台任务结果A", "后台任务结果B"]);
+
+        // 一次取空：无论从哪个克隆取，都为空
+        assert!(take_receipt_notes_from(ctx.receipt_notes()).is_empty());
     }
 }

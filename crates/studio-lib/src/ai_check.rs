@@ -257,8 +257,9 @@ fn scope_fragments(
     Ok(fragment_ids)
 }
 
-/// 场景/章节级批量检测：聚合正文按片段边界分块，逐块调 LLM，
-/// 命中项按 quote 回查片段归属（精确→归一化→LCS 模糊，全落空才归块内首片段并标记推测）。
+/// 场景/章节级批量检测：聚合正文按片段边界分块，各块并行调 LLM，
+/// 命中项按 quote 回查片段归属（精确→归一化→LCS 模糊，全落空才归块内
+/// 首片段并标记推测）。
 /// 结果（含失败）计入 AI 台账，token 为各块之和。
 pub fn check_scope(
     dir: &Path,
@@ -266,32 +267,9 @@ pub fn check_scope(
     id: &str,
     provider: &Arc<dyn AiProvider>,
 ) -> Result<AiCheckBatchReport, StudioError> {
-    let started = std::time::Instant::now();
-    let provider_id = provider.id().to_string();
-    let provider_model = provider.model().to_string();
+    let ledger = ScopeLedgerCtx::new(dir, provider, std::time::Instant::now());
     let result = check_scope_inner(dir, scope, id, provider);
-    match &result {
-        Ok(report) => crate::ai_ledger::record(
-            dir,
-            "AI 审校",
-            &provider_id,
-            &provider_model,
-            report.tokens_used as u64,
-            started.elapsed().as_millis() as u64,
-            true,
-            None,
-        ),
-        Err(e) => crate::ai_ledger::record(
-            dir,
-            "AI 审校",
-            &provider_id,
-            &provider_model,
-            0,
-            started.elapsed().as_millis() as u64,
-            false,
-            Some(&e.to_string()),
-        ),
-    }
+    ledger.record(result.as_ref());
     result
 }
 
@@ -365,14 +343,23 @@ fn lcs_substring_len(a: &str, b: &str) -> usize {
     best
 }
 
-fn check_scope_inner(
-    dir: &Path,
+/// 单块检测结果（错误串化以便跨线程传递，组装时包回 StudioError::Ai）
+type ChunkResult = Result<(Vec<AiCheckItem>, String, usize), String>;
+
+/// 检测计划：阅读序正文与分块方案。并行执行前一次读齐——后台收集
+/// 线程不再回读项目文件，避免与后续写入交错。
+struct ScopePlan {
+    bodies: Vec<(String, String)>,
+    /// 每块为 bodies 下标集合（阅读序）
+    chunks: Vec<Vec<usize>>,
+}
+
+fn plan_scope_check(
+    paths: &ProjectPaths,
     scope: CheckScope,
     id: &str,
-    provider: &Arc<dyn AiProvider>,
-) -> Result<AiCheckBatchReport, StudioError> {
-    let paths = ProjectPaths::new(dir);
-    let fragment_ids = scope_fragments(&paths, scope, id)?;
+) -> Result<ScopePlan, StudioError> {
+    let fragment_ids = scope_fragments(paths, scope, id)?;
     if fragment_ids.is_empty() {
         return Err(StudioError::Ai(format!(
             "范围 {} {id} 下没有片段",
@@ -383,7 +370,7 @@ fn check_scope_inner(
     // 阅读序正文（跳过空正文片段）
     let mut bodies: Vec<(String, String)> = Vec::new();
     for fid in &fragment_ids {
-        let body = read_fragment_body(&paths, fid)?;
+        let body = read_fragment_body(paths, fid)?;
         if !body.is_empty() {
             bodies.push((fid.clone(), body));
         }
@@ -411,60 +398,310 @@ fn check_scope_inner(
     if !current.is_empty() {
         chunks.push(current);
     }
+    Ok(ScopePlan { bodies, chunks })
+}
 
-    let mut all_items: Vec<AiCheckItem> = Vec::new();
-    let mut fragment_hits: Vec<(String, usize)> =
-        bodies.iter().map(|(fid, _)| (fid.clone(), 0)).collect();
-    let mut tokens_used = 0usize;
-    let mut best_summary = String::new();
-    let mut best_summary_hits = 0usize;
+/// 各块结果的按块序归并器（命中项保持阅读序、归因到块内片段）
+struct ScopeAggregator {
+    all_items: Vec<AiCheckItem>,
+    fragment_hits: Vec<(String, usize)>,
+    tokens_used: usize,
+    best_summary: String,
+    best_summary_hits: usize,
+}
 
-    for chunk in &chunks {
-        let text = chunk
-            .iter()
-            .map(|&i| bodies[i].1.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let (items, summary, tokens) = check_text_inner(&text, provider)?;
-        tokens_used += tokens;
+impl ScopeAggregator {
+    fn new(plan: &ScopePlan) -> Self {
+        Self {
+            all_items: Vec::new(),
+            fragment_hits: plan
+                .bodies
+                .iter()
+                .map(|(fid, _)| (fid.clone(), 0))
+                .collect(),
+            tokens_used: 0,
+            best_summary: String::new(),
+            best_summary_hits: 0,
+        }
+    }
 
+    /// 并入一块的检测结果（chunk_idx 为块序）
+    fn merge(
+        &mut self,
+        plan: &ScopePlan,
+        chunk_idx: usize,
+        items: Vec<AiCheckItem>,
+        summary: String,
+        tokens: usize,
+    ) {
+        self.tokens_used += tokens;
+        let chunk = &plan.chunks[chunk_idx];
         let mut chunk_hits = 0usize;
         for mut item in items {
             if item.feature_id == "parse_error" {
-                all_items.push(item);
+                self.all_items.push(item);
                 continue;
             }
             chunk_hits += 1;
             // 归因：quote 出现在哪个片段
-            let (owner, uncertain) = attribute_quote(chunk, &bodies, &item.quote);
-            item.fragment_id = Some(bodies[owner].0.clone());
+            let (owner, uncertain) = attribute_quote(chunk, &plan.bodies, &item.quote);
+            item.fragment_id = Some(plan.bodies[owner].0.clone());
             item.fragment_uncertain = uncertain;
-            if let Some(hit) = fragment_hits
+            if let Some(hit) = self
+                .fragment_hits
                 .iter_mut()
-                .find(|(fid, _)| *fid == bodies[owner].0)
+                .find(|(fid, _)| *fid == plan.bodies[owner].0)
             {
                 hit.1 += 1;
             }
-            all_items.push(item);
+            self.all_items.push(item);
         }
-        if chunk_hits > best_summary_hits {
-            best_summary_hits = chunk_hits;
-            best_summary = summary;
+        if chunk_hits > self.best_summary_hits {
+            self.best_summary_hits = chunk_hits;
+            self.best_summary = summary;
         }
     }
 
-    if best_summary.is_empty() {
-        best_summary = default_summary(&all_items);
+    fn finish(mut self, scope: CheckScope, id: &str) -> AiCheckBatchReport {
+        if self.best_summary.is_empty() {
+            self.best_summary = default_summary(&self.all_items);
+        }
+        AiCheckBatchReport {
+            scope: scope.as_str().to_string(),
+            scope_id: id.to_string(),
+            items: self.all_items,
+            summary: self.best_summary,
+            tokens_used: self.tokens_used,
+            fragment_hits: self.fragment_hits,
+        }
+    }
+}
+
+/// 把各块结果（按块序的槽位）组装成报告。
+///
+/// 任一块失败则整体失败（沿用原串行语义：一块失败时给出缺块的
+/// 「整章报告」只会误导）；槽位为 None 说明工作线程未送出结果
+/// （catch_unwind 兜底后理论上不可达，防御性报错）。
+fn assemble_scope_report(
+    scope: CheckScope,
+    id: &str,
+    plan: ScopePlan,
+    slots: Vec<Option<ChunkResult>>,
+) -> Result<AiCheckBatchReport, StudioError> {
+    let mut agg = ScopeAggregator::new(&plan);
+    for (chunk_idx, slot) in slots.into_iter().enumerate() {
+        let (items, summary, tokens) = slot
+            .ok_or_else(|| StudioError::Ai("检测工作线程异常退出（未送出结果）".to_string()))?
+            .map_err(StudioError::Ai)?;
+        agg.merge(&plan, chunk_idx, items, summary, tokens);
+    }
+    Ok(agg.finish(scope, id))
+}
+
+/// 并行执行各块检测，返回按 (块序, 结果) 送出的通道。
+///
+/// 每块一个线程：分块数受 [`SCOPE_CHUNK_CHAR_CAP`] 约束（单章通常
+/// 1~3 块），无需并发上限；端到端等待从各块耗时之和降为最慢一块。
+/// catch_unwind + spawn 失败兜底保证每个线程恰好送出一条结果——
+/// 收集端按块数收齐即可，worker panic 不会让接收方永久阻塞。
+fn spawn_chunk_workers(
+    provider: &Arc<dyn AiProvider>,
+    plan: &ScopePlan,
+) -> std::sync::mpsc::Receiver<(usize, ChunkResult)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    for (idx, chunk) in plan.chunks.iter().enumerate() {
+        let text = chunk
+            .iter()
+            .map(|&i| plan.bodies[i].1.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let provider = Arc::clone(provider);
+        let spawn = {
+            let tx = tx.clone();
+            std::thread::Builder::new()
+                .name("story-ai-check-chunk".into())
+                .spawn(move || {
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        check_text_inner(&text, &provider).map_err(|e| e.to_string())
+                    }));
+                    let outcome = res.unwrap_or_else(|_| {
+                        Err("检测线程崩溃（正文不受影响，可重试）".to_string())
+                    });
+                    let _ = tx.send((idx, outcome));
+                })
+        };
+        if let Err(e) = spawn {
+            // 线程创建失败（资源枯竭等）：作为该块的失败送出，维持计数不变量
+            let _ = tx.send((idx, Err(format!("创建检测线程失败: {e}"))));
+        }
+    }
+    rx
+}
+
+/// AI 台账记账上下文（同步完成与后台收齐两条路径共用）
+struct ScopeLedgerCtx {
+    dir: std::path::PathBuf,
+    provider_id: String,
+    provider_model: String,
+    started: std::time::Instant,
+}
+
+impl ScopeLedgerCtx {
+    fn new(dir: &Path, provider: &Arc<dyn AiProvider>, started: std::time::Instant) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            provider_id: provider.id().to_string(),
+            provider_model: provider.model().to_string(),
+            started,
+        }
     }
 
-    Ok(AiCheckBatchReport {
-        scope: scope.as_str().to_string(),
-        scope_id: id.to_string(),
-        items: all_items,
-        summary: best_summary,
-        tokens_used,
-        fragment_hits,
-    })
+    /// 记账：成功记 token，失败记原因（与锚定旁路日志同一取舍）
+    fn record(&self, outcome: Result<&AiCheckBatchReport, &StudioError>) {
+        match outcome {
+            Ok(report) => crate::ai_ledger::record(
+                &self.dir,
+                "AI 审校",
+                &self.provider_id,
+                &self.provider_model,
+                report.tokens_used as u64,
+                self.started.elapsed().as_millis() as u64,
+                true,
+                None,
+            ),
+            Err(e) => crate::ai_ledger::record(
+                &self.dir,
+                "AI 审校",
+                &self.provider_id,
+                &self.provider_model,
+                0,
+                self.started.elapsed().as_millis() as u64,
+                false,
+                Some(&e.to_string()),
+            ),
+        }
+    }
+}
+
+/// 带时限的批量检测结果
+pub enum ScopeCheckRun {
+    /// 时限内收齐全部块（报告已组装、台账已记）
+    Done(AiCheckBatchReport),
+    /// 时限耗尽：completed 块已同步收齐，其余转后台；后台收齐后组装
+    /// 报告、记账并经 on_complete 送达
+    Deferred { completed: usize, total: usize },
+}
+
+/// [`check_scope`] 的带时限版本，供 MCP 工具路径使用。
+///
+/// MCP 客户端对单次工具调用普遍有 30~60 秒硬超时，思考型 provider
+/// 单块检测就要 30~50 秒——整章多块同步等待必然撞线：客户端报错而
+/// 服务端照跑，token 白烧。超时时限后立即返回 Deferred，余下块由
+/// 后台线程收齐，最终报告经 on_complete 回调送出（调用方接到回执
+/// 接力等通道送达），与锚定的转后台机制（ANCHOR_BUDGET）同一哲学。
+pub fn check_scope_bounded(
+    dir: &Path,
+    scope: CheckScope,
+    id: &str,
+    provider: &Arc<dyn AiProvider>,
+    budget: std::time::Duration,
+    on_complete: impl FnOnce(Result<AiCheckBatchReport, StudioError>) + Send + 'static,
+) -> Result<ScopeCheckRun, StudioError> {
+    let ledger = ScopeLedgerCtx::new(dir, provider, std::time::Instant::now());
+    check_scope_bounded_inner(scope, id, provider, budget, ledger, on_complete)
+}
+
+fn check_scope_bounded_inner(
+    scope: CheckScope,
+    id: &str,
+    provider: &Arc<dyn AiProvider>,
+    budget: std::time::Duration,
+    ledger: ScopeLedgerCtx,
+    on_complete: impl FnOnce(Result<AiCheckBatchReport, StudioError>) + Send + 'static,
+) -> Result<ScopeCheckRun, StudioError> {
+    // 计划失败（无片段等）也记账后返回
+    let plan = match plan_scope_check(&ProjectPaths::new(&ledger.dir), scope, id) {
+        Ok(p) => p,
+        Err(e) => {
+            ledger.record(Err(&e));
+            return Err(e);
+        }
+    };
+    let rx = spawn_chunk_workers(provider, &plan);
+    let total = plan.chunks.len();
+    let deadline = std::time::Instant::now() + budget;
+    let mut slots: Vec<Option<ChunkResult>> = vec![None; total];
+    let mut received = 0usize;
+    while received < total {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok((idx, res)) => {
+                if slots[idx].replace(res).is_none() {
+                    received += 1;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            // catch_unwind 兜底后不应发生（每块必有一条结果）；
+            // 真发生则交由后台发现 None 槽位并报错
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    if received == total {
+        let result = assemble_scope_report(scope, id, plan, slots);
+        ledger.record(result.as_ref());
+        return result.map(ScopeCheckRun::Done);
+    }
+
+    // 超时转后台：已收齐的块随 slots 移交收集线程（零浪费），收齐后
+    // 组装报告、记台账、经 on_complete 送达
+    let id = id.to_string();
+    let spawn_res = std::thread::Builder::new()
+        .name("story-ai-check-collect".into())
+        .spawn(move || {
+            let mut received = received;
+            while received < total {
+                match rx.recv() {
+                    Ok((idx, res)) => {
+                        if slots[idx].replace(res).is_none() {
+                            received += 1;
+                        }
+                    }
+                    Err(_) => break, // 发送端全退仍未收齐：由 None 槽位报错
+                }
+            }
+            let result = assemble_scope_report(scope, &id, plan, slots);
+            ledger.record(result.as_ref());
+            on_complete(result);
+        });
+    match spawn_res {
+        Ok(_) => Ok(ScopeCheckRun::Deferred {
+            completed: received,
+            total,
+        }),
+        Err(e) => Err(StudioError::Ai(format!("创建后台检测收集线程失败: {e}"))),
+    }
+}
+
+fn check_scope_inner(
+    dir: &Path,
+    scope: CheckScope,
+    id: &str,
+    provider: &Arc<dyn AiProvider>,
+) -> Result<AiCheckBatchReport, StudioError> {
+    let plan = plan_scope_check(&ProjectPaths::new(dir), scope, id)?;
+    let rx = spawn_chunk_workers(provider, &plan);
+    let total = plan.chunks.len();
+    let mut slots: Vec<Option<ChunkResult>> = vec![None; total];
+    for _ in 0..total {
+        let (idx, res) = rx
+            .recv()
+            .map_err(|_| StudioError::Ai("检测工作线程异常退出".to_string()))?;
+        slots[idx] = Some(res);
+    }
+    assemble_scope_report(scope, id, plan, slots)
 }
 
 /// 实际检测逻辑，返回 (命中项, 概括, token 消耗)
@@ -987,5 +1224,171 @@ mod tests {
             "失败记录在最前: {:?}",
             ledger.recent[0]
         );
+    }
+
+    // ========================================================================
+    // 并行分块 / 带时限转后台 测试
+    // ========================================================================
+
+    /// 两块并行检测（两片段各 6500 字，超出 6000 字/块上限）：命中项按
+    /// 阅读序归并、归因正确；mock 按请求内容区分所在块返回
+    #[test]
+    fn check_scope_parallel_chunks_merge_in_reading_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "t").unwrap();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        let f1 = crate::mutations::create_fragment(
+            &paths,
+            &sc,
+            &format!("{}第一块标记", "很".repeat(6500)),
+        )
+        .unwrap();
+        let f2 = crate::mutations::create_fragment(
+            &paths,
+            &sc,
+            &format!("{}第二块标记", "静".repeat(6500)),
+        )
+        .unwrap();
+
+        #[derive(Debug)]
+        struct ChunkAwareProvider;
+        impl AiProvider for ChunkAwareProvider {
+            fn id(&self) -> &str {
+                "mock-chunks"
+            }
+            fn generate(
+                &self,
+                request: &story_ai_runtime::provider::GenerateRequest,
+            ) -> Result<
+                story_ai_runtime::provider::GenerateResponse,
+                story_ai_runtime::provider::AiError,
+            > {
+                let (quote, feature) = if request.messages[0].content.contains("第一块标记") {
+                    ("第一块标记", "A")
+                } else {
+                    ("第二块标记", "B")
+                };
+                Ok(story_ai_runtime::provider::GenerateResponse {
+                    text: format!(
+                        "{{\"items\":[{{\"quote\":\"{quote}\",\"feature_id\":\"{feature}\",\
+                         \"feature_name\":\"测试特征\",\"severity\":\"Medium\",\"explanation\":\"x\"}}],\
+                         \"summary\":\"ok\"}}"
+                    ),
+                    usage: story_ai_runtime::provider::TokenUsage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                    stop_reason: story_ai_runtime::provider::StopReason::EndTurn,
+                    tool_calls: Vec::new(),
+                })
+            }
+        }
+
+        let provider: Arc<dyn AiProvider> = Arc::new(ChunkAwareProvider);
+        let report = check_scope(tmp.path(), CheckScope::Chapter, &ch, &provider).unwrap();
+
+        // 命中项按阅读序：块 1（f1）的命中在前，且归因正确、token 为两块之和
+        assert_eq!(report.items.len(), 2, "{:?}", report.items);
+        assert_eq!(report.items[0].feature_id, "A");
+        assert_eq!(report.items[0].fragment_id.as_deref(), Some(f1.as_str()));
+        assert!(!report.items[0].fragment_uncertain);
+        assert_eq!(report.items[1].feature_id, "B");
+        assert_eq!(report.items[1].fragment_id.as_deref(), Some(f2.as_str()));
+        assert_eq!(report.tokens_used, 4, "每块 usage.total()=2，两块应为 4");
+    }
+
+    /// 慢 provider + 小预算：立即返回 Deferred，后台收齐后经回调送出
+    /// 完整报告并记账（token 不白烧）
+    #[test]
+    fn check_scope_bounded_defers_slow_provider_and_delivers() {
+        let (tmp, ch, _sc, fids) = setup_scope_project();
+
+        #[derive(Debug)]
+        struct SlowProvider {
+            response: String,
+        }
+        impl AiProvider for SlowProvider {
+            fn id(&self) -> &str {
+                "mock-slow"
+            }
+            fn generate(
+                &self,
+                _request: &story_ai_runtime::provider::GenerateRequest,
+            ) -> Result<
+                story_ai_runtime::provider::GenerateResponse,
+                story_ai_runtime::provider::AiError,
+            > {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(story_ai_runtime::provider::GenerateResponse {
+                    text: self.response.clone(),
+                    usage: story_ai_runtime::provider::TokenUsage {
+                        input_tokens: 10,
+                        output_tokens: 20,
+                    },
+                    stop_reason: story_ai_runtime::provider::StopReason::EndTurn,
+                    tool_calls: Vec::new(),
+                })
+            }
+        }
+        let provider: Arc<dyn AiProvider> = Arc::new(SlowProvider {
+            response: r#"{"items":[{"quote":"第二段正文","feature_id":"3","feature_name":"匀速排比","severity":"Medium","explanation":"后台送达"}],"summary":"整体尚可。"}"#.to_string(),
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let run = check_scope_bounded(
+            tmp.path(),
+            CheckScope::Chapter,
+            &ch,
+            &provider,
+            std::time::Duration::from_millis(50),
+            move |result| {
+                let _ = tx.send(result);
+            },
+        )
+        .unwrap();
+        match run {
+            ScopeCheckRun::Deferred { completed, total } => {
+                assert_eq!(total, 1, "两个小片段合成一块");
+                assert_eq!(completed, 0, "300ms 的块在 50ms 预算内不可能收齐");
+            }
+            ScopeCheckRun::Done(_) => panic!("慢 provider + 50ms 预算应转后台而非同步返回"),
+        }
+
+        // 后台收齐后：完整报告经回调送达、归因正确，台账恰记一次
+        let report = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("后台收齐应送达回调")
+            .expect("后台组装应成功");
+        assert_eq!(report.hit_count(), 1);
+        assert_eq!(
+            report.items[0].fragment_id.as_deref(),
+            Some(fids[1].as_str())
+        );
+        let ledger = crate::ai_ledger::summary(tmp.path(), 10);
+        assert_eq!(ledger.total_calls, 1, "Deferred 的台账应由后台收齐后记");
+        assert!(ledger.recent[0].ok, "{:?}", ledger.recent[0]);
+    }
+
+    /// 快 provider + 宽预算：同步返回 Done，台账恰记一次、不触发后台回调
+    #[test]
+    fn check_scope_bounded_fast_path_returns_done() {
+        let (tmp, ch, _sc, _fids) = setup_scope_project();
+        let provider: Arc<dyn AiProvider> = Arc::new(MockCheckProvider {
+            response: "{\"items\": [], \"summary\": \"没有明显 AI 味\"}".to_string(),
+        });
+        let run = check_scope_bounded(
+            tmp.path(),
+            CheckScope::Chapter,
+            &ch,
+            &provider,
+            std::time::Duration::from_secs(10),
+            |_result| panic!("快路径不应触发后台回调"),
+        )
+        .unwrap();
+        assert!(matches!(run, ScopeCheckRun::Done(_)));
+        let ledger = crate::ai_ledger::summary(tmp.path(), 10);
+        assert_eq!(ledger.total_calls, 1, "Done 路径台账恰记一次");
     }
 }

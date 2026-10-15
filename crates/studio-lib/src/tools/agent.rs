@@ -150,6 +150,7 @@ struct GatedTool {
     lock: crate::project_lock::ProjectLock,
     is_read: bool,
     anchor_delivery: Arc<std::sync::Mutex<crate::tools::anchoring::AnchorDeliveryState>>,
+    receipt_notes: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl Tool for GatedTool {
@@ -175,6 +176,9 @@ impl Tool for GatedTool {
             if !note.is_empty() {
                 text.push_str(&note);
             }
+            for note in crate::tools::take_receipt_notes_from(&self.receipt_notes) {
+                text.push_str(&note);
+            }
         }
         result
     }
@@ -192,6 +196,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     let ctx = ToolContext::with_provider(dir.to_path_buf(), provider);
     // GatedTool 回执接力与锚定 worker 共用同一送达队列（ctx 内 Arc）
     let anchor_delivery = ctx.anchor_delivery().clone();
+    let receipt_notes = ctx.receipt_notes().clone();
     let mut registry = ToolRegistry::new();
     registry.register_readonly(Box::new(AskUserTool));
     registry.register_readonly(Box::new(PrepareWritingTool::new(ctx.clone())));
@@ -289,6 +294,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
             lock: lock.clone(),
             is_read,
             anchor_delivery: anchor_delivery.clone(),
+            receipt_notes: receipt_notes.clone(),
         })
     })
 }
@@ -654,6 +660,7 @@ mod tests {
             lock: crate::project_lock::ProjectLock::for_root(tmp.path()),
             is_read: true,
             anchor_delivery: ctx.anchor_delivery().clone(),
+            receipt_notes: ctx.receipt_notes().clone(),
         };
 
         // 成功回执：尾部追加送达段（结果 + 处置引导）
@@ -695,5 +702,75 @@ mod tests {
             .execute(&serde_json::json!({}))
             .unwrap();
         assert!(out3.contains("f_0002"), "{out3}");
+    }
+
+    /// 回执接力（通用队列）：后台任务（如超时转后台的 AI 检测）的待送达
+    /// 回执同样随成功回执送达、一次取空；失败回执不带走
+    #[test]
+    fn gated_tool_relays_receipt_notes() {
+        struct EchoTool;
+        impl story_ai_runtime::Tool for EchoTool {
+            fn definition(&self) -> story_ai_runtime::ToolDef {
+                story_ai_runtime::ToolDef {
+                    name: "echo".into(),
+                    description: "测试桩".into(),
+                    parameters: serde_json::json!({}),
+                }
+            }
+            fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+                Ok("echo-ok".to_string())
+            }
+        }
+        struct FailTool;
+        impl story_ai_runtime::Tool for FailTool {
+            fn definition(&self) -> story_ai_runtime::ToolDef {
+                story_ai_runtime::ToolDef {
+                    name: "fail".into(),
+                    description: "测试桩".into(),
+                    parameters: serde_json::json!({}),
+                }
+            }
+            fn execute(&self, _arguments: &serde_json::Value) -> Result<String, String> {
+                Err("工具失败".to_string())
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "relay-note-test").unwrap();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let make_gated = |inner: Box<dyn story_ai_runtime::Tool>| GatedTool {
+            inner,
+            lock: crate::project_lock::ProjectLock::for_root(tmp.path()),
+            is_read: true,
+            anchor_delivery: ctx.anchor_delivery().clone(),
+            receipt_notes: ctx.receipt_notes().clone(),
+        };
+
+        ctx.push_receipt_note(
+            "\n📬 后台 AI 检测完成（此前超时转后台的检测，结果送达）：报告内容".to_string(),
+        );
+
+        // 成功回执：尾部追加送达段，一次送达即清空
+        let out = make_gated(Box::new(EchoTool))
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(out.contains("echo-ok"), "{out}");
+        assert!(out.contains("后台 AI 检测完成"), "{out}");
+        let out2 = make_gated(Box::new(EchoTool))
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(!out2.contains("后台 AI 检测完成"), "{out2}");
+
+        // 失败回执不带走待送达回执，留到下一次成功调用
+        ctx.push_receipt_note("\n📬 后台任务结果".to_string());
+        let err = make_gated(Box::new(FailTool))
+            .execute(&serde_json::json!({}))
+            .unwrap_err();
+        assert_eq!(err, "工具失败");
+        let out3 = make_gated(Box::new(EchoTool))
+            .execute(&serde_json::json!({}))
+            .unwrap();
+        assert!(out3.contains("后台任务结果"), "{out3}");
     }
 }
