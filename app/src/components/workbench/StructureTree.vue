@@ -375,10 +375,18 @@ function sceneTitle(s: SceneDto): string {
   display: flex;
   gap: 8px;
   padding: 14px 14px 10px;
+
+  // 按钮定宽不收缩，空间不够时由搜索框让位
+  .ink-icon-btn {
+    flex-shrink: 0;
+  }
 }
 
 .search-row {
   flex: 1;
+  // input 的固有宽度按平台字体回退变化（win 落到 SimSun 明显更宽），
+  // flex 子项默认 min-width:auto 不允许收缩，会把右侧按钮挤出面板
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -400,6 +408,7 @@ function sceneTitle(s: SceneDto): string {
 
   input {
     flex: 1;
+    min-width: 0;
     border: none;
     outline: none;
     background: transparent;
