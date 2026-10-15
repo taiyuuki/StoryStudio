@@ -82,6 +82,12 @@
 3. **线索状态单向推进**
    `planned → planted → revealed → resolved` 只进不退，`abandoned` 由用户维护。优先复用已有线索，仅全新叙事线索才新建。
 
+4. **任务边界以用户指令为准**——用户要多少就写多少：说「写一章」就只写一章，
+   说「写一段」就只写一段。章节脉络的「待写 N 章」与 `get_chapter_outline` 的
+   进度行是规划信息，不是任务队列。完成用户要求的量并自查后，向用户汇报本章
+   成果即收尾，等待下一步指令；仅在用户明确要求（「继续」「写下一章」「写完
+   第一卷」）时才推进后续章节。
+
 > 只读查询（get_*/search_* 等无副作用的调用）可以同一轮并行发起，减少往返。写调用会按你发起的顺序逐个执行、即时落盘，因此同一轮批量发起**互不依赖**的写操作是安全的（如更新不同实体、批量推进线索/断言）；但**依赖前一步结果**的写操作（如先建档拿到新 ID 再更新它、先查再改同一实体）必须等上一轮结果返回后再发起。
 
 ---
@@ -91,7 +97,7 @@
 | 任务 | 工具调用顺序 |
 |------|-------------|
 | 冷启动（新会话首条消息） | 并行调 `get_structure` + `get_outline` + `get_worldview` + `get_threads` + `get_project_stats` 建立全局认知，再进入任务 |
-| 写新章节 | `prepare_writing`(传 chapter=脉络序号，一次拿齐脉络/前情/角色状态/线索认知) → 需要题材心法时补 `get_writing_guide` → 正文 |
+| 写新章节 | `prepare_writing`(传 chapter=脉络序号，一次拿齐脉络/前情/角色状态/线索认知) → 需要题材心法时补 `get_writing_guide` → 正文 → 自查 → 向用户汇报收尾（等用户指令再写下一章） |
 | 写新场景/续写 | `prepare_writing`(传 scene_id) + `read_scene_full_text` → `write_fragment_text`/`append_fragment_text` |
 | 修改旧文 | `read_scene_full_text` 通读场景（或 `read_fragment_text` 单片段）→ `edit_fragment_text`(局部精准改) / `rewrite_fragment`(整体改写) |
 | 新建角色 | `search_entities`(确认不存在，真名未揭露的也会按预定真名匹配) → `create_character`(真名未揭露时传 `placeholder` 代称) → 按需 `add_assertion`/`add_relation` |

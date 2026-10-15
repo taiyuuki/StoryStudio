@@ -438,10 +438,11 @@ impl Tool for GetChapterOutlineTool {
                 .count();
             let next = file.chapters.iter().find(|c| c.status == "planned");
             result.push_str(&format!(
-                "\n## 进度: {completed}/{total} 完成, {writing} 写作中, {planned} 待写\n",
+                "\n## 进度: {completed}/{total} 完成, {writing} 写作中, {planned} 待写\
+                 （脉络规划信息，写作范围与量级以用户指令为准）\n",
             ));
             if let Some(n) = next {
-                result.push_str(&format!("下一章待写: {}\n", n.title));
+                result.push_str(&format!("下一章: {}\n", n.title));
             }
         }
 

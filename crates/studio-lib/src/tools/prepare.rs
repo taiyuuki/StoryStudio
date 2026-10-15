@@ -105,6 +105,8 @@ impl Tool for PrepareWritingTool {
             角色当前状态断言、题材提示与写作要点。\
             续写已有场景传 scene_id；写新章节传 chapter（脉络序号，1-based）；\
             两者都省略时默认取写作最前沿场景。\
+            chapter/scene 的选择与量级以用户本次指令为准（说写一章就只准备该章），\
+            勿自行扩大写作范围。\
             替代动笔前依次调用 get_chapter_outline / get_story_recap / get_character_state /\
             get_scene_context 的多次往返；需要更深的单一维度（完整前情、完整时间线、\
             题材专项指导）再补对应查询。"
