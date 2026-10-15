@@ -231,6 +231,11 @@ impl Tool for PrepareWritingTool {
             ));
         }
 
+        // —— 0. 待处置指代清账提示 ——
+        // 动笔决策点前置检查：待审指代有积压时，这里是「先清账还是直接写」
+        // 的判断时刻（呼应 agent_project 的章内清零纪律）；0 条静默
+        out.push_str(&super::anchoring::backlog_note(&paths));
+
         // —— 1. 本章脉络 ——
         if let Some(entry) = outline_entry {
             if let Some(brief) = render_outline_entry(entry) {
@@ -840,6 +845,8 @@ object = "临安城码头"
         assert!(out.contains("第二章 码头"), "{out}");
         assert!(out.contains("状态: planned"), "{out}");
         assert!(out.contains("目标场景: sc_02_01"), "{out}");
+        // 无积压：不出现清账提示
+        assert!(!out.contains("待处置指代"), "{out}");
         // 脉络
         assert!(out.contains("目标: 林风在码头与跟踪者对峙"), "{out}");
         assert!(out.contains("1. 夜探码头"), "{out}");
@@ -883,6 +890,31 @@ object = "临安城码头"
             .execute(&serde_json::json!({ "chapter": 9 }))
             .unwrap_err();
         assert!(err.contains("不存在"), "{err}");
+    }
+
+    /// 台账有待处置指代时，动笔回执前置清账提示（挂起事务定性）
+    #[test]
+    fn prepare_shows_backlog_when_pending_refs() {
+        let tmp = setup();
+        write_fixture(tmp.path());
+        let paths = story_project_format::ProjectPaths::new(tmp.path());
+        std::fs::write(
+            paths.anchoring_toml(),
+            "[[ref]]\nfragment_id = \"f_0001\"\nquote = \"灰袍女人\"\n\
+             hint = \"疑似新角色\"\nstatus = \"pending\"\n",
+        )
+        .unwrap();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = PrepareWritingTool::new(ctx);
+
+        let out = tool.execute(&serde_json::json!({ "chapter": 2 })).unwrap();
+        assert!(out.contains("待处置指代 1 条"), "{out}");
+        assert!(out.contains("挂起事务"), "{out}");
+        assert!(out.contains("list_unresolved_refs"), "{out}");
+        // 提示位于回执前部（标题行之后、脉络之前）
+        let backlog_pos = out.find("待处置指代").unwrap();
+        let outline_pos = out.find("本章脉络").unwrap();
+        assert!(backlog_pos < outline_pos, "清账提示应前置于脉络: {out}");
     }
 
     /// 第一章无上一章 → 无钩子承接提示

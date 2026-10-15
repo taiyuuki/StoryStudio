@@ -1535,12 +1535,17 @@ impl Tool for WriteFragmentTextTool {
             Ok(super::anchoring::AnchorRun::Done(o)) => {
                 msg.push_str(&super::format_anchor_note(&o, &paths))
             }
-            Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
-                "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
-                 正文已保存——请勿因本提示重试本次写入。\
-                 结果将随你下一次工具调用的回执自动送达，无需主动查询",
-                super::anchoring::ANCHOR_BUDGET.as_secs()
-            )),
+            Ok(super::anchoring::AnchorRun::Deferred) => {
+                msg.push_str(&format!(
+                    "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
+                     正文已保存——请勿因本提示重试本次写入。\
+                     结果将随你下一次工具调用的回执自动送达，无需主动查询",
+                    super::anchoring::ANCHOR_BUDGET.as_secs()
+                ));
+                // 锚定转后台时回执不含 format_anchor_note 的积压提示——补上，
+                // 保证每笔写作（无论锚定同步与否）都看得见待处置这笔债
+                msg.push_str(&super::anchoring::backlog_note(&paths));
+            }
             Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
         }
 
@@ -2405,12 +2410,15 @@ impl Tool for AppendFragmentTextTool {
             Ok(super::anchoring::AnchorRun::Done(o)) => {
                 msg.push_str(&super::format_anchor_note(&o, &paths))
             }
-            Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
-                "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
-                 正文已保存——请勿因本提示重试本次追加。\
-                 结果将随你下一次工具调用的回执自动送达，无需主动查询",
-                super::anchoring::ANCHOR_BUDGET.as_secs()
-            )),
+            Ok(super::anchoring::AnchorRun::Deferred) => {
+                msg.push_str(&format!(
+                    "\n⏳ 指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
+                     正文已保存——请勿因本提示重试本次追加。\
+                     结果将随你下一次工具调用的回执自动送达，无需主动查询",
+                    super::anchoring::ANCHOR_BUDGET.as_secs()
+                ));
+                msg.push_str(&super::anchoring::backlog_note(&paths));
+            }
             Err(e) => msg.push_str(&format!("\n（指代锚定跳过：{e}）")),
         }
         // 覆盖前的旧文已留版本快照（节流），可回滚
@@ -2909,12 +2917,15 @@ impl Tool for SplitFragmentTool {
             Ok(super::anchoring::AnchorRun::Done(o)) => {
                 msg.push_str(&super::format_anchor_note(&o, &paths))
             }
-            Ok(super::anchoring::AnchorRun::Deferred) => msg.push_str(&format!(
-                "\n⏳ 后半段指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
-                 拆分已完成——请勿因本提示重试。\
-                 结果将随你下一次工具调用的回执自动送达，无需主动查询",
-                super::anchoring::ANCHOR_BUDGET.as_secs()
-            )),
+            Ok(super::anchoring::AnchorRun::Deferred) => {
+                msg.push_str(&format!(
+                    "\n⏳ 后半段指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
+                     拆分已完成——请勿因本提示重试。\
+                     结果将随你下一次工具调用的回执自动送达，无需主动查询",
+                    super::anchoring::ANCHOR_BUDGET.as_secs()
+                ));
+                msg.push_str(&super::anchoring::backlog_note(&paths));
+            }
             Err(e) => msg.push_str(&format!("\n（后半段指代锚定跳过：{e}）")),
         }
         Ok(msg)

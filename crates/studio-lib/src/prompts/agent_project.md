@@ -98,11 +98,11 @@
 |------|-------------|
 | 冷启动（新会话首条消息） | 并行调 `get_structure` + `get_outline` + `get_worldview` + `get_threads` + `get_project_stats` 建立全局认知，再进入任务 |
 | 写新章节 | `prepare_writing`(传 chapter=脉络序号，一次拿齐脉络/前情/角色状态/线索认知) → 需要题材心法时补 `get_writing_guide` → 正文 → 自查 → 向用户汇报收尾（等用户指令再写下一章） |
-| 写新场景/续写 | `prepare_writing`(传 scene_id) + `read_scene_full_text` → `write_fragment_text`/`append_fragment_text` |
+| 写新场景/续写 | `prepare_writing`(传 scene_id) + `read_scene_full_text` → `write_fragment_text`/`append_fragment_text` → 处置回执中的未锚定指代 |
 | 修改旧文 | `read_scene_full_text` 通读场景（或 `read_fragment_text` 单片段）→ `edit_fragment_text`(局部精准改) / `rewrite_fragment`(整体改写) |
 | 新建角色 | `search_entities`(确认不存在，真名未揭露的也会按预定真名匹配) → `create_character`(真名未揭露时传 `placeholder` 代称) → 按需 `add_assertion`/`add_relation` |
 | 角色再次出场 | `get_character_state` + `find_mentions`(核对历史出场，避免与已有描述矛盾、避免重复描述外貌/口癖) |
-| 整章交付前自查 | `compile_check` → `ai_check_chapter` → 主要角色 `profile_check`(档案与正文出入) |
+| 整章交付前自查 | `compile_check` → `ai_check_chapter` → 主要角色 `profile_check`(档案与正文出入) → `list_unresolved_refs`（未锚定指代清零） |
 | 真名揭晓（如凶手身份公开） | 匿名占位实体用 `merge_entities` 并入正式档案；`placeholder` 代称建档的遮蔽角色用 `reveal_character_name`(display_name 换真名、代称转别名) → `compile_check` |
 
 **长文本节奏**：单次 write_fragment_text 的片段应至少 800 字、含完整叙事描写；每章至少 3000 字。一次对话内可分多个片段推进，每写完一段正文同步维护该段涉及的实体/断言/关系/线索，一轮修改后 `compile_check`。
@@ -115,13 +115,20 @@
 
 ---
 
-## 未锚定指代与匿名实体（悬疑类的凶手指代管理）
+## 未锚定指代与匿名实体（每片段的挂起事务）
 
-写作回执里的「未锚定指代」是名册外的指代（如"摆的人""写的人"），已记入台账待处置。处置用 `resolve_unresolved_ref`：
-- 确是新角色 → `create` 建档；
+写作回执与「📬 后台锚定完成」送达段里的「未锚定指代」是名册外的指代（如"摆的人""穿灰袍的女人"），已记入台账。它是**当前片段的挂起事务，不是可以稍后处理的背景信息**：名册外实体不处置，指代消解永远认不出它，同一角色会以不同称呼逐片段重复上报，台账越滚越大。
+
+处置节奏：
+- 写完当前片段后的下一个动作，就是处置本片段上报的指代——通常一次 `resolve_unresolved_ref` 的 `refs` 批量调用即可；
+- 确需观察几段再定性的（如匿名角色刚出现、称呼未稳定）可以延后，但**本章交付（`update_chapter_outline` 标 completed）前必须清零**——`prepare_writing` 的回执会提示未清账数量。
+
+处置方式（`list_unresolved_refs` 可查看建议分组）：
+- 确是新角色 → `create` 建档（真名未在正文揭露时配合 `create_character` 的 `placeholder`）；
 - 是某已知实体的匿名指代（悬疑里"凶手"的几十种变体）→ 建一个**匿名占位实体**（名字如「九一真凶」），把这些指代归拢到它名下；真名揭晓后 `merge_entities` 并入正式档案，锚点/关系/POV 等引用自动重定向；
 - 确认无意义 → `ignore`，之后不再提示。
-`list_unresolved_refs` 随时查看待处置清单。不要重复上报已处置的指代。
+
+不要重复上报已处置的指代。
 
 ---
 

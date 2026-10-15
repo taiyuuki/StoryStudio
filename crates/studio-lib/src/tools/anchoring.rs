@@ -755,12 +755,36 @@ const UNRESOLVED_GUIDANCE: &str =
      真名揭露当章调 reveal_character_name 切换。";
 
 /// 把锚定结果格式化为回执片段（无内容返回空串）
-/// 待审指代积压预警阈值：全书 pending 条数达到该值时，写入回执提醒先处置。
+/// 待审指代积压预警阈值：全书 pending 条数达到该值时，回执升级为指令式提醒。
 ///
 /// 台账的闭环是「上报 → 尽快处置 → 实体进名册 → 同类指代不再上报」；
 /// 连续写作不处置时，同一个名册外角色会以不同称呼逐片段重复上报
 /// （实测一章半就能滚出十几条），积压信号必须尽早进入写作者视野。
 const BACKLOG_WARN_THRESHOLD: usize = 5;
+
+/// 待处置指代积压的回执提示（写入回执、锚定转后台回执、prepare_writing 共用）。
+///
+/// 0 条静默；有积压即提示「挂起事务」定性——异步送达的 📬 段脱离了写入
+/// 上下文，Agent 极易把待处置清单当成可稍后处理的背景信息，定性措辞
+/// 就是防这个误读；达 [`BACKLOG_WARN_THRESHOLD`] 升级为指令式
+/// 「先处置再写作」（实测此前建议式措辞会被模型当成可选）。
+pub(crate) fn backlog_note(paths: &ProjectPaths) -> String {
+    let backlog = crate::mutations::load_unresolved_refs(paths)
+        .map(|rs| rs.iter().filter(|r| r.is_pending()).count())
+        .unwrap_or(0);
+    match backlog {
+        0 => String::new(),
+        n if n >= BACKLOG_WARN_THRESHOLD => format!(
+            "\n⛔ 待审指代已积压 {n} 条——下一步动作：先处置再继续写作。\
+             list_unresolved_refs 查看建议分组，resolve_unresolved_ref 用 refs \
+             一次批量建档/归拢/忽略（及早建档后实体进名册，同类指代不再重复上报）"
+        ),
+        n => format!(
+            "\n📌 全书待处置指代 {n} 条（挂起事务，非背景信息：\
+             动笔前或写完当前片段后处置——list_unresolved_refs 可看建议分组）"
+        ),
+    }
+}
 
 pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) -> String {
     let mut note = String::new();
@@ -771,24 +795,15 @@ pub fn format_anchor_note(outcome: &AnchorOutcome, roster_paths: &ProjectPaths) 
         }
     }
     if !outcome.unresolved.is_empty() {
-        note.push_str("\n未锚定指代（名册中无匹配，待处置）：");
+        note.push_str("\n未锚定指代（名册中无匹配，挂起事务——写完当前片段后处置）：");
         for (quote, hint) in &outcome.unresolved {
             note.push_str(&format!("\n  - \"{quote}\"（{hint}）"));
         }
         note.push_str(&format!("\n{UNRESOLVED_GUIDANCE}"));
     }
-    // 全书积压预警（含非本片段的历史条目）：处置滞后会让同一角色以不同
+    // 全书积压提示（含非本片段的历史条目）：处置滞后会让同一角色以不同
     // 称呼逐片段重复上报，越早清账后续越省
-    let backlog = crate::mutations::load_unresolved_refs(roster_paths)
-        .map(|rs| rs.iter().filter(|r| r.is_pending()).count())
-        .unwrap_or(0);
-    if backlog >= BACKLOG_WARN_THRESHOLD {
-        note.push_str(&format!(
-            "\n⚠️ 全书待审指代已积压 {backlog} 条，建议暂停写作先处置：\
-             list_unresolved_refs 查看建议分组，resolve_unresolved_ref 用 refs 批量\
-             建档/归拢/忽略——及早建档后实体进名册，同类指代不再重复上报",
-        ));
-    }
+    note.push_str(&backlog_note(roster_paths));
     note
 }
 
@@ -1445,7 +1460,11 @@ mod tests {
         let tmp = setup_test_project();
         let paths = ProjectPaths::new(tmp.path());
 
-        // 台账 5 条 pending → 触发积压预警（含非本片段的历史条目）
+        // 零积压：完全静默
+        assert_eq!(backlog_note(&paths), "");
+
+        // 台账 5 条 pending → 触发积压预警（含非本片段的历史条目），
+        // 措辞为指令式「先处置再继续写作」
         let ledger = (1..=5)
             .map(|i| {
                 format!(
@@ -1459,9 +1478,10 @@ mod tests {
 
         let note = format_anchor_note(&AnchorOutcome::default(), &paths);
         assert!(note.contains("积压 5 条"), "{note}");
+        assert!(note.contains("先处置再继续写作"), "{note}");
         assert!(note.contains("list_unresolved_refs"), "{note}");
 
-        // 低于阈值不提示
+        // 低于阈值：不升级为积压预警，但仍有「挂起事务」轻提示
         let ledger4 = (1..=4)
             .map(|i| {
                 format!(
@@ -1474,6 +1494,8 @@ mod tests {
         std::fs::write(paths.anchoring_toml(), ledger4).unwrap();
         let note = format_anchor_note(&AnchorOutcome::default(), &paths);
         assert!(!note.contains("积压"), "{note}");
+        assert!(note.contains("待处置指代 4 条"), "{note}");
+        assert!(note.contains("挂起事务"), "{note}");
 
         // ignored/resolved 不计入积压
         let ledger_mix = "[[ref]]\nfragment_id = \"f_0001\"\nquote = \"指代一\"\n\
