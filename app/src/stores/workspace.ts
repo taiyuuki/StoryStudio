@@ -812,6 +812,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   /** 监听状态（watch_start 返回值 / project-watch-state 事件） */
   const watchState = ref<WatchStatusDto | null>(null)
 
+  /** 章节脉络数据的变更代数（fs 事件驱动，只增不减）。
+   *
+   * chapters.toml / structure.toml 可能被不同执行体落盘（妙笔
+   * update_chapter_outline、外部 MCP 客户端、脉络面板），watcher 事件经
+   * routeFsBatch 分流时在此计代。逐章成书（book store）等跨面板消费方
+   * watch 它感知脉络状态过期并自行重拉——workspace 只发布事实，何时
+   * 重载、要不要跳过（如流水线运行中）由消费方自己的策略决定。 */
+  const chaptersVersion = ref(0)
+
   /** 批处理间隔：固定间隔而非 trailing 防抖——持续写入流下最坏延迟有界（§3 Goal 1） */
   const FS_BATCH_MS = 300
   let fsPending = new Set<string>()
@@ -847,7 +856,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (sceneScope) {
       void refreshSceneFromDisk()
       // 结构文件决定章节树形态，树也要跟（ws 整树替换是本 store 既有惯例）
-      if (files.has('structure.toml') || files.has('chapters.toml')) void refresh()
+      if (files.has('structure.toml') || files.has('chapters.toml')) {
+        chaptersVersion.value++
+        void refresh()
+      }
     } else {
       void refresh()
     }
@@ -1079,6 +1091,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     compileResult,
     loading,
     aiWriting,
+    chaptersVersion,
     fragmentSave,
     characters,
     entityName,

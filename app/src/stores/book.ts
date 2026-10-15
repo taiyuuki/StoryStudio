@@ -104,6 +104,19 @@ export const useBookStore = defineStore('book', () => {
     { immediate: true },
   )
 
+  // 脉络状态被其他执行体改写时同步刷新：chapters.toml 可能由妙笔
+  // （update_chapter_outline 标 completed）、外部 MCP 客户端或脉络面板
+  // 落盘，watcher 经 workspace 分流后以 chaptersVersion 计代。订阅它而非
+  // 直接监听 fs 事件，可复用 workspace 的 busyWriting 暂存语义（妙笔
+  // 长写作期间累积、流结束后一次补推）；流水线运行中不重入——自己写的
+  // 章节由事件流 syncChapter 同步，整轮结束 finish() 会 reload
+  watch(
+    () => store.chaptersVersion,
+    () => {
+      if (!running.value) void reload()
+    },
+  )
+
   // ── 事件处理（流水线事件 → 状态） ────────────────────────
   function onEvent(ev: WorkflowEventDto) {
     switch (ev.kind) {
