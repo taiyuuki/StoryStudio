@@ -142,14 +142,28 @@ pub struct AnchorOutcome {
     pub unresolved: Vec<(String, String)>,
 }
 
-/// 写入类工具的锚定时限。LLM 慢（含重试退避）时先行返回回执，锚定转后台完成。
+/// 写入类工具（write/append/split）的锚定时限。LLM 慢（含重试退避）时
+/// 先行返回回执，锚定转后台完成。
 ///
-/// MCP 客户端普遍有 30 秒左右的调用时限，超时即向调用方报错——而服务端
+/// MCP 客户端普遍有 30~60 秒的调用时限，超时即向调用方报错——而服务端
 /// 仍会执行完；调用方误以为失败而重试会造成正文重复追加等假失败危害。
 /// 锚定只是写入回执的增强信息（正文已先行落盘），不值得把整个写工具
 /// 拖过时限。转后台的结果经回执接力送达（[`AnchorDeliveryState`]），
 /// 调用方无需也无法主动查询。
-pub const ANCHOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+///
+/// 取 5 秒：思考型 provider 单次锚定普遍要 30~50 秒，过长的同步预算只会
+/// 让每次写入固定卡满上限（实测一章 4 个片段累计空等 80+ 秒）；5 秒内
+/// 能完成的只有快速 provider（它们的同步返回体验不变），慢的立即转
+/// 后台，写入延迟回到秒级。
+pub const ANCHOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// anchor_fragments 工具自身的锚定时限（单片段与批量共用）。
+///
+/// 写入工具里的锚定是「顺手」性质，故 [`ANCHOR_BUDGET`] 收紧到 5 秒；
+/// 而 anchor_fragments 是显式请求锚定——调用方就是为了锚定而来，多等
+/// 一会换取同步拿到结果更划算。维持 20 秒（仍远低于客户端超时），超时
+/// 同样转后台经回执接力送达。
+pub const ANCHOR_TOOL_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// 带时限锚定的执行结果
 pub enum AnchorRun {
@@ -818,10 +832,10 @@ impl Tool for AnchorFragmentsTool {
             .ok_or_else(|| "anchor_fragments 需要 provider，当前未配置".to_string())?;
 
         if let Some(fid) = get_str_opt(arguments, "fragment_id") {
-            // 单片段：与写入工具同一时限语义——快则当场出结果，
-            // 慢则转后台、经回执接力送达
+            // 单片段：显式锚定用工具级时限（比写入路径的 5 秒宽裕）——
+            // 快则当场出结果，慢则转后台、经回执接力送达
             let paths = self.ctx.paths();
-            return match anchor_and_apply_bounded(&self.ctx, &fid)? {
+            return match anchor_and_apply_with_budget(&self.ctx, &fid, ANCHOR_TOOL_BUDGET)? {
                 AnchorRun::Done(o) => Ok(format!(
                     "片段 {fid}：{}",
                     if o.anchored.is_empty() && o.unresolved.is_empty() {
@@ -833,7 +847,7 @@ impl Tool for AnchorFragmentsTool {
                 AnchorRun::Deferred => Ok(format!(
                     "片段 {fid}：指代锚定超过 {} 秒时限，已转入后台继续（锚点落盘后自动生效）。\
                      结果将随你下一次工具调用的回执自动送达，无需主动查询。",
-                    ANCHOR_BUDGET.as_secs()
+                    ANCHOR_TOOL_BUDGET.as_secs()
                 )),
             };
         }
@@ -861,7 +875,7 @@ impl Tool for AnchorFragmentsTool {
             &names,
             total,
             BATCH_CAP,
-            ANCHOR_BUDGET,
+            ANCHOR_TOOL_BUDGET,
         ))
     }
 }
