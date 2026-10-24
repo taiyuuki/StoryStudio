@@ -478,7 +478,6 @@ impl CreateEntityTool {
     }
 }
 
-
 // ============================================================================
 // search_entities
 // ============================================================================
@@ -1349,11 +1348,12 @@ impl Tool for RevealCharacterNameTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "reveal_character_name".into(),
-            description: "揭露角色真名：把真名遮蔽中的角色（create_entity(kind=character) 传了 placeholder \
+            description:
+                "揭露角色真名：把真名遮蔽中的角色（create_entity(kind=character) 传了 placeholder \
             代称的）切换为真名展示。display_name 换为真名、原代称转入别名继续锚定，\
             此后正文与场景速查都用真名。正文正式写出该角色真名的当章必须调用，\
             拖延不调会导致后续章节继续被迫使用代称。"
-                .into(),
+                    .into(),
             parameters: object_schema(vec![
                 ("entity_id", "string", "角色实体 ID", true),
                 (
@@ -2785,7 +2785,9 @@ state_timeline = [
 
         // 逗号串形态保持可用
         let res = CreateEntityTool::new(ctx)
-            .execute(&serde_json::json!({"kind": "character", "name": "叶秋", "aliases": "叶先生,秋叔"}))
+            .execute(
+                &serde_json::json!({"kind": "character", "name": "叶秋", "aliases": "叶先生,秋叔"}),
+            )
             .unwrap();
         assert!(res.contains("叶秋"), "{res}");
     }
@@ -2897,7 +2899,9 @@ status = "writing"
 
         // 同名角色与地点、组织都不同类型 → 同样是双面实体说明
         let ch = CreateEntityTool::new(ctx.clone());
-        let res = ch.execute(&serde_json::json!({"kind": "character", "name": "山影城"})).unwrap();
+        let res = ch
+            .execute(&serde_json::json!({"kind": "character", "name": "山影城"}))
+            .unwrap();
         assert!(!res.contains("⚠"), "跨类型同名角色不应告警: {res}");
 
         // 再建第二个同名地点 → 同类型撞名，真冲突，应告警

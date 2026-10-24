@@ -269,7 +269,11 @@ impl AiCheckTool {
         } else {
             ai_check::CheckScope::Scene
         };
-        let label = if scope == "chapter" { "整章" } else { "整场景" };
+        let label = if scope == "chapter" {
+            "整章"
+        } else {
+            "整场景"
+        };
 
         let provider = self.ctx.provider.as_ref().ok_or_else(|| {
             "ai_check 需要 provider，但当前未配置。请确保通过项目模式运行。".to_string()
