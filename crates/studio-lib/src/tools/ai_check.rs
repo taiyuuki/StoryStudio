@@ -1,7 +1,8 @@
 //! AI 检测工具 — 让创作 Agent 自我监督 AI 写作特征
 //!
-//! 提供 `ai_check_fragment` 工具，Agent 写完正文后可调用它自检，
-//! 拿到 AI 味检测报告后据此反思是否需要调整。
+//! 提供 `ai_check` 工具（scope=fragment/scene/chapter），Agent 写完
+//! 正文后可调用它自检，拿到 AI 味检测报告后据此反思是否需要调整。
+//! （POV 越权检测是独立的 `ai_check_pov`，见文末。）
 
 use story_ai_runtime::{Tool, ToolDef};
 use story_project_format::{ProjectPaths, StructureFile};
@@ -169,8 +170,17 @@ fn opening_adjustment(
 }
 
 // ============================================================================
-// ai_check_fragment
+// ai_check — 统一入口（scope=fragment/scene/chapter）
 // ============================================================================
+
+/// 批量检测的总时限：超时分块转后台，最终报告经回执接力送达。
+///
+/// MCP 客户端对单次调用的硬超时普遍在 30~60 秒（PI 实测 60s，部分宿主
+/// 可低至 30s），25 秒收口给报告组装与回执格式化留出余量。各块已并行
+/// 执行，常规章节（1~2 块）在快速 provider 下秒级收齐、同步返回；
+/// 思考型 provider 单块就要 30~50 秒，本就不可能在同步窗口内完成——
+/// 转后台是它们的常态路径，回执接力保证结果不丢。
+const SCOPE_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
 
 pub struct AiCheckTool {
     ctx: ToolContext,
@@ -184,29 +194,53 @@ impl AiCheckTool {
 impl Tool for AiCheckTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "ai_check_fragment".into(),
-            description: "检测指定片段正文的 AI 写作特征（俗称「AI 味」），\
-            返回按文本顺序排列的命中报告。\
+            name: "ai_check".into(),
+            description: "检测正文的 AI 写作特征（俗称「AI 味」），返回按文本顺序排列的命中报告。\
             覆盖 18 条小说适配特征：形容词堆砌、对话千人一面、情绪直接命名、比喻密度过高、\
             匀速排比、让步模板反复、情绪曲线光滑、没有任何犹豫、段段金句、句子节奏均匀、\
             连接词过度使用、同义词替换、中文翻译腔、对深刻过拟合等。\
-            写完正文后建议调用自检，但不必每次都调——只在拿不准某段是否「太光滑」时使用；\
-            整章/整场景交付前用 ai_check_chapter / ai_check_scene 批量过一遍更省事。"
+            scope=fragment 检测单片段；scene/chapter 按阅读序聚合整场景/整章批量检测\
+            （超长自动分块并行，超过时限转后台，报告随后续工具调用回执自动送达——\
+            收到「已转后台」提示属正常，请勿重试）。\
+            写完正文后可自检，但不必每次都调——只在拿不准某段是否「太光滑」时用片段级；\
+            整章/整场景交付前用 scene/chapter 批量过一遍更省事。"
                 .into(),
-            parameters: object_schema(vec![(
-                "fragment_id",
-                "string",
-                "要检测的片段 ID（如 f_0001）",
-                true,
-            )]),
+            parameters: object_schema(vec![
+                (
+                    "scope",
+                    "string",
+                    "检测范围：fragment（单片段）/ scene（整场景）/ chapter（整章）",
+                    true,
+                ),
+                (
+                    "id",
+                    "string",
+                    "目标 ID：fragment 如 f_0001，scene 如 sc_01_01，chapter 如 ch_01（与 scope 对应）",
+                    true,
+                ),
+            ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let fragment_id = get_str(arguments, "fragment_id")?;
+        let scope = get_str(arguments, "scope")?;
+        match scope.as_str() {
+            "fragment" => self.check_fragment(arguments),
+            "scene" | "chapter" => self.check_scope(arguments, &scope),
+            other => Err(format!(
+                "scope 需为 fragment / scene / chapter，收到: {other}"
+            )),
+        }
+    }
+}
+
+impl AiCheckTool {
+    /// 片段级：单次检测，同步返回
+    fn check_fragment(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let fragment_id = get_str(arguments, "id")?;
 
         let provider = self.ctx.provider.as_ref().ok_or_else(|| {
-            "ai_check_fragment 需要 provider，但当前未配置。请确保通过项目模式运行。".to_string()
+            "ai_check 需要 provider，但当前未配置。请确保通过项目模式运行。".to_string()
         })?;
 
         let dir = self.ctx.project_dir.clone();
@@ -226,96 +260,33 @@ impl Tool for AiCheckTool {
 
         Ok(format_report_for_llm(&report, opening_stat))
     }
-}
 
-// ============================================================================
-// ai_check_chapter / ai_check_scene — 范围级批量检测
-// ============================================================================
-
-/// 批量检测的总时限：超时分块转后台，最终报告经回执接力送达。
-///
-/// MCP 客户端对单次调用的硬超时普遍在 30~60 秒（PI 实测 60s，部分宿主
-/// 可低至 30s），25 秒收口给报告组装与回执格式化留出余量。各块已并行
-/// 执行，常规章节（1~2 块）在快速 provider 下秒级收齐、同步返回；
-/// 思考型 provider 单块就要 30~50 秒，本就不可能在同步窗口内完成——
-/// 转后台是它们的常态路径，回执接力保证结果不丢。
-const SCOPE_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
-
-pub struct AiCheckScopeTool {
-    ctx: ToolContext,
-    scope: ai_check::CheckScope,
-    /// 工具名（ai_check_chapter / ai_check_scene）
-    name: &'static str,
-    /// 参数名（chapter_id / scene_id）
-    param: &'static str,
-    /// 参数说明
-    param_desc: &'static str,
-    label: &'static str,
-}
-impl AiCheckScopeTool {
-    pub fn chapter(ctx: ToolContext) -> Self {
-        Self {
-            ctx,
-            scope: ai_check::CheckScope::Chapter,
-            name: "ai_check_chapter",
-            param: "chapter_id",
-            param_desc: "章节 ID（如 ch_01）",
-            label: "整章",
-        }
-    }
-
-    pub fn scene(ctx: ToolContext) -> Self {
-        Self {
-            ctx,
-            scope: ai_check::CheckScope::Scene,
-            name: "ai_check_scene",
-            param: "scene_id",
-            param_desc: "场景 ID（如 sc_01_01）",
-            label: "场景",
-        }
-    }
-}
-
-impl Tool for AiCheckScopeTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: self.name.into(),
-            description: format!(
-                "对整个{}做 AI 写作特征批量检测（检测特征与 ai_check_fragment 相同），\
-                正文按阅读序聚合、超长自动分块（并行检测），命中项标注所在片段。\
-                超过时限会转后台继续，最终报告随后续工具调用的回执自动送达——\
-                收到「已转后台」提示属正常，请勿重试。\
-                {}交付前过一遍用它，不用逐片段调用。",
-                self.label,
-                if self.scope == ai_check::CheckScope::Chapter {
-                    "整章"
-                } else {
-                    "整场景"
-                }
-            ),
-            parameters: object_schema(vec![(self.param, "string", self.param_desc, true)]),
-        }
-    }
-
-    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let scope_id = get_str(arguments, self.param)?;
+    /// 范围级：整场景/整章批量检测，超时转后台
+    fn check_scope(&self, arguments: &serde_json::Value, scope: &str) -> Result<String, String> {
+        let scope_id = get_str(arguments, "id")?;
+        let check_scope = if scope == "chapter" {
+            ai_check::CheckScope::Chapter
+        } else {
+            ai_check::CheckScope::Scene
+        };
+        let label = if scope == "chapter" {
+            "整章"
+        } else {
+            "整场景"
+        };
 
         let provider = self.ctx.provider.as_ref().ok_or_else(|| {
-            format!(
-                "{} 需要 provider，但当前未配置。请确保通过项目模式运行。",
-                self.name
-            )
+            "ai_check 需要 provider，但当前未配置。请确保通过项目模式运行。".to_string()
         })?;
 
         let dir = self.ctx.project_dir.clone();
-        let label = self.label;
         // 后台收齐后：格式化整份报告，经回执接力随下一次工具回执送达
         let bg_ctx = self.ctx.clone();
         let bg_dir = dir.clone();
         let bg_scope_id = scope_id.clone();
         let run = ai_check::check_scope_bounded(
             &dir,
-            self.scope,
+            check_scope,
             &scope_id,
             provider,
             SCOPE_CHECK_BUDGET,
@@ -347,7 +318,6 @@ impl Tool for AiCheckScopeTool {
         }
     }
 }
-
 /// 报告含开场型特征时计算跨章统计（chapter 直接用 scope_id，scene 反查
 /// 所属章）。同步回执与后台送达回执共用。
 fn opening_stat_for_report(

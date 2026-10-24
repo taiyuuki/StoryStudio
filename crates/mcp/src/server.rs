@@ -297,8 +297,8 @@ mod tests {
                 execute_gated(
                     &reg,
                     false,
-                    "create_character",
-                    &serde_json::json!({ "name": format!("并发{i}号"), "role": "probe" }),
+                    "create_entity",
+                    &serde_json::json!({ "kind": "character", "name": format!("并发{i}号"), "role": "probe" }),
                 )
                 .unwrap()
             }));
@@ -331,8 +331,8 @@ mod tests {
         let err = execute_gated(
             &registry,
             true,
-            "create_character",
-            &serde_json::json!({ "name": "只读探针" }),
+            "create_entity",
+            &serde_json::json!({ "kind": "character", "name": "只读探针" }),
         )
         .unwrap_err();
         assert!(matches!(err, CallFailure::MethodNotFound(_)));

@@ -39,7 +39,7 @@ impl Tool for AddAssertionTool {
             需要显式时间边界的事实（如\"拜师之前身份是学徒\"）用 valid_from_scene/valid_until_scene \
             声明场景锚生效区间（与关系边的时变声明同构）。\
             可多值谓词（occupation/holds 等）允许并存（一人可有多重职业），\
-            但并存时回执会提示旧值——同一职位的演进（如拟聘→正式）请用 retire_assertion 废弃旧值。\
+            但并存时回执会提示旧值——同一职位的演进（如拟聘→正式）请用 delete_assertion(mode=retire) 废弃旧值。\
             完全相同的断言不会重复创建。一次沉淀多条事实（如章节回顾）用 assertions 批量传入。"
                 .into(),
             parameters: object_schema(vec![
@@ -133,7 +133,7 @@ impl Tool for AddAssertionTool {
             if coexisting_count > 0 {
                 msg.push_str(&format!(
                     " ⚠ {coexisting_count} 条存在同谓词并存断言；\
-                     若是同一身份或职位的演进（如拟聘→正式），请用 retire_assertion 废弃旧值"
+                     若是同一身份或职位的演进（如拟聘→正式），请用 delete_assertion(mode=retire) 废弃旧值"
                 ));
             }
             return Ok(msg);
@@ -179,7 +179,7 @@ impl Tool for AddAssertionTool {
         if !outcome.coexisting.is_empty() {
             msg.push_str(&format!(
                 " ⚠ 该主体已有同谓词 active 断言：{} = {}。多重身份/持有并存无需处理；\
-                若是同一身份或职位的演进（如拟聘→正式），请用 retire_assertion 废弃旧值",
+                若是同一身份或职位的演进（如拟聘→正式），请用 delete_assertion(mode=retire) 废弃旧值",
                 predicate,
                 outcome.coexisting.join("、")
             ));
@@ -189,7 +189,7 @@ impl Tool for AddAssertionTool {
 }
 
 // ============================================================================
-// retire_assertion — 废弃断言
+// delete_assertion — 删除断言（mode=retire 废弃保留历史 / hard 彻底删除）
 // ============================================================================
 
 pub struct RetireAssertionTool {
@@ -204,72 +204,54 @@ impl RetireAssertionTool {
 impl Tool for RetireAssertionTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "retire_assertion".into(),
-            description: "废弃一条断言（status 置为 superseded，保留历史记录）。\
-            剧情推翻旧设定时使用；located_at/status/alive/age 类新值会自动取代旧值，无需手动废弃。"
-                .into(),
-            parameters: object_schema(vec![(
-                "assertion_id",
-                "string",
-                "要废弃的断言 ID（a_XXXX，可从 query_assertions 获取）",
-                true,
-            )]),
-        }
-    }
-
-    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let assertion_id = get_str(arguments, "assertion_id")?;
-        let paths = self.ctx.paths();
-        crate::mutations::set_assertion_status(&paths, &assertion_id, "superseded")
-            .map_err(|e| e.to_string())?;
-        Ok(format!(
-            "断言 {assertion_id} 已废弃（superseded），不再参与当前状态"
-        ))
-    }
-}
-
-// ============================================================================
-// delete_assertion — 彻底删除断言
-// ============================================================================
-
-pub struct DeleteAssertionTool {
-    ctx: ToolContext,
-}
-impl DeleteAssertionTool {
-    pub fn new(ctx: ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl Tool for DeleteAssertionTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
             name: "delete_assertion".into(),
-            description: "彻底删除一条断言（从 assertions.toml 移除，含历史记录）。\
-            误建的断言用此工具清理；剧情推进导致的旧值失效请用 retire_assertion（保留历史）。"
+            description: "删除断言，两种程度由 mode 区分:\
+            retire=废弃（默认，status 置 superseded，保留历史记录）——剧情推翻旧设定时用；\
+            hard=彻底删除（从 assertions.toml 移除，含历史记录，不再被引用的证据条目一并清理）——误建的断言用这个清理。\
+            located_at/status/alive/age 类新值会自动取代旧值，无需手动废弃。"
                 .into(),
-            parameters: object_schema(vec![(
-                "assertion_id",
-                "string",
-                "要删除的断言 ID（a_XXXX）",
-                true,
-            )]),
+            parameters: object_schema(vec![
+                (
+                    "assertion_id",
+                    "string",
+                    "断言 ID（a_XXXX，可从 query_assertions 获取）",
+                    true,
+                ),
+                (
+                    "mode",
+                    "string",
+                    "retire=废弃保留历史（默认）/ hard=彻底删除",
+                    false,
+                ),
+            ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let assertion_id = get_str(arguments, "assertion_id")?;
         let paths = self.ctx.paths();
-        let cascaded =
-            crate::mutations::delete_assertion(&paths, &assertion_id).map_err(|e| e.to_string())?;
-        let mut msg = format!("断言 {assertion_id} 已彻底删除");
-        if !cascaded.is_empty() {
-            msg.push_str(&format!(
-                "；不再被任何断言引用的证据条目已一并删除：{}",
-                cascaded.join("、")
-            ));
+        match get_str_opt(arguments, "mode").as_deref() {
+            None | Some("retire") => {
+                crate::mutations::set_assertion_status(&paths, &assertion_id, "superseded")
+                    .map_err(|e| e.to_string())?;
+                Ok(format!(
+                    "断言 {assertion_id} 已废弃（superseded），不再参与当前状态"
+                ))
+            }
+            Some("hard") => {
+                let cascaded = crate::mutations::delete_assertion(&paths, &assertion_id)
+                    .map_err(|e| e.to_string())?;
+                let mut msg = format!("断言 {assertion_id} 已彻底删除");
+                if !cascaded.is_empty() {
+                    msg.push_str(&format!(
+                        "；不再被任何断言引用的证据条目已一并删除：{}",
+                        cascaded.join("、")
+                    ));
+                }
+                Ok(msg)
+            }
+            Some(other) => Err(format!("mode 需为 retire / hard，收到: {other}")),
         }
-        Ok(msg)
     }
 }
 
@@ -1211,39 +1193,46 @@ impl Tool for SetThreadKnowledgeTool {
             name: "set_thread_knowledge".into(),
             description: "记录线索的可见性变化——某观察者在某场景的知晓程度。\
             这是管理信息流的核心工具：跟踪谁（读者/角色/组织）在什么时候知道了什么。\
-            同一观察者的记录会累积为时间线。\
-            一场戏后多名角色同时获知用 observers 数组（同一线索/场景/状态批量应用）；\n            不同线索或不同状态的组合用 records 批量传入。"
+            同一观察者的记录会累积为时间线；记录只追加不覆盖，录错时用 op=remove 撤销。\
+            一场戏后多名角色同时获知用 observers 数组（同一线索/场景/状态批量应用）；\
+            不同线索或不同状态的组合用 records 批量传入。"
                 .into(),
             parameters: object_schema(vec![
-                ("thread_id", "string", "线索 ID（如 t_001）；单条记录时必填", false),
+                (
+                    "op",
+                    "string",
+                    "操作：set=记录（默认）/ remove=删除录错的记录。remove 时只需 thread_id + observer，scene_id 可选（省略则删该观察者对这条线索的全部认知记录）",
+                    false,
+                ),
+                ("thread_id", "string", "线索 ID（如 t_001）；单条操作时必填", false),
                 (
                     "observer",
                     "string",
-                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)；单条记录时必填",
+                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)；单条操作时必填",
                     false,
                 ),
                 (
                     "state",
                     "string",
-                    "知晓程度：unknown(不知道) / suspected(怀疑) / known(知道)；单条记录时必填",
+                    "知晓程度：unknown(不知道) / suspected(怀疑) / known(知道)；op=set 单条时必填",
                     false,
                 ),
                 (
                     "scene_id",
                     "string",
-                    "发生变化的场景 ID（如 sc_01_02）；单条记录时必填",
+                    "发生变化的场景 ID（如 sc_01_02）；op=set 单条时必填，op=remove 可选（只删该场景的时间线条目）",
                     false,
                 ),
                 (
                     "observers",
                     "array",
-                    "多名观察者便捷形态：观察者 ID 数组（如 [\"c_0001\",\"c_0002\"]），同一线索/场景/状态批量应用——一场戏后多人同时获知时用它，免去逐条拼 records",
+                    "（op=set）多名观察者便捷形态：观察者 ID 数组（如 [\"c_0001\",\"c_0002\"]），同一线索/场景/状态批量应用——一场戏后多人同时获知时用它，免去逐条拼 records",
                     false,
                 ),
                 (
                     "records",
                     "object-array",
-                    "批量记录：数组，每项为原生 JSON 对象 {\"thread_id\": \"...\", \"observer\": \"...\", \"state\": \"...\", \"scene_id\": \"...\"}。与单条参数二选一",
+                    "（op=set）批量记录：数组，每项为原生 JSON 对象 {\"thread_id\": \"...\", \"observer\": \"...\", \"state\": \"...\", \"scene_id\": \"...\"}。与单条参数二选一",
                     false,
                 ),
             ]),
@@ -1251,6 +1240,11 @@ impl Tool for SetThreadKnowledgeTool {
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        // op=remove：撤销录错的记录（原 remove_thread_knowledge 入口）
+        if get_str_opt(arguments, "op").as_deref() == Some("remove") {
+            return self.remove(arguments);
+        }
+
         let paths = self.ctx.paths();
 
         // 批量：records 数组（兼容字符串与原生数组形态）
@@ -1328,47 +1322,9 @@ impl Tool for SetThreadKnowledgeTool {
     }
 }
 
-// ============================================================================
-// remove_thread_knowledge
-// ============================================================================
-
-pub struct RemoveThreadKnowledgeTool {
-    ctx: ToolContext,
-}
-impl RemoveThreadKnowledgeTool {
-    pub fn new(ctx: ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl Tool for RemoveThreadKnowledgeTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "remove_thread_knowledge".into(),
-            description: "删除线索可见性记录（录错时的撤销入口——set_thread_knowledge 只追加不覆盖）。\
-            删单条：传 thread_id + observer + scene_id（只移除该场景的那条时间线记录）；\
-            删整条观察者记录：省略 scene_id（该观察者对这条线索的全部认知记录移除）。\
-            逐条删除不影响其他观察者的时间线；线索本身的叙事状态（planted/revealed 等）不在此管理。"
-                .into(),
-            parameters: object_schema(vec![
-                ("thread_id", "string", "线索 ID（如 t_001）", true),
-                (
-                    "observer",
-                    "string",
-                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)",
-                    true,
-                ),
-                (
-                    "scene_id",
-                    "string",
-                    "可选：只删该场景的时间线记录；省略则删该观察者的整条认知记录",
-                    false,
-                ),
-            ]),
-        }
-    }
-
-    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+impl SetThreadKnowledgeTool {
+    /// op=remove：删除录错的可见性记录（记录只追加不覆盖，錯录只能删）
+    fn remove(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let thread_id = get_str(arguments, "thread_id")?;
         let observer = get_str(arguments, "observer")?;
         let scene_id = get_str_opt(arguments, "scene_id");
@@ -5104,10 +5060,11 @@ race = "星辰精灵"
         }))
         .unwrap();
 
-        // 删单场景记录：只移除 reader 在 sc_01_01 的那条
-        let tool = RemoveThreadKnowledgeTool::new(ctx.clone());
+        // 删单场景记录：只移除 reader 在 sc_01_01 的那条（op=remove）
+        let tool = SetThreadKnowledgeTool::new(ctx.clone());
         let out = tool
             .execute(&serde_json::json!({
+                "op": "remove",
                 "thread_id": "t_001", "observer": "reader", "scene_id": "sc_01_01"
             }))
             .unwrap();
@@ -5119,9 +5076,10 @@ race = "星辰精灵"
             "其他时间线记录保留: {content}"
         );
 
-        // 删整条观察者记录
+        // 删整条观察者记录（省略 scene_id）
         let out = tool
             .execute(&serde_json::json!({
+                "op": "remove",
                 "thread_id": "t_001", "observer": "reader"
             }))
             .unwrap();
@@ -5136,6 +5094,7 @@ race = "星辰精灵"
         // 再删 → 未找到，无副作用
         let out = tool
             .execute(&serde_json::json!({
+                "op": "remove",
                 "thread_id": "t_001", "observer": "reader"
             }))
             .unwrap();

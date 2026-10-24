@@ -201,7 +201,7 @@ fn http_read_only_mode() {
     let tools = listed["result"]["tools"].as_array().unwrap();
     assert!(!tools.is_empty());
     assert!(
-        !tools.iter().any(|t| t["name"] == "create_character"),
+        !tools.iter().any(|t| t["name"] == "create_entity"),
         "只读模式不应暴露写工具"
     );
     // 回归：get_story_recap 会把现场生成的场景摘要写回 structure.toml，

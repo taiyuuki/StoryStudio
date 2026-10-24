@@ -751,7 +751,7 @@ const UNRESOLVED_GUIDANCE: &str =
      归拢到已有实体或忽略；已处置的后续不再提示。\
      多条指代若指向同一实体，可在一次调用中用 refs 批量处置。\n\
      💡 若是已稳定出场、真名未揭的代称角色（如「刻印匠」），更优路径是\
-     create_character 传 placeholder 建档（正文继续用代称），\
+     create_entity(kind=character) 传 placeholder 建档（正文继续用代称），\
      真名揭露当章调 reveal_character_name 切换。";
 
 /// 把锚定结果格式化为回执片段（无内容返回空串）
@@ -1179,7 +1179,7 @@ impl Tool for ListUnresolvedRefsTool {
                             .join("、");
                         out.push_str(&format!(
                             "\n  - 疑似同一未建档对象（线索：{clues}），{} 条：{}\n    \
-                             → 先建档（角色 create_character / 组织 create_organization / 地点 create_location），\
+                             → 先建档（create_entity，kind=character/organization/location），\
                              再用 action=create 或 merge 的 refs 一次归拢本组",
                             c.members.len(),
                             members.join("、")
@@ -1450,7 +1450,7 @@ mod tests {
         assert!(out.contains("建议分组"), "{out}");
         // 建档组：hint 共同点名王玄通，且给了建档引导
         assert!(out.contains("王玄通"), "{out}");
-        assert!(out.contains("create_character"), "{out}");
+        assert!(out.contains("create_entity"), "{out}");
         // 忽略组：两条「提及」类龙套
         assert!(out.contains("忽略"), "{out}");
     }

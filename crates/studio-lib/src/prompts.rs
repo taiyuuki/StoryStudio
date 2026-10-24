@@ -10,7 +10,7 @@ pub(crate) const AGENT_PROJECT: &str = include_str!("prompts/agent_project.md");
 /// 全局 Agent（未打开项目时的创意顾问）的 system prompt
 pub(crate) const AGENT_GLOBAL: &str = include_str!("prompts/agent_global.md");
 
-/// AI 味检测（ai_check_fragment）的 system prompt
+/// AI 味检测（ai_check 工具）的 system prompt
 pub(crate) const AI_CHECK: &str = include_str!("prompts/ai_check.md");
 
 /// 档案与正文一致性核对（profile_check）的 system prompt

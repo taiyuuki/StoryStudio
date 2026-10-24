@@ -201,10 +201,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register_readonly(Box::new(AskUserTool));
     registry.register_readonly(Box::new(PrepareWritingTool::new(ctx.clone())));
     registry.register_readonly(Box::new(GetWritingGuideTool::new(ctx.clone())));
-    registry.register(Box::new(CreateCharacterTool::new(ctx.clone())));
-    registry.register(Box::new(CreateLocationTool::new(ctx.clone())));
-    registry.register(Box::new(CreateItemTool::new(ctx.clone())));
-    registry.register(Box::new(CreateOrganizationTool::new(ctx.clone())));
+    registry.register(Box::new(CreateEntityTool::new(ctx.clone())));
     registry.register_readonly(Box::new(SearchEntitiesTool::new(ctx.clone())));
     registry.register_readonly(Box::new(GetEntityDetailTool::new(ctx.clone())));
     registry.register_readonly(Box::new(ProfileCheckTool::new(ctx.clone())));
@@ -234,7 +231,6 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(DeleteChapterTool::new(ctx.clone())));
     registry.register(Box::new(AddAssertionTool::new(ctx.clone())));
     registry.register(Box::new(RetireAssertionTool::new(ctx.clone())));
-    registry.register(Box::new(DeleteAssertionTool::new(ctx.clone())));
     registry.register(Box::new(RefreshEvidenceTool::new(ctx.clone())));
     registry.register(Box::new(AddRelationTool::new(ctx.clone())));
     registry.register(Box::new(RemoveRelationTool::new(ctx.clone())));
@@ -245,7 +241,6 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register(Box::new(UpdateThreadTool::new(ctx.clone())));
     registry.register(Box::new(AdvanceThreadTool::new(ctx.clone())));
     registry.register(Box::new(SetThreadKnowledgeTool::new(ctx.clone())));
-    registry.register(Box::new(RemoveThreadKnowledgeTool::new(ctx.clone())));
     registry.register(Box::new(DeleteThreadTool::new(ctx.clone())));
     registry.register(Box::new(WriteFragmentTextTool::new(ctx.clone())));
     registry.register(Box::new(EditFragmentTextTool::new(ctx.clone())));
@@ -265,8 +260,6 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register_readonly(Box::new(ListUnresolvedRefsTool::new(ctx.clone())));
     registry.register(Box::new(ResolveUnresolvedRefTool::new(ctx.clone())));
     registry.register_readonly(Box::new(AiCheckTool::new(ctx.clone())));
-    registry.register_readonly(Box::new(AiCheckScopeTool::chapter(ctx.clone())));
-    registry.register_readonly(Box::new(AiCheckScopeTool::scene(ctx.clone())));
     registry.register_readonly(Box::new(AiCheckPovTool::new(ctx.clone())));
     registry.register(Box::new(UpdateEntityTool::new(ctx.clone())));
     registry.register_readonly(Box::new(GetOutlineTool::new(ctx.clone())));
@@ -772,5 +765,55 @@ mod tests {
             .execute(&serde_json::json!({}))
             .unwrap();
         assert!(out3.contains("后台任务结果"), "{out3}");
+    }
+}
+
+#[cfg(test)]
+mod registry_size_probe {
+    use story_ai_runtime::provider::{GenerateRequest, GenerateResponse};
+
+    #[derive(Debug)]
+    struct NullProvider;
+    impl story_ai_runtime::AiProvider for NullProvider {
+        fn id(&self) -> &str {
+            "null"
+        }
+        fn generate(
+            &self,
+            _req: &GenerateRequest,
+        ) -> Result<GenerateResponse, story_ai_runtime::AiError> {
+            Err(story_ai_runtime::AiError::Unavailable("null".into()))
+        }
+    }
+
+    /// 工具预算守卫：数量与定义体积超预算即失败。
+    ///
+    /// 2026-10 精简（84 → 77，见 tool-consolidation 分支）后钉住两条线：
+    /// - 数量 ≤ 80：近重复入口会让模型在相似工具间产生选择歧义；
+    ///   新增工具前先考虑并入现有入口（kind/scope/op 参数化是既有模式）
+    /// - 定义体积 ≤ 48000 字符：全量定义随每次请求发送，体积直接吃上下文
+    ///
+    /// 预算不是硬上限——确有充分理由时可上调，但必须是有意识的决策，
+    /// 不允许工具集无感膨胀。
+    #[test]
+    fn registry_stays_within_tool_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider: std::sync::Arc<dyn story_ai_runtime::AiProvider> =
+            std::sync::Arc::new(NullProvider);
+        let registry = super::create_tool_registry(tmp.path(), provider);
+        let defs = registry.definitions();
+        let json = serde_json::to_string(&defs).unwrap();
+        let chars = json.chars().count();
+
+        assert!(
+            defs.len() <= 80,
+            "工具数 {} 超过预算 80：新增前先考虑并入现有入口（kind/scope/op 参数化）",
+            defs.len()
+        );
+        assert!(
+            chars <= 48_000,
+            "工具定义体积 {} 字符超过预算 48000：精简描述或合并工具",
+            chars
+        );
     }
 }

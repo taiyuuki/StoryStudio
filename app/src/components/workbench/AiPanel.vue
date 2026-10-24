@@ -279,7 +279,7 @@ watch(
 // ── 工具名 → 用户可读标签（与 tools/agent.rs 注册的工具一一对应） ──
 const toolLabels: Record<string, string> = {
   // 实体 / 设定
-  create_character: '创建角色',
+  create_entity: '创建实体',
   create_location: '创建地点',
   create_item: '创建道具',
   create_organization: '创建组织',
@@ -316,8 +316,7 @@ const toolLabels: Record<string, string> = {
   anchor_fragments: '锚定出场',
   // 事实 / 关系
   add_assertion: '记录事实',
-  retire_assertion: '废弃事实',
-  delete_assertion: '删除事实',
+  delete_assertion: '删除断言（废弃/彻底删除）',
   query_assertions: '查询事实',
   add_relation: '建立关系',
   remove_relation: '移除关系',
@@ -351,8 +350,7 @@ const toolLabels: Record<string, string> = {
   update_worldview_item: '更新世界观',
   delete_worldview_item: '删除世界观条目',
   // 检测
-  ai_check_fragment: '审校段落',
-  ai_check_scene: '整场审校',
+  ai_check: 'AI 味自检',
   ai_check_pov: '视角越权检测',
   refresh_evidence: '刷新证据基线',
   update_relation: '更新关系区间',
@@ -365,7 +363,6 @@ const toolLabels: Record<string, string> = {
   prepare_writing: '准备动笔',
   read_scene_full_text: '读取场景全文',
   set_timeline_eras: '设置纪元历法',
-  ai_check_chapter: '整章审校',
   compile_check: '一致性检查',
   // 其他
   get_writing_guide: '查阅写作指南',
