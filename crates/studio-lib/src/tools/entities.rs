@@ -90,39 +90,49 @@ fn duplicate_name_warning(
 }
 
 // ============================================================================
-// create_character
+// create_entity — 统一建档入口（kind=character/location/item/organization）
 // ============================================================================
 
-pub struct CreateCharacterTool {
+pub struct CreateEntityTool {
     ctx: ToolContext,
 }
-impl CreateCharacterTool {
+impl CreateEntityTool {
     pub fn new(ctx: ToolContext) -> Self {
         Self { ctx }
     }
 }
 
-impl Tool for CreateCharacterTool {
+impl Tool for CreateEntityTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "create_character".into(),
-            description: "创建新角色。生成角色 ID 并写入 entities/characters/ 目录。\
-            角色出场但真名尚未在正文揭露时（POV 只见到「中年男人」「银发女人」\
-            这类称呼），必须传 placeholder：name 存预定真名（建档用，正文禁用），\
-            placeholder 存正文当前使用的代称；正文正式揭露真名的当章调用\
-            reveal_character_name 完成切换。"
+            name: "create_entity".into(),
+            description: "创建新实体，kind 指定类型并决定目录与可用字段：\
+            character=角色（entities/characters/）、location=地点（entities/locations/，\
+            含世界观地理：大陆/国家/城市/秘境等）、item=道具（entities/items/）、\
+            organization=组织/势力（entities/organizations/，宗门/国家/家族/公会等）。\
+            各 kind 只读取自己名下的可选字段，其余忽略。\
+            ⚠️ kind=character 且角色出场但真名尚未在正文揭露时（POV 只见到\
+            「中年男人」「银发女人」这类称呼），必须传 placeholder：\
+            name 存预定真名（建档用，正文禁用），placeholder 存正文当前使用的代称；\
+            正文正式揭露真名的当章调用 reveal_character_name 完成切换。"
                 .into(),
             parameters: object_schema(vec![
                 (
+                    "kind",
+                    "string",
+                    "实体类型：character / location / item / organization",
+                    true,
+                ),
+                (
                     "name",
                     "string",
-                    "角色名称（传 placeholder 时为预定真名，仅建档用）",
+                    "名称（kind=character 传 placeholder 时为预定真名，仅建档用）",
                     true,
                 ),
                 (
                     "placeholder",
                     "string",
-                    "正文当前使用的代称（如：中年男人、银发女人）。\
+                    "（仅 character）正文当前使用的代称（如：中年男人、银发女人）。\
                     提供即表示真名尚未在正文揭露：叙述与对话只能用此代称，\
                     禁止写真名；真名由系统遮蔽，揭露时用 reveal_character_name",
                     false,
@@ -130,26 +140,84 @@ impl Tool for CreateCharacterTool {
                 (
                     "aliases",
                     "array",
-                    "别名列表（原生数组或逗号分隔字符串）",
+                    "别名列表（原生数组或逗号分隔字符串，全部 kind 通用）",
                     false,
                 ),
-                ("gender", "string", "性别", false),
-                ("age", "string", "年龄描述", false),
-                ("role", "string", "在故事中的角色", false),
-                ("appearance", "string", "角色外貌（多行自由文本）", false),
-                ("background", "string", "角色背景（多行自由文本）", false),
-                ("personality", "string", "性格描述（多行自由文本）", false),
+                ("gender", "string", "（character）性别", false),
+                ("age", "string", "（character）年龄描述", false),
+                ("role", "string", "（character）在故事中的角色", false),
+                ("appearance", "string", "（character）外貌（多行自由文本）", false),
+                ("background", "string", "（character）背景（多行自由文本）", false),
+                ("personality", "string", "（character）性格（多行自由文本）", false),
                 (
                     "habits",
                     "string",
-                    "习性：口头禅、惯用手、小动作等（多行自由文本）",
+                    "（character）习性：口头禅、惯用手、小动作等（多行自由文本）",
                     false,
                 ),
+                (
+                    "parent",
+                    "string",
+                    "（location）父地点 ID（构成地理层级树）",
+                    false,
+                ),
+                (
+                    "geo_kind",
+                    "string",
+                    "（location）地理类型（常见值：continent/ocean/plane/planet/nation/kingdom/empire/region/island/mountain/forest/desert/river/lake/landform/city/town/village/settlement/building/ruins/realm，可自定）",
+                    false,
+                ),
+                ("position", "string", "（location）地理位置描述", false),
+                (
+                    "features",
+                    "string",
+                    "（location）特征描述（风貌、遗迹、气候等世界设定）",
+                    false,
+                ),
+                ("summary", "string", "（location/organization）一句话简介", false),
+                (
+                    "item_kind",
+                    "string",
+                    "（item）道具类型（如：weapon/potion/artifact）",
+                    false,
+                ),
+                (
+                    "grade",
+                    "string",
+                    "（item）品级（如：legendary/rare/common）",
+                    false,
+                ),
+                ("description", "string", "（item）道具描述", false),
+                ("abilities", "string", "（item）能力/效果描述", false),
+                (
+                    "org_kind",
+                    "string",
+                    "（organization）组织类型（如：sect/nation/clan/guild/organization）",
+                    false,
+                ),
+                ("leader", "string", "（organization）首领/代表人物", false),
+                ("territory", "string", "（organization）势力范围", false),
+                ("ideology", "string", "（organization）理念/宗旨", false),
             ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        let kind = get_str(arguments, "kind")?;
+        match kind.as_str() {
+            "character" => self.create_character(arguments),
+            "location" => self.create_location(arguments),
+            "item" => self.create_item(arguments),
+            "organization" => self.create_organization(arguments),
+            other => Err(format!(
+                "kind 需为 character / location / item / organization，收到: {other}"
+            )),
+        }
+    }
+}
+
+impl CreateEntityTool {
+    fn create_character(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let name = get_str(arguments, "name")?;
         let placeholder = get_str_opt(arguments, "placeholder");
         let paths = self.ctx.paths();
@@ -158,12 +226,16 @@ impl Tool for CreateCharacterTool {
 
         // 追加可选字段（通过 update_entity 合并）
         let gender = get_str_opt(arguments, "gender");
+        let age = get_str_opt(arguments, "age");
+        let role = get_str_opt(arguments, "role");
         let appearance = get_str_opt(arguments, "appearance");
         let background = get_str_opt(arguments, "background");
         let personality = get_str_opt(arguments, "personality");
         let habits = get_str_opt(arguments, "habits");
         if placeholder.is_some()
             || gender.is_some()
+            || age.is_some()
+            || role.is_some()
             || appearance.is_some()
             || personality.is_some()
             || background.is_some()
@@ -184,7 +256,12 @@ impl Tool for CreateCharacterTool {
             if let Some(v) = get_str_array_opt(arguments, "aliases")? {
                 entity.aliases = v;
             }
-            if gender.is_some() || appearance.is_some() || personality.is_some() || habits.is_some()
+            if gender.is_some()
+                || age.is_some()
+                || role.is_some()
+                || appearance.is_some()
+                || personality.is_some()
+                || habits.is_some()
             {
                 let profile = entity.profile.get_or_insert_with(Default::default);
                 if let Some(g) = gender {
@@ -201,6 +278,15 @@ impl Tool for CreateCharacterTool {
                 }
                 if let Some(h) = habits {
                     profile.habits = Some(h);
+                }
+                // age/role 是自由属性（ProfileSection 无专字段）：落顶层
+                // attributes 可扩展容器，不再静默丢弃（旧 create_character
+                // 声明了参数却不落盘）
+                if let Some(a) = age {
+                    entity.attributes.insert("age".into(), a);
+                }
+                if let Some(r) = role {
+                    entity.attributes.insert("role".into(), r);
                 }
             }
             let toml_content = entity
@@ -229,46 +315,8 @@ impl Tool for CreateCharacterTool {
             "角色已创建: id={new_id}, name={display}{conceal_note}{warning}"
         ))
     }
-}
 
-// ============================================================================
-// create_location
-// ============================================================================
-
-pub struct CreateLocationTool {
-    ctx: ToolContext,
-}
-impl CreateLocationTool {
-    pub fn new(ctx: ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl Tool for CreateLocationTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "create_location".into(),
-            description: "创建新地点（含世界观层面的地理设定：大陆/国家/城市/秘境等）。\
-            生成地点 ID 并写入 entities/locations/ 目录。"
-                .into(),
-            parameters: object_schema(vec![
-                ("name", "string", "地点名称（如：青云城）", true),
-                ("aliases", "array", "别名列表（原生数组或逗号分隔字符串）", false),
-                ("parent", "string", "父地点 ID（构成地理层级树）", false),
-                (
-                    "geo_kind",
-                    "string",
-                    "地理类型（常见值：continent/ocean/plane/planet/nation/kingdom/empire/region/island/mountain/forest/desert/river/lake/landform/city/town/village/settlement/building/ruins/realm，可自定）",
-                    false,
-                ),
-                ("position", "string", "地理位置描述", false),
-                ("features", "string", "特征描述（风貌、遗迹、气候等世界设定）", false),
-                ("summary", "string", "一句话简介", false),
-            ]),
-        }
-    }
-
-    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+    fn create_location(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let name = get_str(arguments, "name")?;
         let paths = self.ctx.paths();
         let new_id = crate::mutations::create_entity(&paths, EntityKind::Location, &name)
@@ -322,53 +370,8 @@ impl Tool for CreateLocationTool {
         let warning = duplicate_name_warning(&paths, EntityKind::Location, &new_id, &name, None);
         Ok(format!("地点已创建: id={new_id}, name={name}{warning}"))
     }
-}
 
-// ============================================================================
-// create_item
-// ============================================================================
-
-pub struct CreateItemTool {
-    ctx: ToolContext,
-}
-impl CreateItemTool {
-    pub fn new(ctx: ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl Tool for CreateItemTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "create_item".into(),
-            description: "创建新道具/物品。生成道具 ID 并写入 entities/items/ 目录。".into(),
-            parameters: object_schema(vec![
-                ("name", "string", "道具名称（如：寒霜剑）", true),
-                (
-                    "aliases",
-                    "array",
-                    "别名列表（原生数组或逗号分隔字符串）",
-                    false,
-                ),
-                (
-                    "item_kind",
-                    "string",
-                    "道具类型（如：weapon/potion/artifact）",
-                    false,
-                ),
-                (
-                    "grade",
-                    "string",
-                    "品级（如：legendary/rare/common）",
-                    false,
-                ),
-                ("description", "string", "道具描述", false),
-                ("abilities", "string", "能力/效果描述", false),
-            ]),
-        }
-    }
-
-    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+    fn create_item(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let name = get_str(arguments, "name")?;
         let paths = self.ctx.paths();
         let new_id = crate::mutations::create_entity(&paths, EntityKind::Item, &name)
@@ -417,51 +420,8 @@ impl Tool for CreateItemTool {
         let warning = duplicate_name_warning(&paths, EntityKind::Item, &new_id, &name, None);
         Ok(format!("道具已创建: id={new_id}, name={name}{warning}"))
     }
-}
 
-// ============================================================================
-// create_organization
-// ============================================================================
-
-pub struct CreateOrganizationTool {
-    ctx: ToolContext,
-}
-impl CreateOrganizationTool {
-    pub fn new(ctx: ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl Tool for CreateOrganizationTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "create_organization".into(),
-            description: "创建新组织/势力（宗门、国家、家族、公会等，含世界观层面的设定）。\
-            生成组织 ID 并写入 entities/organizations/ 目录。"
-                .into(),
-            parameters: object_schema(vec![
-                ("name", "string", "组织名称（如：天机阁）", true),
-                (
-                    "aliases",
-                    "array",
-                    "别名列表（原生数组或逗号分隔字符串）",
-                    false,
-                ),
-                (
-                    "org_kind",
-                    "string",
-                    "组织类型（如：sect/nation/clan/guild/organization）",
-                    false,
-                ),
-                ("leader", "string", "首领/代表人物", false),
-                ("territory", "string", "势力范围", false),
-                ("ideology", "string", "理念/宗旨", false),
-                ("summary", "string", "简介（性质、宗旨、规模等）", false),
-            ]),
-        }
-    }
-
-    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+    fn create_organization(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let name = get_str(arguments, "name")?;
         let paths = self.ctx.paths();
         let new_id = crate::mutations::create_entity(&paths, EntityKind::Organization, &name)
@@ -517,6 +477,7 @@ impl Tool for CreateOrganizationTool {
         Ok(format!("组织已创建: id={new_id}, name={name}{warning}"))
     }
 }
+
 
 // ============================================================================
 // search_entities
@@ -657,7 +618,7 @@ impl Tool for SearchEntitiesTool {
         if results.is_empty() {
             // 附带扫描错误信息，帮助诊断
             let mut msg = if match_all {
-                "项目中没有任何实体文件。使用 create_character / create_location / create_item / create_organization 创建。"
+                "项目中没有任何实体文件。使用 create_entity 创建（kind=character/location/item/organization）。"
                     .to_string()
             } else {
                 format!("未找到匹配「{query}」的实体")
@@ -1388,7 +1349,7 @@ impl Tool for RevealCharacterNameTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "reveal_character_name".into(),
-            description: "揭露角色真名：把真名遮蔽中的角色（create_character 传了 placeholder \
+            description: "揭露角色真名：把真名遮蔽中的角色（create_entity(kind=character) 传了 placeholder \
             代称的）切换为真名展示。display_name 换为真名、原代称转入别名继续锚定，\
             此后正文与场景速查都用真名。正文正式写出该角色真名的当章必须调用，\
             拖延不调会导致后续章节继续被迫使用代称。"
@@ -2224,7 +2185,7 @@ kind = "weapon"
         );
     }
 
-    /// 端到端：用 AI 的 create_character 真实创建角色，再搜索
+    /// 端到端：用 AI 的 create_entity(kind=character) 真实创建角色，再搜索
     /// 模拟 AI 的实际工作流程，验证创建→搜索链路完整
     #[test]
     fn e2e_create_then_search() {
@@ -2233,9 +2194,10 @@ kind = "weapon"
         let ctx = ToolContext::new(dir.to_path_buf());
 
         // 1. AI 通过工具创建角色（完全模拟真实调用）
-        let create = CreateCharacterTool::new(ctx.clone());
+        let create = CreateEntityTool::new(ctx.clone());
         let created = create
             .execute(&serde_json::json!({
+                "kind": "character",
                 "name": "叶知秋",
                 "aliases": "叶先生,秋叔",
                 "gender": "男",
@@ -2406,9 +2368,10 @@ status = "writing"
         let ctx = ToolContext::new(dir.to_path_buf());
 
         // 1. 带代称建档：真名遮蔽
-        let create = CreateCharacterTool::new(ctx.clone());
+        let create = CreateEntityTool::new(ctx.clone());
         let created = create
             .execute(&serde_json::json!({
+                "kind": "character",
                 "name": "沈孤鸿",
                 "placeholder": "中年男人",
                 "appearance": "灰袍，鬓角花白"
@@ -2796,8 +2759,9 @@ state_timeline = [
         let tmp = setup_test_project();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        let res = CreateCharacterTool::new(ctx.clone())
+        let res = CreateEntityTool::new(ctx.clone())
             .execute(&serde_json::json!({
+                "kind": "character",
                 "name": "林七",
                 "aliases": ["小七", "七爷"],
             }))
@@ -2820,8 +2784,8 @@ state_timeline = [
         );
 
         // 逗号串形态保持可用
-        let res = CreateCharacterTool::new(ctx)
-            .execute(&serde_json::json!({"name": "叶秋", "aliases": "叶先生,秋叔"}))
+        let res = CreateEntityTool::new(ctx)
+            .execute(&serde_json::json!({"kind": "character", "name": "叶秋", "aliases": "叶先生,秋叔"}))
             .unwrap();
         assert!(res.contains("叶秋"), "{res}");
     }
@@ -2916,28 +2880,30 @@ status = "writing"
         let tmp = setup_test_project();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        let location = CreateLocationTool::new(ctx.clone());
+        let location = CreateEntityTool::new(ctx.clone());
         let res = location
-            .execute(&serde_json::json!({"name": "山影城"}))
+            .execute(&serde_json::json!({"kind": "location", "name": "山影城"}))
             .unwrap();
         assert!(!res.contains("⚠"), "首个实体不应告警: {res}");
 
-        let org = CreateOrganizationTool::new(ctx.clone());
-        let res = org.execute(&serde_json::json!({"name": "山影城"})).unwrap();
+        let org = CreateEntityTool::new(ctx.clone());
+        let res = org
+            .execute(&serde_json::json!({"kind": "organization", "name": "山影城"}))
+            .unwrap();
         assert!(
             !res.contains("⚠") && res.contains("双面实体"),
             "跨类型同名应说明双面实体而非告警: {res}"
         );
 
         // 同名角色与地点、组织都不同类型 → 同样是双面实体说明
-        let ch = CreateCharacterTool::new(ctx.clone());
-        let res = ch.execute(&serde_json::json!({"name": "山影城"})).unwrap();
+        let ch = CreateEntityTool::new(ctx.clone());
+        let res = ch.execute(&serde_json::json!({"kind": "character", "name": "山影城"})).unwrap();
         assert!(!res.contains("⚠"), "跨类型同名角色不应告警: {res}");
 
         // 再建第二个同名地点 → 同类型撞名，真冲突，应告警
-        let location2 = CreateLocationTool::new(ctx.clone());
+        let location2 = CreateEntityTool::new(ctx.clone());
         let res = location2
-            .execute(&serde_json::json!({"name": "山影城"}))
+            .execute(&serde_json::json!({"kind": "location", "name": "山影城"}))
             .unwrap();
         assert!(
             res.contains("⚠") && res.contains("同类型已存在同名实体"),
@@ -2951,9 +2917,9 @@ status = "writing"
         let tmp = setup_test_project();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        let create = CreateCharacterTool::new(ctx.clone());
+        let create = CreateEntityTool::new(ctx.clone());
         let res = create
-            .execute(&serde_json::json!({"name": "林七"}))
+            .execute(&serde_json::json!({"kind": "character", "name": "林七"}))
             .unwrap();
         let id = res
             .split("id=")

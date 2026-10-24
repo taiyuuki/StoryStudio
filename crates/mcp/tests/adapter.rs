@@ -35,7 +35,7 @@ fn temp_registry() -> (tempfile::TempDir, Arc<story_ai_runtime::ToolRegistry>) {
 
 /// 会改动项目文档树的代表性工具——注册表里一个都不许标成只读
 const MUTATING_TOOLS: &[&str] = &[
-    "create_character",
+    "create_entity",
     "create_scene",
     "write_fragment_text",
     "append_fragment_text",

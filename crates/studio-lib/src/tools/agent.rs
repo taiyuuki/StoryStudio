@@ -201,10 +201,7 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register_readonly(Box::new(AskUserTool));
     registry.register_readonly(Box::new(PrepareWritingTool::new(ctx.clone())));
     registry.register_readonly(Box::new(GetWritingGuideTool::new(ctx.clone())));
-    registry.register(Box::new(CreateCharacterTool::new(ctx.clone())));
-    registry.register(Box::new(CreateLocationTool::new(ctx.clone())));
-    registry.register(Box::new(CreateItemTool::new(ctx.clone())));
-    registry.register(Box::new(CreateOrganizationTool::new(ctx.clone())));
+    registry.register(Box::new(CreateEntityTool::new(ctx.clone())));
     registry.register_readonly(Box::new(SearchEntitiesTool::new(ctx.clone())));
     registry.register_readonly(Box::new(GetEntityDetailTool::new(ctx.clone())));
     registry.register_readonly(Box::new(ProfileCheckTool::new(ctx.clone())));

@@ -55,7 +55,7 @@
 **冰山原则**
 禁止角色初遇就自报姓名身份（确有剧情需要除外）。未知信息的揭示要有层次。
 新角色出场但真名未在正文揭露时（正文只以「中年男人」「银发女人」这类代称呼叫），
-建档必须用 `create_character` 的 `placeholder` 参数：真名由系统遮蔽，场景角色清单会标注
+建档必须用 `create_entity`(kind=character) 的 `placeholder` 参数：真名由系统遮蔽，场景角色清单会标注
 「真名未揭露」——这类角色在叙述与对话中**只能用代称**，禁止写出真名；
 正文正式揭露真名的当章调用 `reveal_character_name` 切换（代称自动转别名）。
 
@@ -77,7 +77,7 @@
    | 写新章节 | `prepare_writing`(传 chapter 脉络序号)（若有脉络） |
 
 2. **先搜后建，新增与修改严格区分**
-   新增角色/地点/道具/组织前，先 `search_entities(name)` 确认不存在再建（实体用 `create_character`/`create_location`/`create_item`/`create_organization`，删除用 `delete_entity`）。`set_` 系列追加、`update_` 系列按 index 改：大纲 `set_outline_item`/`update_outline_item`，世界观 `set_worldview_item`/`update_worldview_item`（仅基础概念与体系设定——地理和势力是实体，不在这里），线索 `create_thread`/`update_thread`。`set_outline_item` 对 volume/arc/storyline/conflict 永远追加，story 元信息也用它。
+   新增角色/地点/道具/组织前，先 `search_entities(name)` 确认不存在再建（实体用 `create_entity`（kind=character/location/item/organization），删除用 `delete_entity`）。`set_` 系列追加、`update_` 系列按 index 改：大纲 `set_outline_item`/`update_outline_item`，世界观 `set_worldview_item`/`update_worldview_item`（仅基础概念与体系设定——地理和势力是实体，不在这里），线索 `create_thread`/`update_thread`。`set_outline_item` 对 volume/arc/storyline/conflict 永远追加，story 元信息也用它。
 
 3. **线索状态单向推进**
    `planned → planted → revealed → resolved` 只进不退，`abandoned` 由用户维护。优先复用已有线索，仅全新叙事线索才新建。
@@ -100,7 +100,7 @@
 | 写新章节 | `prepare_writing`(传 chapter=脉络序号，一次拿齐脉络/前情/角色状态/线索认知) → 需要题材心法时补 `get_writing_guide` → 正文 → 自查 → 向用户汇报收尾（等用户指令再写下一章） |
 | 写新场景/续写 | `prepare_writing`(传 scene_id) + `read_scene_full_text` → `write_fragment_text`/`append_fragment_text` → 处置回执中的未锚定指代 |
 | 修改旧文 | `read_scene_full_text` 通读场景（或 `read_fragment_text` 单片段）→ `edit_fragment_text`(局部精准改) / `rewrite_fragment`(整体改写) |
-| 新建角色 | `search_entities`(确认不存在，真名未揭露的也会按预定真名匹配) → `create_character`(真名未揭露时传 `placeholder` 代称) → 按需 `add_assertion`/`add_relation` |
+| 新建角色 | `search_entities`(确认不存在，真名未揭露的也会按预定真名匹配) → `create_entity`(kind=character，真名未揭露时传 `placeholder` 代称) → 按需 `add_assertion`/`add_relation` |
 | 角色再次出场 | `get_character_state` + `find_mentions`(核对历史出场，避免与已有描述矛盾、避免重复描述外貌/口癖) |
 | 整章交付前自查 | `compile_check` → `ai_check(scope=chapter)` → 主要角色 `profile_check`(档案与正文出入) → `list_unresolved_refs`（未锚定指代清零） |
 | 真名揭晓（如凶手身份公开） | 匿名占位实体用 `merge_entities` 并入正式档案；`placeholder` 代称建档的遮蔽角色用 `reveal_character_name`(display_name 换真名、代称转别名) → `compile_check` |
@@ -124,7 +124,7 @@
 - 确需观察几段再定性的（如匿名角色刚出现、称呼未稳定）可以延后，但**本章交付（`update_chapter_outline` 标 completed）前必须清零**——`prepare_writing` 的回执会提示未清账数量。
 
 处置方式（`list_unresolved_refs` 可查看建议分组）：
-- 确是新角色 → `create` 建档（真名未在正文揭露时配合 `create_character` 的 `placeholder`）；
+- 确是新角色 → `create_entity` 建档（真名未在正文揭露时配合 `placeholder`）；
 - 是某已知实体的匿名指代（悬疑里"凶手"的几十种变体）→ 建一个**匿名占位实体**（名字如「九一真凶」），把这些指代归拢到它名下；真名揭晓后 `merge_entities` 并入正式档案，锚点/关系/POV 等引用自动重定向；
 - 确认无意义 → `ignore`，之后不再提示。
 

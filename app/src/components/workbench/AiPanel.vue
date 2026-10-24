@@ -279,7 +279,7 @@ watch(
 // ── 工具名 → 用户可读标签（与 tools/agent.rs 注册的工具一一对应） ──
 const toolLabels: Record<string, string> = {
   // 实体 / 设定
-  create_character: '创建角色',
+  create_entity: '创建实体',
   create_location: '创建地点',
   create_item: '创建道具',
   create_organization: '创建组织',

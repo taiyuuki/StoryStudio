@@ -2,7 +2,7 @@
 //!
 //! - 基础概念 / 体系设定：存 `worldview/` 目录（concepts.toml / systems.toml）；
 //! - 地理 / 势力：已统一为实体（`entities/locations/`、`entities/organizations/`），
-//!   此处只做聚合展示，增删改走 create_location / create_organization / delete_entity。
+//!   此处只做聚合展示，增删改走 create_entity(kind=location/organization) / delete_entity。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -96,7 +96,7 @@ impl Tool for GetWorldviewTool {
             } else {
                 Ok(
                     "世界观尚未创建或为空。使用 set_worldview_item 添加概念/体系，\
-                create_location / create_organization 添加地点与势力。"
+                create_entity(kind=location/organization) 添加地点与势力。"
                         .to_string(),
                 )
             }
@@ -280,7 +280,7 @@ impl Tool for SetWorldviewItemTool {
         ToolDef {
             name: "set_worldview_item".into(),
             description: "添加世界观条目（设计层文档）。section 指定类型：concept=基础概念, system=体系设定。\
-            永远是追加新条目。地理与势力不是世界观条目——用 create_location / create_organization。\
+            永远是追加新条目。地理与势力不是世界观条目——用 create_entity(kind=location/organization)。\
             生成整套世界观时用 items 批量传入，一次写完。"
                 .into(),
             parameters: object_schema(vec![
@@ -348,7 +348,7 @@ impl Tool for SetWorldviewItemTool {
                 }
                 "place" | "faction" => {
                     return Err(
-                        "地理与势力已统一为实体：请用 create_location / create_organization 创建，\
+                        "地理与势力已统一为实体：请用 create_entity(kind=location / organization) 创建，\
                         delete_entity 删除，get_entity_detail 查看"
                             .into(),
                     )
@@ -775,7 +775,7 @@ mod tests {
                 "items": "[{\"section\": \"concept\", \"name\": \"红档\"}, {\"section\": \"faction\", \"name\": \"雾盟\"}]"
             }))
             .unwrap_err();
-        assert!(err.contains("create_organization"), "{err}");
+        assert!(err.contains("create_entity"), "{err}");
         assert!(
             !dir.join("worldview/concepts.toml").exists(),
             "批量整体失败时不应落盘任何条目"
@@ -858,8 +858,8 @@ mod tests {
                           {\"section\": \"system\", \"name\": \"灵潮\", \"kind\": \"magic\"}]"
             }))
             .unwrap();
-        crate::tools::CreateLocationTool::new(ctx.clone())
-            .execute(&serde_json::json!({"name": "青云城"}))
+        crate::tools::CreateEntityTool::new(ctx.clone())
+            .execute(&serde_json::json!({"kind": "location", "name": "青云城"}))
             .unwrap();
 
         let tool = GetWorldviewTool::new(ctx);
