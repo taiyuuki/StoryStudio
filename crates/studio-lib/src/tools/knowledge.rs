@@ -39,7 +39,7 @@ impl Tool for AddAssertionTool {
             需要显式时间边界的事实（如\"拜师之前身份是学徒\"）用 valid_from_scene/valid_until_scene \
             声明场景锚生效区间（与关系边的时变声明同构）。\
             可多值谓词（occupation/holds 等）允许并存（一人可有多重职业），\
-            但并存时回执会提示旧值——同一职位的演进（如拟聘→正式）请用 retire_assertion 废弃旧值。\
+            但并存时回执会提示旧值——同一职位的演进（如拟聘→正式）请用 delete_assertion(mode=retire) 废弃旧值。\
             完全相同的断言不会重复创建。一次沉淀多条事实（如章节回顾）用 assertions 批量传入。"
                 .into(),
             parameters: object_schema(vec![
@@ -133,7 +133,7 @@ impl Tool for AddAssertionTool {
             if coexisting_count > 0 {
                 msg.push_str(&format!(
                     " ⚠ {coexisting_count} 条存在同谓词并存断言；\
-                     若是同一身份或职位的演进（如拟聘→正式），请用 retire_assertion 废弃旧值"
+                     若是同一身份或职位的演进（如拟聘→正式），请用 delete_assertion(mode=retire) 废弃旧值"
                 ));
             }
             return Ok(msg);
@@ -179,7 +179,7 @@ impl Tool for AddAssertionTool {
         if !outcome.coexisting.is_empty() {
             msg.push_str(&format!(
                 " ⚠ 该主体已有同谓词 active 断言：{} = {}。多重身份/持有并存无需处理；\
-                若是同一身份或职位的演进（如拟聘→正式），请用 retire_assertion 废弃旧值",
+                若是同一身份或职位的演进（如拟聘→正式），请用 delete_assertion(mode=retire) 废弃旧值",
                 predicate,
                 outcome.coexisting.join("、")
             ));
@@ -189,7 +189,7 @@ impl Tool for AddAssertionTool {
 }
 
 // ============================================================================
-// retire_assertion — 废弃断言
+// delete_assertion — 删除断言（mode=retire 废弃保留历史 / hard 彻底删除）
 // ============================================================================
 
 pub struct RetireAssertionTool {
@@ -204,74 +204,57 @@ impl RetireAssertionTool {
 impl Tool for RetireAssertionTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            name: "retire_assertion".into(),
-            description: "废弃一条断言（status 置为 superseded，保留历史记录）。\
-            剧情推翻旧设定时使用；located_at/status/alive/age 类新值会自动取代旧值，无需手动废弃。"
-                .into(),
-            parameters: object_schema(vec![(
-                "assertion_id",
-                "string",
-                "要废弃的断言 ID（a_XXXX，可从 query_assertions 获取）",
-                true,
-            )]),
-        }
-    }
-
-    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
-        let assertion_id = get_str(arguments, "assertion_id")?;
-        let paths = self.ctx.paths();
-        crate::mutations::set_assertion_status(&paths, &assertion_id, "superseded")
-            .map_err(|e| e.to_string())?;
-        Ok(format!(
-            "断言 {assertion_id} 已废弃（superseded），不再参与当前状态"
-        ))
-    }
-}
-
-// ============================================================================
-// delete_assertion — 彻底删除断言
-// ============================================================================
-
-pub struct DeleteAssertionTool {
-    ctx: ToolContext,
-}
-impl DeleteAssertionTool {
-    pub fn new(ctx: ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl Tool for DeleteAssertionTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
             name: "delete_assertion".into(),
-            description: "彻底删除一条断言（从 assertions.toml 移除，含历史记录）。\
-            误建的断言用此工具清理；剧情推进导致的旧值失效请用 retire_assertion（保留历史）。"
+            description: "删除断言，两种程度由 mode 区分:\
+            retire=废弃（默认，status 置 superseded，保留历史记录）——剧情推翻旧设定时用；\
+            hard=彻底删除（从 assertions.toml 移除，含历史记录，不再被引用的证据条目一并清理）——误建的断言用这个清理。\
+            located_at/status/alive/age 类新值会自动取代旧值，无需手动废弃。"
                 .into(),
-            parameters: object_schema(vec![(
-                "assertion_id",
-                "string",
-                "要删除的断言 ID（a_XXXX）",
-                true,
-            )]),
+            parameters: object_schema(vec![
+                (
+                    "assertion_id",
+                    "string",
+                    "断言 ID（a_XXXX，可从 query_assertions 获取）",
+                    true,
+                ),
+                (
+                    "mode",
+                    "string",
+                    "retire=废弃保留历史（默认）/ hard=彻底删除",
+                    false,
+                ),
+            ]),
         }
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let assertion_id = get_str(arguments, "assertion_id")?;
         let paths = self.ctx.paths();
-        let cascaded =
-            crate::mutations::delete_assertion(&paths, &assertion_id).map_err(|e| e.to_string())?;
-        let mut msg = format!("断言 {assertion_id} 已彻底删除");
-        if !cascaded.is_empty() {
-            msg.push_str(&format!(
-                "；不再被任何断言引用的证据条目已一并删除：{}",
-                cascaded.join("、")
-            ));
+        match get_str_opt(arguments, "mode").as_deref() {
+            None | Some("retire") => {
+                crate::mutations::set_assertion_status(&paths, &assertion_id, "superseded")
+                    .map_err(|e| e.to_string())?;
+                Ok(format!(
+                    "断言 {assertion_id} 已废弃（superseded），不再参与当前状态"
+                ))
+            }
+            Some("hard") => {
+                let cascaded = crate::mutations::delete_assertion(&paths, &assertion_id)
+                    .map_err(|e| e.to_string())?;
+                let mut msg = format!("断言 {assertion_id} 已彻底删除");
+                if !cascaded.is_empty() {
+                    msg.push_str(&format!(
+                        "；不再被任何断言引用的证据条目已一并删除：{}",
+                        cascaded.join("、")
+                    ));
+                }
+                Ok(msg)
+            }
+            Some(other) => Err(format!("mode 需为 retire / hard，收到: {other}")),
         }
-        Ok(msg)
     }
 }
+
 
 // ============================================================================
 // refresh_evidence — 重锚证据摘录
