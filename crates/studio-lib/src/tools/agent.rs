@@ -265,8 +265,6 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     registry.register_readonly(Box::new(ListUnresolvedRefsTool::new(ctx.clone())));
     registry.register(Box::new(ResolveUnresolvedRefTool::new(ctx.clone())));
     registry.register_readonly(Box::new(AiCheckTool::new(ctx.clone())));
-    registry.register_readonly(Box::new(AiCheckScopeTool::chapter(ctx.clone())));
-    registry.register_readonly(Box::new(AiCheckScopeTool::scene(ctx.clone())));
     registry.register_readonly(Box::new(AiCheckPovTool::new(ctx.clone())));
     registry.register(Box::new(UpdateEntityTool::new(ctx.clone())));
     registry.register_readonly(Box::new(GetOutlineTool::new(ctx.clone())));
