@@ -767,3 +767,53 @@ mod tests {
         assert!(out3.contains("后台任务结果"), "{out3}");
     }
 }
+
+#[cfg(test)]
+mod registry_size_probe {
+    use story_ai_runtime::provider::{GenerateRequest, GenerateResponse};
+
+    #[derive(Debug)]
+    struct NullProvider;
+    impl story_ai_runtime::AiProvider for NullProvider {
+        fn id(&self) -> &str {
+            "null"
+        }
+        fn generate(
+            &self,
+            _req: &GenerateRequest,
+        ) -> Result<GenerateResponse, story_ai_runtime::AiError> {
+            Err(story_ai_runtime::AiError::Unavailable("null".into()))
+        }
+    }
+
+    /// 工具预算守卫：数量与定义体积超预算即失败。
+    ///
+    /// 2026-10 精简（84 → 77，见 tool-consolidation 分支）后钉住两条线：
+    /// - 数量 ≤ 80：近重复入口会让模型在相似工具间产生选择歧义；
+    ///   新增工具前先考虑并入现有入口（kind/scope/op 参数化是既有模式）
+    /// - 定义体积 ≤ 48000 字符：全量定义随每次请求发送，体积直接吃上下文
+    ///
+    /// 预算不是硬上限——确有充分理由时可上调，但必须是有意识的决策，
+    /// 不允许工具集无感膨胀。
+    #[test]
+    fn registry_stays_within_tool_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider: std::sync::Arc<dyn story_ai_runtime::AiProvider> =
+            std::sync::Arc::new(NullProvider);
+        let registry = super::create_tool_registry(tmp.path(), provider);
+        let defs = registry.definitions();
+        let json = serde_json::to_string(&defs).unwrap();
+        let chars = json.chars().count();
+
+        assert!(
+            defs.len() <= 80,
+            "工具数 {} 超过预算 80：新增前先考虑并入现有入口（kind/scope/op 参数化）",
+            defs.len()
+        );
+        assert!(
+            chars <= 48_000,
+            "工具定义体积 {} 字符超过预算 48000：精简描述或合并工具",
+            chars
+        );
+    }
+}

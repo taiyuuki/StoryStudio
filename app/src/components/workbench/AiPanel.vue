@@ -316,8 +316,7 @@ const toolLabels: Record<string, string> = {
   anchor_fragments: '锚定出场',
   // 事实 / 关系
   add_assertion: '记录事实',
-  delete_assertion: '删除断言',
-  delete_assertion: '删除事实',
+  delete_assertion: '删除断言（废弃/彻底删除）',
   query_assertions: '查询事实',
   add_relation: '建立关系',
   remove_relation: '移除关系',
