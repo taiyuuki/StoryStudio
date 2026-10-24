@@ -7,8 +7,10 @@
 //!
 //! 传输：stdio（stdout 是协议通道，所有日志必须走 stderr）
 //! 或 Streamable HTTP（桌面应用内嵌 / 无头常驻，URL + Bearer Token 接入）。
-//! 入口：CLI 子命令 `story-studio mcp -d <项目目录> [--read-only]
-//! [--transport stdio|http] [--port N]`。
+//! 入口：CLI 子命令 `story-studio mcp -d <项目目录> [-w <工作区目录>]`
+//! [--read-only] [--transport stdio|http] [--port N]`。
+//! 省略 -d 时为工作区模式：启动不绑定项目，外部 Agent 通过元工具
+//! `create_project` / `switch_project` 从零建书或选择已有书。
 
 mod server;
 
@@ -30,8 +32,12 @@ pub const DEFAULT_HTTP_PORT: u16 = 27520;
 /// MCP 服务器启动选项
 #[derive(Debug, Clone)]
 pub struct McpServerOptions {
-    /// Story Studio 项目根目录（须含 project.toml）
-    pub project_dir: PathBuf,
+    /// Story Studio 项目根目录（须含 project.toml）。
+    /// `None` = 工作区模式：启动不绑定项目，由 Agent 通过元工具创建/切换。
+    pub project_dir: Option<PathBuf>,
+    /// 工作区目录（项目容器，`list_projects` / `create_project` 的默认范围）。
+    /// `None` 时取 `project_dir` 的父级；两者皆空是配置错误。
+    pub workspace: Option<PathBuf>,
     /// 只读模式：只暴露查询类工具；即便客户端绕过列表直接调用写工具，
     /// 调用层也会拒绝执行
     pub read_only: bool,

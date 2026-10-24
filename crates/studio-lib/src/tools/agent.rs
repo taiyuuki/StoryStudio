@@ -292,6 +292,45 @@ pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRe
     })
 }
 
+/// 签名专用占位 provider：[`unbound_tool_registry`] 只取工具定义不执行，
+/// 该 provider 永不应被调用。
+#[derive(Debug)]
+struct DefinitionOnlyProvider;
+
+impl AiProvider for DefinitionOnlyProvider {
+    fn id(&self) -> &str {
+        "definition-only"
+    }
+
+    fn generate(
+        &self,
+        _request: &story_ai_runtime::provider::GenerateRequest,
+    ) -> Result<story_ai_runtime::provider::GenerateResponse, story_ai_runtime::provider::AiError>
+    {
+        Err(story_ai_runtime::provider::AiError::Unavailable(
+            "unbound_tool_registry 只取工具定义，不会调用 provider".into(),
+        ))
+    }
+}
+
+/// 构建不绑定具体项目的"签名用"工具注册表。
+///
+/// 工具名、参数 schema 与读写分类都不随项目变化；需要 tools/list 描述符
+/// 却没有项目可绑的场景（如 MCP 工作区模式启动时尚未绑定项目）用它。
+/// 实现上在临时空项目上走一次 [`create_tool_registry`]：保证工具清单、
+/// 分类与真实注册点永远同源，不会另养一份名单失真。注册表构造是纯
+/// 内存操作（仅 ProjectLock 预备锁目录），不解析项目、不产生 LLM 调用；
+/// 通过它 execute 没有意义（项目目录随临时目录一起销毁）。
+pub fn unbound_tool_registry() -> Result<ToolRegistry, StudioError> {
+    let tmp = tempfile::tempdir().map_err(|e| StudioError::Io(format!("创建临时目录失败：{e}")))?;
+    story_project_format::init::init_project(tmp.path(), "definitions")
+        .map_err(|e| StudioError::Io(format!("初始化临时项目失败：{e}")))?;
+    Ok(create_tool_registry(
+        tmp.path(),
+        Arc::new(DefinitionOnlyProvider),
+    ))
+}
+
 // ============================================================================
 // SessionStore — 进程级会话存储（跨调用保持 Agent 状态）
 // ============================================================================

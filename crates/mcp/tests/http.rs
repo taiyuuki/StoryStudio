@@ -87,7 +87,8 @@ fn spawn_server(read_only: bool) -> (tempfile::TempDir, story_mcp::McpHttpHandle
     let root = story_studio_lib::create_project(tmp.path(), "测试书").unwrap();
     let handle = start_server_http(
         McpServerOptions {
-            project_dir: root,
+            project_dir: Some(root),
+            workspace: None,
             read_only,
         },
         HttpServerOptions {
@@ -219,7 +220,8 @@ fn http_invalid_project_fails_fast() {
     let tmp = tempfile::tempdir().unwrap();
     let err = start_server_http(
         McpServerOptions {
-            project_dir: tmp.path().to_path_buf(),
+            project_dir: Some(tmp.path().to_path_buf()),
+            workspace: None,
             read_only: false,
         },
         HttpServerOptions {
@@ -228,6 +230,110 @@ fn http_invalid_project_fails_fast() {
         },
     );
     assert!(err.is_err(), "非项目目录应启动即失败");
+}
+
+/// 工作区模式（无 -d）：真实 HTTP 链路走通
+/// 未绑定拒绝项目工具 → create_project 从零建书 → 项目工具落到新书
+#[test]
+fn http_workspace_mode_creates_project_from_scratch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("workspace"); // 故意不预创建：从零场景
+    let handle = start_server_http(
+        McpServerOptions {
+            project_dir: None,
+            workspace: Some(ws.clone()),
+            read_only: false,
+        },
+        HttpServerOptions {
+            port: 0,
+            token: Some("f".repeat(32)),
+            session_path: Some(tmp.path().join("ws-sessions.json")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(handle.project_dir().is_none(), "工作区模式无初始项目");
+    assert_eq!(handle.workspace(), ws.as_path());
+
+    let url = handle.url();
+    let token = handle.token().to_string();
+    let http = client();
+    let session = initialize(&http, &url, &token);
+
+    // tools/list：元工具在场；未绑定时项目工具也给静态签名
+    let (_, listed) = rpc(
+        &http,
+        &url,
+        &token,
+        session.as_deref(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    );
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for meta in [
+        "list_projects",
+        "create_project",
+        "switch_project",
+        "get_current_project",
+    ] {
+        assert!(names.contains(&meta), "工作区模式应暴露元工具 {meta}");
+    }
+    assert!(
+        names.contains(&"get_structure"),
+        "未绑定时项目工具签名也应出现在列表（调用时才拒）"
+    );
+
+    // 未绑定时调项目工具 → JSON-RPC -32601（MethodNotFound，模型可纠偏）
+    let (_, denied) = rpc(
+        &http,
+        &url,
+        &token,
+        session.as_deref(),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "get_structure", "arguments": {}}
+        }),
+    );
+    assert!(
+        denied.get("error").is_some(),
+        "未绑定时项目工具应报 method not found：{denied}"
+    );
+
+    // 从零建书（真实 HTTP 链路 + 真实落盘）
+    let (_, created) = rpc(
+        &http,
+        &url,
+        &token,
+        session.as_deref(),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "create_project", "arguments": {"name": "集成新书"}}
+        }),
+    );
+    assert_eq!(created["result"]["isError"], serde_json::json!(false));
+    let text = created["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("已创建并切换"), "回执：{text}");
+    let created_roots: Vec<_> = std::fs::read_dir(&ws)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.join("project.toml").is_file())
+        .collect();
+    assert_eq!(created_roots.len(), 1, "工作区应恰好多出一本书");
+
+    // 新书上项目工具立即可用
+    let (_, stats) = rpc(
+        &http,
+        &url,
+        &token,
+        session.as_deref(),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "get_project_stats", "arguments": {}}
+        }),
+    );
+    assert_eq!(stats["result"]["isError"], serde_json::json!(false));
+    handle.stop();
 }
 
 #[test]

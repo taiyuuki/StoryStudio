@@ -196,7 +196,10 @@ pub struct McpHttpHandle {
     port: u16,
     token: String,
     read_only: bool,
-    project_dir: PathBuf,
+    /// 启动时绑定的项目；工作区模式为 None（由 Agent 通过元工具选书）
+    initial_project: Option<PathBuf>,
+    /// 工作区目录（create_project / switch_project 的默认范围）
+    workspace: PathBuf,
     tool_count: usize,
     shutdown: CancellationToken,
     join: Option<std::thread::JoinHandle<()>>,
@@ -222,8 +225,15 @@ impl McpHttpHandle {
         self.read_only
     }
 
-    pub fn project_dir(&self) -> &PathBuf {
-        &self.project_dir
+    /// 启动时绑定的项目（None = 工作区模式，未绑定初始项目）。
+    /// 桌面端用它做"同项目不重启"的幂等判断
+    pub fn project_dir(&self) -> Option<&Path> {
+        self.initial_project.as_deref()
+    }
+
+    /// 工作区目录
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
     }
 
     pub fn tool_count(&self) -> usize {
@@ -264,8 +274,11 @@ pub fn start_server_http(
     options: McpServerOptions,
     http: HttpServerOptions,
 ) -> Result<McpHttpHandle, StudioError> {
-    // 预构建：快速失败 + 拿工具数
-    let tool_count = StoryMcpServer::new(options.clone())?.tool_count();
+    // 预构建：快速失败 + 拿工具数 / 工作区 / 初始项目
+    let probe = StoryMcpServer::new(options.clone())?;
+    let tool_count = probe.tool_count();
+    let workspace = probe.workspace().to_path_buf();
+    let initial_project = probe.initial_project().map(Path::to_path_buf);
     let token = match http.token.clone() {
         Some(t) => t,
         None => load_or_create_token()?,
@@ -346,7 +359,8 @@ pub fn start_server_http(
             port,
             token,
             read_only: options.read_only,
-            project_dir: options.project_dir,
+            initial_project,
+            workspace,
             tool_count,
             shutdown,
             join: Some(join),

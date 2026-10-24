@@ -1925,7 +1925,10 @@ fn mcp_status_from(handle: Option<&story_mcp::McpHttpHandle>) -> McpServerStatus
             port: h.port(),
             token: h.token().to_string(),
             read_only: h.read_only(),
-            project_dir: h.project_dir().display().to_string(),
+            project_dir: h
+                .project_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
             tool_count: h.tool_count(),
         },
         None => McpServerStatusDto {
@@ -1949,7 +1952,10 @@ pub fn mcp_server_start(root: String, port: u16, read_only: bool) -> R<McpServer
     let root_path = std::path::PathBuf::from(&root);
     let mut slot = mcp_slot().lock().unwrap();
     if let Some(h) = slot.as_ref() {
-        if h.project_dir() == &root_path && h.port() == port && h.read_only() == read_only {
+        if h.project_dir() == Some(root_path.as_path())
+            && h.port() == port
+            && h.read_only() == read_only
+        {
             return Ok(mcp_status_from(slot.as_ref()));
         }
         if let Some(old) = slot.take() {
@@ -1958,7 +1964,8 @@ pub fn mcp_server_start(root: String, port: u16, read_only: bool) -> R<McpServer
     }
     let handle = story_mcp::start_server_http(
         story_mcp::McpServerOptions {
-            project_dir: root_path,
+            project_dir: Some(root_path),
+            workspace: None,
             read_only,
         },
         story_mcp::HttpServerOptions {

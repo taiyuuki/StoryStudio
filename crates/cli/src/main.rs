@@ -96,8 +96,14 @@ enum Commands {
 
     /// 启动 MCP 服务器：把项目工具集暴露给外部 Agent（stdio 或 HTTP 传输）
     Mcp {
-        #[arg(short, long, default_value = ".")]
-        dir: String,
+        /// Story Studio 项目根目录（须含 project.toml）；省略时为工作区模式，
+        /// 启动不绑定项目，由 Agent 通过元工具 create/switch 选书
+        #[arg(short, long)]
+        dir: Option<String>,
+        /// 工作区目录（项目容器，list/create/switch 的默认范围）；
+        /// 省略时取项目目录的父级；-d/-w 都省略时默认 ~/Documents/StoryStudio
+        #[arg(short, long)]
+        workspace: Option<String>,
         /// 只读模式：只暴露查询类工具，不修改项目
         #[arg(long)]
         read_only: bool,
@@ -260,12 +266,21 @@ fn main() {
         },
         Commands::Mcp {
             dir,
+            workspace,
             read_only,
             transport,
             port,
             bind,
             new_token,
-        } => cmd_mcp(&dir, read_only, &transport, port, &bind, new_token),
+        } => cmd_mcp(
+            dir.as_deref(),
+            workspace.as_deref(),
+            read_only,
+            &transport,
+            port,
+            &bind,
+            new_token,
+        ),
     };
 
     if let Err(e) = result {
@@ -279,15 +294,32 @@ fn main() {
 // ============================================================================
 
 fn cmd_mcp(
-    dir: &str,
+    dir: Option<&str>,
+    workspace: Option<&str>,
     read_only: bool,
     transport: &str,
     port: u16,
     bind: &str,
     new_token: bool,
 ) -> Result<(), StudioError> {
+    // -d / -w 都未指定时，默认工作区 ~/Documents/StoryStudio：
+    // 从零场景一条命令起服务，Agent 的第一件事就是 create_project
+    let default_workspace = || {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("Documents").join("StoryStudio"))
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    let project_dir = dir.map(PathBuf::from);
+    let workspace = workspace.map(PathBuf::from).or_else(|| {
+        if project_dir.is_none() {
+            Some(default_workspace())
+        } else {
+            None
+        }
+    });
     let options = story_mcp::McpServerOptions {
-        project_dir: PathBuf::from(dir),
+        project_dir,
+        workspace,
         read_only,
     };
     match transport {
@@ -314,6 +346,13 @@ fn cmd_mcp(
                 "  Token：{}（持久化于 ~/.story-studio/mcp-token，重启不轮换；接入需携带 Authorization: Bearer <token>）",
                 handle.token()
             );
+            match handle.project_dir() {
+                Some(p) => println!("  初始项目：{}", p.display()),
+                None => {
+                    println!("  未绑定初始项目（Agent 用 create_project / switch_project 选书）")
+                }
+            }
+            println!("  工作区：{}", handle.workspace().display());
             println!(
                 "  工具数：{}（只读模式：{}）",
                 handle.tool_count(),
