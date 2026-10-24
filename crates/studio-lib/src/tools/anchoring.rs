@@ -352,8 +352,23 @@ fn anchor_detail(outcome: &AnchorOutcome) -> String {
 /// 无 provider 时直接返回空结果（与调用方原有语义一致）。超时后工作线程
 /// detach 继续跑完落盘，结果经回执接力送达（见 [`AnchorDeliveryState`]）
 /// ——调用方回执应提示「已保存、勿重试、结果将随下一次工具回执自动送达」。
+///
+/// 同步模式（`ctx.defer_long_tasks == false`，桌面端妙笔/CLI）不限时：
+/// 直接同步跑完，超时转后台机制只服务于 MCP 的客户端硬超时。
 pub fn anchor_and_apply_bounded(ctx: &ToolContext, fragment_id: &str) -> Result<AnchorRun, String> {
+    if !ctx.defer_long_tasks {
+        return anchor_run_sync(ctx, fragment_id);
+    }
     anchor_and_apply_with_budget(ctx, fragment_id, ANCHOR_BUDGET)
+}
+
+/// 单片段同步锚定（不限时，妙笔/CLI 注册表路径）：无 provider 时空结果，
+/// 与带时限版本口径一致
+fn anchor_run_sync(ctx: &ToolContext, fragment_id: &str) -> Result<AnchorRun, String> {
+    let Some(provider) = ctx.provider.clone() else {
+        return Ok(AnchorRun::Done(AnchorOutcome::default()));
+    };
+    anchor_and_apply(ctx, &provider, fragment_id).map(AnchorRun::Done)
 }
 
 /// 可指定时限的实现（测试用小预算触发 Deferred 路径）
@@ -822,14 +837,21 @@ impl AnchorFragmentsTool {
 
 impl Tool for AnchorFragmentsTool {
     fn definition(&self) -> ToolDef {
+        // 转后台提示只对 MCP 注册表（同步模式下永远不会发生，
+        // 写进描述反而误导 Agent 去等一个不会出现的回执）
+        let defer_note = if self.ctx.defer_long_tasks {
+            "耗时超过时限的部分自动转后台，结果随你后续任意工具调用的回执自动送达\
+（无需主动查询）。导入旧书稿后跑一遍即可建立完整出场索引。"
+        } else {
+            "导入旧书稿后跑一遍即可建立完整出场索引。片段多时耗时较长，属正常。"
+        };
         ToolDef {
             name: "anchor_fragments".into(),
-            description: "对片段执行理解锚定：用 AI 做指代消解，把\"那人\"\"佣兵\"这类\
+            description: format!(
+                "对片段执行理解锚定：用 AI 做指代消解，把\"那人\"\"佣兵\"这类\
 文字匹配认不到的出场落为显式锚点（名字/别名已自动识别，无需重跑）。\
-省略 fragment_id 则批量处理全书（每次最多 60 个片段，超出请分章执行）。\
-耗时超过时限的部分自动转后台，结果随你后续任意工具调用的回执自动送达\
-（无需主动查询）。导入旧书稿后跑一遍即可建立完整出场索引。"
-                .into(),
+省略 fragment_id 则批量处理全书（每次最多 60 个片段，超出请分章执行）。{defer_note}"
+            ),
             parameters: object_schema(vec![(
                 "fragment_id",
                 "string",
@@ -848,9 +870,14 @@ impl Tool for AnchorFragmentsTool {
 
         if let Some(fid) = get_str_opt(arguments, "fragment_id") {
             // 单片段：显式锚定用工具级时限（比写入路径的 5 秒宽裕）——
-            // 快则当场出结果，慢则转后台、经回执接力送达
+            // 快则当场出结果，慢则转后台、经回执接力送达；同步模式不限时
             let paths = self.ctx.paths();
-            return match anchor_and_apply_with_budget(&self.ctx, &fid, ANCHOR_TOOL_BUDGET)? {
+            let run = if self.ctx.defer_long_tasks {
+                anchor_and_apply_with_budget(&self.ctx, &fid, ANCHOR_TOOL_BUDGET)?
+            } else {
+                anchor_run_sync(&self.ctx, &fid)?
+            };
+            return match run {
                 AnchorRun::Done(o) => Ok(format!(
                     "片段 {fid}：{}",
                     if o.anchored.is_empty() && o.unresolved.is_empty() {
@@ -909,6 +936,36 @@ fn anchor_fragments_batch(
     batch_cap: usize,
     budget: std::time::Duration,
 ) -> String {
+    // 同步模式（妙笔/CLI）：逐片段不限时同步完成，不转后台——
+    // 转后台的意义只在 MCP 客户端硬超时，这里只会把结果拆散到后续回执
+    if !ctx.defer_long_tasks {
+        let mut anchored_count = 0usize;
+        let mut pending_count = 0usize;
+        let mut failed: Vec<String> = Vec::new();
+        for fid in names {
+            match anchor_and_apply(ctx, provider, fid) {
+                Ok(o) => {
+                    anchored_count += o.anchored.len();
+                    pending_count += o.unresolved.len();
+                }
+                Err(e) => failed.push(format!("{fid}: {e}")),
+            }
+        }
+        let mut out = format!(
+            "批量锚定完成：处理 {} 个片段（共 {total} 个{}），落锚 {anchored_count} 处，待处置指代 {pending_count} 条（list_unresolved_refs 可查看）",
+            names.len(),
+            if total > batch_cap { "，达单次上限，请分批" } else { "" },
+        );
+        if !failed.is_empty() {
+            out.push_str(&format!(
+                "\n失败 {} 个：{}",
+                failed.len(),
+                failed.join("；")
+            ));
+        }
+        return out;
+    }
+
     let deadline = std::time::Instant::now() + budget;
     let mut anchored_count = 0usize;
     let mut pending_count = 0usize;
@@ -2275,6 +2332,31 @@ status = "ignored"
             matches!(&run, AnchorRun::Done(o) if o.anchored.is_empty() && o.unresolved.is_empty()),
             "无 provider 时空结果，与调用方原有语义一致"
         );
+    }
+
+    /// 同步模式（妙笔/CLI 注册表）：慢 provider 也不转后台，同步等完拿到
+    /// Done；结果不进送达队列（没有后续回执接力的必要）
+    #[test]
+    fn sync_mode_anchor_waits_for_slow_provider() {
+        let tmp = setup_test_project();
+        let dir = tmp.path();
+        let fid = budget_fixture(dir);
+        let mut ctx = ToolContext::with_provider(
+            dir.to_path_buf(),
+            Arc::new(SlowResultProvider {
+                delay_ms: 400,
+                response: DELIVERY_RESPONSE.to_string(),
+            }),
+        );
+        ctx.defer_long_tasks = false;
+
+        let run = anchor_and_apply_bounded(&ctx, &fid).unwrap();
+        assert!(
+            matches!(&run, AnchorRun::Done(o) if !o.anchored.is_empty()),
+            "同步模式下慢 provider 也应等完并拿到结果"
+        );
+        // 结果已随本次回执返回，不应再进送达队列
+        assert!(take_anchor_delivery_note(ctx.anchor_delivery()).is_empty());
     }
 
     // —— 回执接力：转后台的锚定结果随下一次工具回执送达 ——

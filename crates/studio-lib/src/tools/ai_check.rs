@@ -193,18 +193,24 @@ impl AiCheckTool {
 
 impl Tool for AiCheckTool {
     fn definition(&self) -> ToolDef {
+        // 转后台提示只对 MCP 注册表（同步模式下永远不会发生）
+        let defer_note = if self.ctx.defer_long_tasks {
+            "（超长自动分块并行，超过时限转后台，报告随后续工具调用回执自动送达——\
+            收到「已转后台」提示属正常，请勿重试）。"
+        } else {
+            "（超长自动分块并行检测，片段多时耗时较长，属正常）。"
+        };
         ToolDef {
             name: "ai_check".into(),
-            description: "检测正文的 AI 写作特征（俗称「AI 味」），返回按文本顺序排列的命中报告。\
+            description: format!(
+                "检测正文的 AI 写作特征（俗称「AI 味」），返回按文本顺序排列的命中报告。\
             覆盖 18 条小说适配特征：形容词堆砌、对话千人一面、情绪直接命名、比喻密度过高、\
             匀速排比、让步模板反复、情绪曲线光滑、没有任何犹豫、段段金句、句子节奏均匀、\
             连接词过度使用、同义词替换、中文翻译腔、对深刻过拟合等。\
-            scope=fragment 检测单片段；scene/chapter 按阅读序聚合整场景/整章批量检测\
-            （超长自动分块并行，超过时限转后台，报告随后续工具调用回执自动送达——\
-            收到「已转后台」提示属正常，请勿重试）。\
+            scope=fragment 检测单片段；scene/chapter 按阅读序聚合整场景/整章批量检测{defer_note}\
             写完正文后可自检，但不必每次都调——只在拿不准某段是否「太光滑」时用片段级；\
             整章/整场景交付前用 scene/chapter 批量过一遍更省事。"
-                .into(),
+            ),
             parameters: object_schema(vec![
                 (
                     "scope",
@@ -280,30 +286,37 @@ impl AiCheckTool {
         })?;
 
         let dir = self.ctx.project_dir.clone();
-        // 后台收齐后：格式化整份报告，经回执接力随下一次工具回执送达
-        let bg_ctx = self.ctx.clone();
-        let bg_dir = dir.clone();
-        let bg_scope_id = scope_id.clone();
-        let run = ai_check::check_scope_bounded(
-            &dir,
-            check_scope,
-            &scope_id,
-            provider,
-            SCOPE_CHECK_BUDGET,
-            move |result| match result {
-                Ok(report) => {
-                    let opening_stat = opening_stat_for_report(&bg_dir, &report, &bg_scope_id);
-                    bg_ctx.push_receipt_note(format!(
-                        "\n📬 后台 AI 检测完成（此前超时转后台的{label}检测，结果送达）：\n{}",
-                        format_batch_report_for_llm(&report, opening_stat).trim_start()
-                    ));
-                }
-                Err(e) => bg_ctx.push_receipt_note(format!(
-                    "\n📬 后台{label}检测失败：{e}（可稍后重试本检测）"
-                )),
-            },
-        )
-        .map_err(|e| format!("AI 检测失败: {e}"))?;
+        let run = if self.ctx.defer_long_tasks {
+            // 后台收齐后：格式化整份报告，经回执接力随下一次工具回执送达
+            let bg_ctx = self.ctx.clone();
+            let bg_dir = dir.clone();
+            let bg_scope_id = scope_id.clone();
+            ai_check::check_scope_bounded(
+                &dir,
+                check_scope,
+                &scope_id,
+                provider,
+                SCOPE_CHECK_BUDGET,
+                move |result| match result {
+                    Ok(report) => {
+                        let opening_stat = opening_stat_for_report(&bg_dir, &report, &bg_scope_id);
+                        bg_ctx.push_receipt_note(format!(
+                            "\n📬 后台 AI 检测完成（此前超时转后台的{label}检测，结果送达）：\n{}",
+                            format_batch_report_for_llm(&report, opening_stat).trim_start()
+                        ));
+                    }
+                    Err(e) => bg_ctx.push_receipt_note(format!(
+                        "\n📬 后台{label}检测失败：{e}（可稍后重试本检测）"
+                    )),
+                },
+            )
+            .map_err(|e| format!("AI 检测失败: {e}"))?
+        } else {
+            // 同步模式（妙笔/CLI）：不限时等完——转后台只服务于 MCP 客户端硬超时
+            ai_check::check_scope(&dir, check_scope, &scope_id, provider)
+                .map(ai_check::ScopeCheckRun::Done)
+                .map_err(|e| format!("AI 检测失败: {e}"))?
+        };
         match run {
             ai_check::ScopeCheckRun::Done(report) => {
                 let opening_stat = opening_stat_for_report(&dir, &report, &scope_id);
@@ -715,6 +728,92 @@ impl Tool for AiCheckPovTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 同步模式（妙笔/CLI 注册表）：scene/chapter 检测直接返回完整报告，
+    /// 不出现「转后台」提示；描述文本也不含转后台引导
+    #[test]
+    fn sync_mode_scope_check_returns_report_directly() {
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "ai-check-sync").unwrap();
+        let paths = ProjectPaths::new(tmp.path());
+        let ch = crate::mutations::create_chapter(&paths, "第一章").unwrap();
+        let sc = crate::mutations::create_scene(&paths, &ch, "场景", None).unwrap();
+        crate::mutations::create_fragment(&paths, &sc, "他推门进来，雨伞立在门边。他叹了口气。")
+            .unwrap();
+
+        #[derive(Debug)]
+        struct StubProvider;
+        impl story_ai_runtime::AiProvider for StubProvider {
+            fn id(&self) -> &str {
+                "mock-ai-check-sync"
+            }
+            fn generate(
+                &self,
+                _request: &story_ai_runtime::provider::GenerateRequest,
+            ) -> Result<
+                story_ai_runtime::provider::GenerateResponse,
+                story_ai_runtime::provider::AiError,
+            > {
+                Ok(story_ai_runtime::provider::GenerateResponse {
+                    text: r#"{"items":[{"quote":"他推门进来","feature_id":"10","feature_name":"句子节奏均匀","severity":"Weak","explanation":"节奏单一"}],"summary":"整体尚可。"}"#.to_string(),
+                    usage: story_ai_runtime::provider::TokenUsage {
+                        input_tokens: 10,
+                        output_tokens: 20,
+                    },
+                    stop_reason: story_ai_runtime::provider::StopReason::EndTurn,
+                    tool_calls: Vec::new(),
+                })
+            }
+        }
+
+        let mut ctx =
+            ToolContext::with_provider(tmp.path().to_path_buf(), std::sync::Arc::new(StubProvider));
+        ctx.defer_long_tasks = false;
+
+        let tool = AiCheckTool::new(ctx.clone());
+        let out = tool
+            .execute(&serde_json::json!({ "scope": "chapter", "id": ch }))
+            .unwrap();
+        assert!(out.contains("检测完成"), "{out}");
+        assert!(out.contains("句子节奏均匀"), "{out}");
+        assert!(!out.contains("转后台"), "同步模式不应提示转后台：{out}");
+        // 结果直接返回，不入回执接力队列
+        assert!(super::super::take_receipt_notes_from(ctx.receipt_notes()).is_empty());
+
+        // 描述也不引导 Agent 去等一个不会出现的后台回执
+        let desc = tool.definition().description;
+        assert!(!desc.contains("转后台"), "{desc}");
+    }
+
+    /// MCP 注册表（默认）：描述含转后台引导，与回执接力机制对应
+    #[test]
+    fn mcp_mode_description_mentions_deferral() {
+        let tmp = tempfile::tempdir().unwrap();
+        story_project_format::init::init_project(tmp.path(), "ai-check-mcp").unwrap();
+        #[derive(Debug)]
+        struct NullProvider;
+        impl story_ai_runtime::AiProvider for NullProvider {
+            fn id(&self) -> &str {
+                "null"
+            }
+            fn generate(
+                &self,
+                _request: &story_ai_runtime::provider::GenerateRequest,
+            ) -> Result<
+                story_ai_runtime::provider::GenerateResponse,
+                story_ai_runtime::provider::AiError,
+            > {
+                Err(story_ai_runtime::provider::AiError::Unavailable(
+                    "null".into(),
+                ))
+            }
+        }
+        let tool = AiCheckTool::new(ToolContext::with_provider(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(NullProvider),
+        ));
+        assert!(tool.definition().description.contains("转后台"));
+    }
 
     #[test]
     fn classify_opening_by_prefix_rules() {

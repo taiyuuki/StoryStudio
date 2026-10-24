@@ -71,8 +71,9 @@ pub use story_exporter::ChapterFile;
 pub use story_project_format::StoryMeta;
 pub use tools::{
     agent_chat_global_streaming, agent_chat_streaming, cancel_agent, create_tool_registry,
-    drop_session, list_sessions, run_agent, run_agent_global, run_agent_global_streaming,
-    run_agent_streaming, session_store, unbound_tool_registry, ToolContext,
+    create_tool_registry_for_agent, drop_session, list_sessions, run_agent, run_agent_global,
+    run_agent_global_streaming, run_agent_streaming, session_store, unbound_tool_registry,
+    ToolContext,
 };
 pub use workflow::{
     chapter_progress, run_workflow, workflow_cancel, workflow_status, ChapterProgress, PauseInfo,

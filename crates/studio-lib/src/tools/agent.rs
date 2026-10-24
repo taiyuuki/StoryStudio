@@ -193,7 +193,26 @@ impl Tool for GatedTool {
 /// 工具执行期间持读锁还是写锁，以及 MCP `--read-only` 模式是否暴露它。
 /// 漏标的代价是"少一点并发"（默认按会写处理），不会反向出错。
 pub fn create_tool_registry(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRegistry {
-    let ctx = ToolContext::with_provider(dir.to_path_buf(), provider);
+    create_tool_registry_with(dir, provider, true)
+}
+
+/// 桌面端妙笔 / CLI 交互 Agent 的工具注册表：长任务（理解锚定、
+/// scene/chapter 级 AI 检测）同步执行、不转后台。
+///
+/// 同进程 Agent 直接消费工具结果，没有 MCP 那种 30~60 秒的客户端
+/// 硬超时；转后台反而把结果拆到后续回执，平添一轮往返。MCP 路径
+/// 继续用 [`create_tool_registry`]（转后台 + 回执接力）。
+pub fn create_tool_registry_for_agent(dir: &Path, provider: Arc<dyn AiProvider>) -> ToolRegistry {
+    create_tool_registry_with(dir, provider, false)
+}
+
+fn create_tool_registry_with(
+    dir: &Path,
+    provider: Arc<dyn AiProvider>,
+    defer_long_tasks: bool,
+) -> ToolRegistry {
+    let mut ctx = ToolContext::with_provider(dir.to_path_buf(), provider);
+    ctx.defer_long_tasks = defer_long_tasks;
     // GatedTool 回执接力与锚定 worker 共用同一送达队列（ctx 内 Arc）
     let anchor_delivery = ctx.anchor_delivery().clone();
     let receipt_notes = ctx.receipt_notes().clone();
@@ -345,7 +364,7 @@ pub fn session_store() -> &'static SessionStore {
 
 /// Agent 工厂（项目模式）— 创建带项目工具的 Agent
 fn project_agent_factory(dir: PathBuf, provider: Arc<dyn AiProvider>) -> AgentFactory {
-    let tools = Arc::new(create_tool_registry(&dir, provider.clone()));
+    let tools = Arc::new(create_tool_registry_for_agent(&dir, provider.clone()));
     Box::new(move || {
         Agent::new(
             // 每轮重建都重新解析项目覆盖，改提示词对下一轮对话生效
@@ -556,7 +575,7 @@ pub fn run_agent(
     provider: Arc<dyn AiProvider>,
     user_input: &str,
 ) -> Result<AgentTrace, StudioError> {
-    let tools = Arc::new(create_tool_registry(dir, provider.clone()));
+    let tools = Arc::new(create_tool_registry_for_agent(dir, provider.clone()));
     let config = default_agent_config();
     let mut agent = Agent::new(crate::prompts::AGENT_PROJECT, config, provider, tools);
     agent
@@ -573,7 +592,7 @@ pub fn run_agent_streaming(
     user_input: &str,
     on_step: &(dyn Fn(AgentStep) + Send + Sync),
 ) -> Result<AgentTrace, StudioError> {
-    let tools = Arc::new(create_tool_registry(dir, provider.clone()));
+    let tools = Arc::new(create_tool_registry_for_agent(dir, provider.clone()));
     let config = default_agent_config();
     let mut agent = Agent::new(crate::prompts::AGENT_PROJECT, config, provider, tools);
 

@@ -33,6 +33,14 @@ pub struct ToolContext {
     /// 锚定之外的后台任务（如超时转后台的 AI 检测）把完成回执记入此处，
     /// 同样由 GatedTool 随下一次工具回执送达。
     receipt_notes: Arc<Mutex<Vec<String>>>,
+    /// 长任务（理解锚定、scene/chapter 级 AI 检测）超时是否转后台执行。
+    ///
+    /// `true`（默认）：MCP 等请求-响应调用方有 30~60 秒的客户端硬超时，
+    /// 超时即报错而服务端照跑，转后台 + 回执接力是唯一不丢结果的方式；
+    /// `false`：同进程 Agent（桌面端妙笔 / CLI 交互）直接消费工具结果，
+    /// 没有外部超时约束——同步等完更简单：转后台会把结果拆到后续回执，
+    /// 平添一轮往返，Agent 还可能对着「已转后台」空等或误判失败。
+    pub(crate) defer_long_tasks: bool,
 }
 
 /// 解析缓存状态：上次解析结果 + 文件 hash 缓存
@@ -67,6 +75,7 @@ impl Clone for ToolContext {
             parse_state: Arc::clone(&self.parse_state),
             anchor_delivery: Arc::clone(&self.anchor_delivery),
             receipt_notes: Arc::clone(&self.receipt_notes),
+            defer_long_tasks: self.defer_long_tasks,
         }
     }
 }
@@ -83,6 +92,7 @@ impl ToolContext {
             })),
             anchor_delivery: Arc::new(Mutex::new(anchoring::AnchorDeliveryState::default())),
             receipt_notes: Arc::new(Mutex::new(Vec::new())),
+            defer_long_tasks: true,
         }
     }
 
@@ -98,6 +108,7 @@ impl ToolContext {
             })),
             anchor_delivery: Arc::new(Mutex::new(anchoring::AnchorDeliveryState::default())),
             receipt_notes: Arc::new(Mutex::new(Vec::new())),
+            defer_long_tasks: true,
         }
     }
 
