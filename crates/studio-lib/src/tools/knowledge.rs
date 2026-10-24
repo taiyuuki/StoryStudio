@@ -1211,39 +1211,46 @@ impl Tool for SetThreadKnowledgeTool {
             name: "set_thread_knowledge".into(),
             description: "记录线索的可见性变化——某观察者在某场景的知晓程度。\
             这是管理信息流的核心工具：跟踪谁（读者/角色/组织）在什么时候知道了什么。\
-            同一观察者的记录会累积为时间线。\
-            一场戏后多名角色同时获知用 observers 数组（同一线索/场景/状态批量应用）；\n            不同线索或不同状态的组合用 records 批量传入。"
+            同一观察者的记录会累积为时间线；记录只追加不覆盖，录错时用 op=remove 撤销。\
+            一场戏后多名角色同时获知用 observers 数组（同一线索/场景/状态批量应用）；\
+            不同线索或不同状态的组合用 records 批量传入。"
                 .into(),
             parameters: object_schema(vec![
-                ("thread_id", "string", "线索 ID（如 t_001）；单条记录时必填", false),
+                (
+                    "op",
+                    "string",
+                    "操作：set=记录（默认）/ remove=删除录错的记录。remove 时只需 thread_id + observer，scene_id 可选（省略则删该观察者对这条线索的全部认知记录）",
+                    false,
+                ),
+                ("thread_id", "string", "线索 ID（如 t_001）；单条操作时必填", false),
                 (
                     "observer",
                     "string",
-                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)；单条记录时必填",
+                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)；单条操作时必填",
                     false,
                 ),
                 (
                     "state",
                     "string",
-                    "知晓程度：unknown(不知道) / suspected(怀疑) / known(知道)；单条记录时必填",
+                    "知晓程度：unknown(不知道) / suspected(怀疑) / known(知道)；op=set 单条时必填",
                     false,
                 ),
                 (
                     "scene_id",
                     "string",
-                    "发生变化的场景 ID（如 sc_01_02）；单条记录时必填",
+                    "发生变化的场景 ID（如 sc_01_02）；op=set 单条时必填，op=remove 可选（只删该场景的时间线条目）",
                     false,
                 ),
                 (
                     "observers",
                     "array",
-                    "多名观察者便捷形态：观察者 ID 数组（如 [\"c_0001\",\"c_0002\"]），同一线索/场景/状态批量应用——一场戏后多人同时获知时用它，免去逐条拼 records",
+                    "（op=set）多名观察者便捷形态：观察者 ID 数组（如 [\"c_0001\",\"c_0002\"]），同一线索/场景/状态批量应用——一场戏后多人同时获知时用它，免去逐条拼 records",
                     false,
                 ),
                 (
                     "records",
                     "object-array",
-                    "批量记录：数组，每项为原生 JSON 对象 {\"thread_id\": \"...\", \"observer\": \"...\", \"state\": \"...\", \"scene_id\": \"...\"}。与单条参数二选一",
+                    "（op=set）批量记录：数组，每项为原生 JSON 对象 {\"thread_id\": \"...\", \"observer\": \"...\", \"state\": \"...\", \"scene_id\": \"...\"}。与单条参数二选一",
                     false,
                 ),
             ]),
@@ -1251,6 +1258,11 @@ impl Tool for SetThreadKnowledgeTool {
     }
 
     fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+        // op=remove：撤销录错的记录（原 remove_thread_knowledge 入口）
+        if get_str_opt(arguments, "op").as_deref() == Some("remove") {
+            return self.remove(arguments);
+        }
+
         let paths = self.ctx.paths();
 
         // 批量：records 数组（兼容字符串与原生数组形态）
@@ -1328,47 +1340,9 @@ impl Tool for SetThreadKnowledgeTool {
     }
 }
 
-// ============================================================================
-// remove_thread_knowledge
-// ============================================================================
-
-pub struct RemoveThreadKnowledgeTool {
-    ctx: ToolContext,
-}
-impl RemoveThreadKnowledgeTool {
-    pub fn new(ctx: ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl Tool for RemoveThreadKnowledgeTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "remove_thread_knowledge".into(),
-            description: "删除线索可见性记录（录错时的撤销入口——set_thread_knowledge 只追加不覆盖）。\
-            删单条：传 thread_id + observer + scene_id（只移除该场景的那条时间线记录）；\
-            删整条观察者记录：省略 scene_id（该观察者对这条线索的全部认知记录移除）。\
-            逐条删除不影响其他观察者的时间线；线索本身的叙事状态（planted/revealed 等）不在此管理。"
-                .into(),
-            parameters: object_schema(vec![
-                ("thread_id", "string", "线索 ID（如 t_001）", true),
-                (
-                    "observer",
-                    "string",
-                    "观察者：reader(读者) / author(作者) / omniscient(全知) / 角色ID(如c_001) / 组织ID(如o_001)",
-                    true,
-                ),
-                (
-                    "scene_id",
-                    "string",
-                    "可选：只删该场景的时间线记录；省略则删该观察者的整条认知记录",
-                    false,
-                ),
-            ]),
-        }
-    }
-
-    fn execute(&self, arguments: &serde_json::Value) -> Result<String, String> {
+impl SetThreadKnowledgeTool {
+    /// op=remove：删除录错的可见性记录（记录只追加不覆盖，錯录只能删）
+    fn remove(&self, arguments: &serde_json::Value) -> Result<String, String> {
         let thread_id = get_str(arguments, "thread_id")?;
         let observer = get_str(arguments, "observer")?;
         let scene_id = get_str_opt(arguments, "scene_id");
@@ -5104,10 +5078,11 @@ race = "星辰精灵"
         }))
         .unwrap();
 
-        // 删单场景记录：只移除 reader 在 sc_01_01 的那条
-        let tool = RemoveThreadKnowledgeTool::new(ctx.clone());
+        // 删单场景记录：只移除 reader 在 sc_01_01 的那条（op=remove）
+        let tool = SetThreadKnowledgeTool::new(ctx.clone());
         let out = tool
             .execute(&serde_json::json!({
+                "op": "remove",
                 "thread_id": "t_001", "observer": "reader", "scene_id": "sc_01_01"
             }))
             .unwrap();
@@ -5119,9 +5094,10 @@ race = "星辰精灵"
             "其他时间线记录保留: {content}"
         );
 
-        // 删整条观察者记录
+        // 删整条观察者记录（省略 scene_id）
         let out = tool
             .execute(&serde_json::json!({
+                "op": "remove",
                 "thread_id": "t_001", "observer": "reader"
             }))
             .unwrap();
@@ -5136,6 +5112,7 @@ race = "星辰精灵"
         // 再删 → 未找到，无副作用
         let out = tool
             .execute(&serde_json::json!({
+                "op": "remove",
                 "thread_id": "t_001", "observer": "reader"
             }))
             .unwrap();
