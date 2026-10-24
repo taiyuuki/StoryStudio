@@ -613,13 +613,17 @@ fn book_chapter_ids(document: &story_ir::DocumentGraph) -> Vec<String> {
 }
 
 /// 场景 → 章节序位（0-based，阅读序）
+///
+/// 序位必须按**章**计数：此前实现用 `map.len()`（已登记场景数）光当
+/// 章计数器，仅在「每章恰一场景」时碰巧成立——多场景章节下序位随
+/// 场景数膨胀，伏笔沉寂预警报出「第 25 章」而全书只有九章这类误号，
+/// 沉寂章数也随之虚高，直接误导 Agent 的伏笔推进决策。
 fn build_scene_chapter_pos(
     document: &story_ir::DocumentGraph,
 ) -> std::collections::HashMap<String, usize> {
     let mut map = std::collections::HashMap::new();
-    for ch_id in book_chapter_ids(document) {
-        let pos = map.len();
-        let sid = StableId::new_unchecked(&ch_id);
+    for (pos, ch_id) in book_chapter_ids(document).iter().enumerate() {
+        let sid = StableId::new_unchecked(ch_id);
         for sc in document.scenes_of_chapter(&sid) {
             map.insert(sc.as_str().to_string(), pos);
         }
@@ -1121,5 +1125,69 @@ planted_at = "sc_11"
         // 支线未到阈值、新线索刚动过 → 不出现
         assert!(!out.contains("次要传闻"), "{out}");
         assert!(!out.contains("新变故"), "{out}");
+    }
+
+    /// 回归：多场景章节下沉寂统计必须按**章**计数。旧实现用已登记
+    /// 场景数光当章序位，每章 3 场景时 12 章的书会报出「第 25 章、
+    /// 沉寂 24 章」这类凭空膨胀的章号（实际只有 12 章、沉寂 11 章）。
+    #[test]
+    fn prepare_stale_warning_counts_chapters_not_scenes() {
+        let tmp = setup();
+        let dir = tmp.path();
+
+        // 12 章，每章 3 个场景（每场景 1 片段）——旧实现下第 12 章的
+        // 场景会被标到序位 33（11 章 × 3 场景），预警报「沉寂 33 章」
+        let mut structure = String::from("[book]\nid = \"b_root\"\ntitle = \"测试\"\nchapters = [");
+        let chapter_ids: Vec<String> = (1..=12).map(|i| format!("ch_{i:02}")).collect();
+        structure.push_str(
+            &chapter_ids
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        structure.push_str("]\n");
+        for (i, ch) in chapter_ids.iter().enumerate() {
+            let scenes: Vec<String> = (1..=3).map(|k| format!("sc_{:02}_{k}", i + 1)).collect();
+            structure.push_str(&format!(
+                "\n[chapter.{ch}]\ntitle = \"第{}章\"\nscenes = [{}]\n",
+                i + 1,
+                scenes
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            for s in scenes {
+                structure.push_str(&format!(
+                    "\n[scene.{s}]\ntitle = \"场景\"\nfragments = []\n"
+                ));
+            }
+        }
+        std::fs::write(dir.join("structure.toml"), structure).unwrap();
+
+        std::fs::write(
+            dir.join("threads.toml"),
+            r#"[[thread]]
+id = "t_main"
+title = "主线玉佩"
+priority = "main"
+planted_at = "sc_01_1"
+"#,
+        )
+        .unwrap();
+
+        let ctx = ToolContext::new(dir.to_path_buf());
+        let tool = PrepareWritingTool::new(ctx);
+        let out = tool
+            .execute(&serde_json::json!({ "scene_id": "sc_12_3" }))
+            .unwrap();
+
+        // 按章计数：第 1 章埋设 → 写作前沿第 12 章 → 沉寂 11 章
+        assert!(out.contains("伏笔沉寂预警"), "{out}");
+        assert!(out.contains("最近动静在第 1 章"), "{out}");
+        assert!(out.contains("已沉寂 11 章"), "{out}");
+        assert!(!out.contains("已沉寂 33 章"), "{out}");
+        assert!(!out.contains("第 34 章"), "{out}");
     }
 }
