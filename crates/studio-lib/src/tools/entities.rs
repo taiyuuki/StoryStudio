@@ -964,66 +964,12 @@ impl Tool for ProfileCheckTool {
             ));
         }
 
-        // 档案字段摘要（事实性字段拼进 prompt）
-        let mut profile_text = format!("名称：{}\n", entity.display_name);
-        if !entity.aliases.is_empty() {
-            profile_text.push_str(&format!("别名：{}\n", entity.aliases.join("、")));
-        }
-        let mut section = |title: &str, pairs: Vec<(&str, Option<&String>)>| {
-            let filled: Vec<String> = pairs
-                .into_iter()
-                .filter_map(|(k, v)| v.map(|v| format!("{k}: {v}")))
-                .collect();
-            if !filled.is_empty() {
-                profile_text.push_str(&format!("[{title}]\n{}\n", filled.join("\n")));
-            }
-        };
-        if let Some(p) = &entity.profile {
-            section(
-                "角色档案",
-                vec![
-                    ("race", p.race.as_ref()),
-                    ("gender", p.gender.as_ref()),
-                    ("occupation", p.occupation.as_ref()),
-                    ("appearance", p.appearance.as_ref()),
-                    ("background", p.background.as_ref()),
-                    ("personality", p.personality.as_ref()),
-                ],
-            );
-        }
-        if let Some(g) = &entity.geography {
-            section(
-                "地理",
-                vec![
-                    ("kind", g.kind.as_ref()),
-                    ("position", g.position.as_ref()),
-                    ("summary", g.summary.as_ref()),
-                ],
-            );
-        }
-        if let Some(i) = &entity.item {
-            section(
-                "道具",
-                vec![
-                    ("kind", i.kind.as_ref()),
-                    ("description", i.description.as_ref()),
-                ],
-            );
-        }
-        if let Some(o) = &entity.org {
-            section(
-                "组织",
-                vec![
-                    ("kind", o.kind.as_ref()),
-                    ("leader", o.leader.as_ref()),
-                    ("territory", o.territory.as_ref()),
-                    ("summary", o.summary.as_ref()),
-                ],
-            );
-        }
+        // 档案字段摘要（事实性字段拼进 prompt，口径见 build_profile_prompt_text）
+        let profile_text = build_profile_prompt_text(&entity);
 
         // 该实体的 active 断言（动态事实层）：并入核对基准——
-        // 只比档案会漏掉「断言 vs 正文」方向的出入
+        // 只比档案会漏掉「断言 vs 正文」方向的出入。实体 ID 型 object
+        // 补显示名，裸 ID 对核对模型没有信息量
         let assertions_text =
             std::fs::read_to_string(paths.knowledge_dir().join("assertions.toml"))
                 .ok()
@@ -1036,7 +982,12 @@ impl Tool for ProfileCheckTool {
                             a.subject == entity_id && (a.status.is_empty() || a.status == "active")
                         })
                         .map(|a| {
-                            format!("- {}.{} = {}", a.id, a.predicate, object_display(&a.object))
+                            format!(
+                                "- {}.{} = {}",
+                                a.id,
+                                a.predicate,
+                                resolve_entity_ref(&paths, &object_display(&a.object))
+                            )
                         })
                         .collect();
                     lines.join("\n")
@@ -1074,6 +1025,100 @@ impl Tool for ProfileCheckTool {
             &report,
         ))
     }
+}
+
+/// 断言 object 若是实体 ID（holds/located_at/member_of 等），补上显示名：
+/// `located_at = l_0006` 对核对模型是裸 ID、没有信息量，无法与正文的
+/// 实际地点描写比对，只能当成「未提供具体指代」。非 ID 或解析失败
+/// 原样返回。
+fn resolve_entity_ref(paths: &story_project_format::ProjectPaths, value: &str) -> String {
+    match paths
+        .file_for_id(value)
+        .filter(|p| p.is_file())
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|c| EntityFile::from_toml_str(&c).ok())
+    {
+        Some(entity) => format!("{value}（{}）", entity.display_name),
+        None => value.to_string(),
+    }
+}
+
+/// 把实体档案的事实性字段拼为核对 prompt 文本。
+///
+/// 字段清单必须与 get_entity_detail 的渲染口径一致：此前地理段漏拼
+/// features（新建地点档案的主要事实字段，常与 position 同填），道具/
+/// 组织/角色也各有遗漏——核对模型看到的档案近乎空白，只能回「档案
+/// 未提供具体事实可核对」，地点核对形同虚设。
+fn build_profile_prompt_text(entity: &EntityFile) -> String {
+    let mut profile_text = format!("名称：{}\n", entity.display_name);
+    if !entity.aliases.is_empty() {
+        profile_text.push_str(&format!("别名：{}\n", entity.aliases.join("、")));
+    }
+    let section = |profile_text: &mut String, title: &str, pairs: Vec<(&str, Option<&str>)>| {
+        let filled: Vec<String> = pairs
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|v| format!("{k}: {v}")))
+            .collect();
+        if !filled.is_empty() {
+            profile_text.push_str(&format!("[{title}]\n{}\n", filled.join("\n")));
+        }
+    };
+    if let Some(p) = &entity.profile {
+        section(
+            &mut profile_text,
+            "角色档案",
+            vec![
+                ("race", p.race.as_deref()),
+                ("gender", p.gender.as_deref()),
+                ("occupation", p.occupation.as_deref()),
+                ("appearance", p.appearance.as_deref()),
+                ("background", p.background.as_deref()),
+                ("personality", p.personality.as_deref()),
+                ("habits", p.habits.as_deref()),
+                ("birth_year", p.birth_year.map(|y| y.to_string()).as_deref()),
+            ],
+        );
+    }
+    if let Some(g) = &entity.geography {
+        section(
+            &mut profile_text,
+            "地理",
+            vec![
+                ("kind", g.kind.as_deref()),
+                ("parent", g.parent.as_deref()),
+                ("position", g.position.as_deref()),
+                ("features", g.features.as_deref()),
+                ("summary", g.summary.as_deref()),
+            ],
+        );
+    }
+    if let Some(i) = &entity.item {
+        section(
+            &mut profile_text,
+            "道具",
+            vec![
+                ("kind", i.kind.as_deref()),
+                ("grade", i.grade.as_deref()),
+                ("description", i.description.as_deref()),
+                ("abilities", i.abilities.as_deref()),
+            ],
+        );
+    }
+    if let Some(o) = &entity.org {
+        section(
+            &mut profile_text,
+            "组织",
+            vec![
+                ("kind", o.kind.as_deref()),
+                ("leader", o.leader.as_deref()),
+                ("territory", o.territory.as_deref()),
+                ("ideology", o.ideology.as_deref()),
+                ("location", o.location.as_deref()),
+                ("summary", o.summary.as_deref()),
+            ],
+        );
+    }
+    profile_text
 }
 
 /// 宽松解析 LLM 的核对输出（统一走 llm_json 容错梯度）
@@ -2077,6 +2122,108 @@ kind = "weapon"
         assert!(out.contains("退休副局长"), "{out}");
         assert!(out.contains("f_0001"), "{out}");
         assert!(out.contains("软提示"), "{out}");
+    }
+
+    /// 回归：地点档案的 features（常与 position 同填的主要事实字段）
+    /// 此前漏拼进核对 prompt，新建地点的核对形同虚设——模型看到的
+    /// 档案近乎空白，只能报「未提供具体事实」。各类型的事实字段
+    /// 现与 get_entity_detail 渲染口径一致。
+    #[test]
+    fn profile_prompt_includes_location_features_and_all_factual_fields() {
+        let entity = EntityFile::from_toml_str(
+            r#"
+id = "l_0001"
+display_name = "青云城"
+aliases = ["云城"]
+[geography]
+kind = "city"
+parent = "l_0009"
+position = "东大陆临海"
+features = "终年多雨，有上古遗迹"
+summary = "主角启程之地"
+"#,
+        )
+        .unwrap();
+        let text = build_profile_prompt_text(&entity);
+        assert!(text.contains("position: 东大陆临海"), "{text}");
+        assert!(text.contains("features: 终年多雨，有上古遗迹"), "{text}");
+        assert!(text.contains("kind: city"), "{text}");
+        assert!(text.contains("parent: l_0009"), "{text}");
+        assert!(text.contains("summary: 主角启程之地"), "{text}");
+        assert!(text.contains("别名：云城"), "{text}");
+
+        // 道具：abilities / grade 不再遗漏
+        let item = EntityFile::from_toml_str(
+            r#"
+id = "i_0001"
+display_name = "寒霜剑"
+[item]
+kind = "sword"
+grade = "灵器"
+description = "剑身泛霜"
+abilities = "凝冰"
+"#,
+        )
+        .unwrap();
+        let text = build_profile_prompt_text(&item);
+        assert!(text.contains("grade: 灵器"), "{text}");
+        assert!(text.contains("abilities: 凝冰"), "{text}");
+
+        // 组织：ideology / location 不再遗漏
+        let org = EntityFile::from_toml_str(
+            r#"
+id = "o_0001"
+display_name = "太虚天宫"
+[org]
+kind = "sect"
+leader = "玄阳子"
+territory = "东大陆"
+ideology = "济世度人"
+location = "l_0001"
+summary = "正道魁首"
+"#,
+        )
+        .unwrap();
+        let text = build_profile_prompt_text(&org);
+        assert!(text.contains("ideology: 济世度人"), "{text}");
+        assert!(text.contains("location: l_0001"), "{text}");
+
+        // 角色：habits / birth_year 不再遗漏
+        let character = EntityFile::from_toml_str(
+            r#"
+id = "c_0001"
+display_name = "林风"
+[profile]
+occupation = "散修"
+birth_year = -1200
+habits = "摩挲剑穗"
+"#,
+        )
+        .unwrap();
+        let text = build_profile_prompt_text(&character);
+        assert!(text.contains("habits: 摩挲剑穗"), "{text}");
+        assert!(text.contains("birth_year: -1200"), "{text}");
+    }
+
+    /// 断言的实体 ID 型 object 补显示名：`located_at = l_0006` 这类裸 ID
+    /// 对核对模型没有信息量，会被当成「未提供具体指代」而无法与正文比对
+    #[test]
+    fn resolve_entity_ref_appends_display_name_for_entity_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("entities/locations")).unwrap();
+        std::fs::write(
+            dir.join("entities/locations/l_0006.toml"),
+            "id = \"l_0006\"\ndisplay_name = \"望仙关\"\n",
+        )
+        .unwrap();
+        let paths = story_project_format::ProjectPaths::new(dir);
+
+        // 实体 ID → 补显示名
+        assert_eq!(resolve_entity_ref(&paths, "l_0006"), "l_0006（望仙关）");
+        // 非 ID 文本 / 不存在的 ID → 原样返回
+        assert_eq!(resolve_entity_ref(&paths, "抗盟第一旗帜"), "抗盟第一旗帜");
+        assert_eq!(resolve_entity_ref(&paths, "l_9999"), "l_9999");
     }
 
     #[test]
