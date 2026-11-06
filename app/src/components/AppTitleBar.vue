@@ -8,12 +8,14 @@ import { ElMessage } from 'element-plus'
 import { api } from '@/api/backend'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useUpdateCheck } from '@/composables/useUpdateCheck'
 
 defineProps<{ title?: string }>()
 const emit = defineEmits<{ backHome: [] }>()
 
 const ui = useUiStore()
 const workspace = useWorkspaceStore()
+const updateCheck = useUpdateCheck()
 const isMac = shallowRef(true)
 const maximized = shallowRef(false)
 
@@ -91,6 +93,15 @@ async function close() {
       >
         <i class="fa-solid fa-tower-broadcast" />
       </button>
+      <!-- 有可用更新时常驻提醒（「以后再说」后仍可见），点击打开更新弹窗 -->
+      <button
+        v-if="updateCheck.update.value && !updateCheck.downloading.value"
+        class="ink-icon-btn tb-update-hint"
+        title="发现新版本，点击查看"
+        @click="updateCheck.openDialog()"
+      >
+        <i class="fa-solid fa-circle-arrow-down" />
+      </button>
       <button
         class="ink-icon-btn"
         :title="ui.theme === 'theme-ink' ? '切到暗夜水墨' : '切到素宣墨白'"
@@ -152,6 +163,15 @@ async function close() {
 
   &:hover {
     color: var(--ink-warning);
+    background: var(--surface-2);
+  }
+}
+
+.tb-update-hint {
+  color: var(--ink-accent);
+
+  &:hover {
+    color: var(--ink-accent);
     background: var(--surface-2);
   }
 }

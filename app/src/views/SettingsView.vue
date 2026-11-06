@@ -2,6 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { getVersion } from '@tauri-apps/api/app'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   api,
   type AiConfigDto,
@@ -11,6 +13,7 @@ import {
   type ProviderPresetDto,
 } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useUpdateCheck } from '@/composables/useUpdateCheck'
 
 const router = useRouter()
 const workspace = useWorkspaceStore()
@@ -49,6 +52,7 @@ const TABS = [
   { key: 'providers', label: 'AI 服务商', icon: 'fa-solid fa-layer-group' },
   { key: 'purposes', label: '用途分配', icon: 'fa-solid fa-shuffle' },
   { key: 'mcp', label: 'MCP 服务', icon: 'fa-solid fa-plug' },
+  { key: 'about', label: '关于', icon: 'fa-solid fa-circle-info' },
 ] as const
 type TabKey = (typeof TABS)[number]['key']
 const activeTab = ref<TabKey>('providers')
@@ -615,9 +619,28 @@ const mcpTokenMasked = computed(() => {
   return `${t.slice(0, 4)}••••••••••••${t.slice(-4)}`
 })
 
+// ── 关于 / 检测更新 ────────────────────────────────────
+const appVersion = ref('')
+const updateCheck = useUpdateCheck()
+
+const RELEASE_URL = 'https://github.com/taiyuuki/StoryStudio/releases'
+
+async function openReleasePage() {
+  try {
+    await openUrl(RELEASE_URL)
+  } catch {
+    window.open(RELEASE_URL, '_blank')
+  }
+}
+
 // ── 页面加载 / 返回 ────────────────────────────────────
 onMounted(async () => {
   void mcpRefresh()
+  getVersion()
+    .then((v) => (appVersion.value = v))
+    .catch(() => {
+      // 拿不到就不展示版本号
+    })
   try {
     const [cfg, presetList] = await Promise.all([api.getAiConfig(), api.providerPresets()])
     presets.value = presetList
@@ -1042,7 +1065,7 @@ function goBack() {
         </section>
 
         <!-- ── Tab：MCP 服务 ─────────────────────────────── -->
-        <section v-else class="sv-panel">
+        <section v-else-if="activeTab === 'mcp'" class="sv-panel">
           <div class="fusion-card sv-mcp-card">
             <div class="card-head">
               <i class="fa-solid fa-plug" />
@@ -1138,6 +1161,55 @@ function goBack() {
               <i class="fa-regular fa-circle" />
               <span>先打开一个项目，才能启动 MCP 服务</span>
             </p>
+          </div>
+        </section>
+
+        <!-- ── Tab：关于 ─────────────────────────────────── -->
+        <section v-else-if="activeTab === 'about'" class="sv-panel">
+          <div class="fusion-card sv-about-card">
+            <div class="card-head">
+              <i class="fa-solid fa-circle-info" />
+              <span>关于与更新</span>
+            </div>
+            <div class="sv-about-body">
+              <div class="sv-about-row">
+                <span class="sv-about-label">当前版本</span>
+                <span class="sv-about-val num">v{{ appVersion || '…' }}</span>
+              </div>
+              <div v-if="updateCheck.update.value" class="sv-about-row">
+                <span class="sv-about-label">可用更新</span>
+                <span class="sv-about-val sv-about-val--new">
+                  v{{ updateCheck.update.value.version }}
+                  <button class="ink-btn ink-btn--sm" @click="updateCheck.openDialog()">
+                    查看并更新
+                  </button>
+                </span>
+              </div>
+              <div class="sv-about-actions">
+                <button
+                  class="ink-btn"
+                  :disabled="updateCheck.checking.value"
+                  @click="updateCheck.checkForUpdate(true)"
+                >
+                  <i
+                    :class="
+                      updateCheck.checking.value
+                        ? 'fa-solid fa-circle-notch fa-spin'
+                        : 'fa-solid fa-arrows-rotate'
+                    "
+                  />
+                  {{ updateCheck.checking.value ? '正在检查…' : '检查更新' }}
+                </button>
+                <button class="ink-btn" @click="openReleasePage">
+                  <i class="fa-brands fa-github" />
+                  前往 Release 页
+                </button>
+              </div>
+              <p class="sv-card-note">
+                启动时自动检查新版本（已跳过的版本不提醒）；更新包来自 GitHub Release
+                并经签名校验，下载安装后重启生效。
+              </p>
+            </div>
           </div>
         </section>
       </template>
@@ -2067,6 +2139,49 @@ function goBack() {
       font-size: 10.5px;
     }
   }
+}
+
+.sv-about-card {
+  max-width: 640px;
+}
+
+.sv-about-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sv-about-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.sv-about-label {
+  width: 72px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--ink-sec);
+  letter-spacing: 0.06em;
+}
+
+.sv-about-val {
+  font-size: 14px;
+  color: var(--ink-main);
+
+  &--new {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    color: var(--ink-accent);
+  }
+}
+
+.sv-about-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
 }
 
 @keyframes rise {

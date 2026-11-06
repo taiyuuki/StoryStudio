@@ -59,6 +59,7 @@ declare module 'vue' {
     StatsPanel: typeof import('./components/workbench/StatsPanel.vue')['default']
     StructureTree: typeof import('./components/workbench/StructureTree.vue')['default']
     ThreadPanel: typeof import('./components/workbench/ThreadPanel.vue')['default']
+    UpdateDialog: typeof import('./components/common/UpdateDialog.vue')['default']
     WorldForm: typeof import('./components/start/aiBook/WorldForm.vue')['default']
     WorldviewPanel: typeof import('./components/workbench/WorldviewPanel.vue')['default']
   }

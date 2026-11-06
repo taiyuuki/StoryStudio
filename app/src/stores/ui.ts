@@ -44,6 +44,8 @@ export const useUiStore = defineStore(
     const dockWidth = ref(DOCK_WIDTH_DEFAULT)
     /** 编辑器 AI 幽灵补全（Tab 采纳 / Esc 关闭） */
     const aiGhost = ref(true)
+    /** 检测更新：已跳过的版本（不再自动弹窗提醒） */
+    const skippedVersion = ref<string | null>(null)
     /** 全文检索对话框（StructureTree 入口 + Cmd/Ctrl+F） */
     const searchOpen = ref(false)
     /** 整章阅读视图（打开的章节 ID；null = 关闭） */
@@ -91,6 +93,11 @@ export const useUiStore = defineStore(
       activePanel.value = activePanel.value === panel ? null : panel
     }
 
+    /** 检测更新：跳过指定版本（清空则恢复提醒） */
+    function setSkippedVersion(v: string | null) {
+      skippedVersion.value = v
+    }
+
     watch(theme, applyTheme)
     applyTheme()
 
@@ -109,17 +116,19 @@ export const useUiStore = defineStore(
       aiGhost,
       searchOpen,
       chapterRead,
+      skippedVersion,
       toggleTheme,
       rememberProject,
       forgetProject,
       rememberScene,
       togglePanel,
+      setSkippedVersion,
     }
   },
   {
     persist: {
       storage: localStorage,
-      pick: ['recentProjects', 'lastScene', 'activePanel', 'dockWidth', 'aiGhost'],
+      pick: ['recentProjects', 'lastScene', 'activePanel', 'dockWidth', 'aiGhost', 'skippedVersion'],
     },
   },
 )
