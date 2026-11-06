@@ -69,6 +69,8 @@ jobs:
           projectPath: app
           tagName: ${{ github.ref_name }}
           releaseName: StoryStudio ${{ github.ref_name }}
+          # latest.json 由 updater-json job 统一组装（各平台各自上传会互相覆盖）
+          uploadUpdaterJson: false
           releaseBody: |
             桌面安装包（macOS .dmg / Windows .msi 与 .exe / Linux .deb 与 .rpm 等）
             与 story-studio CLI 二进制见下方 Assets。
@@ -85,17 +87,20 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
+      # 无 checkout 步骤，gh 靠 GH_REPO 定位仓库（否则报 not a git repository）
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: 组装并上传 latest.json
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
           ver="${tag#v}"
-          # latest.json platform key|updater 产物模式（Windows 取 NSIS 安装包）
+          # latest.json platform key|updater 产物模式（Windows 取 NSIS 安装包本体，
+          # Tauri 2 原生 updater 模式下安装器即更新产物，不再打 .nsis.zip）
           platforms=(
             "darwin-aarch64|*_aarch64.app.tar.gz"
             "darwin-x86_64|*_x64.app.tar.gz"
-            "windows-x86_64|*-setup.exe.nsis.zip"
+            "windows-x86_64|*_x64-setup.exe"
             "linux-x86_64|*.AppImage"
           )
           jq_args=(--arg version "$ver" --arg notes "$(gh release view "$tag" --json body -q .body)" --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
