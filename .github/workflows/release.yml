@@ -70,7 +70,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: StoryStudio ${{ github.ref_name }}
           # latest.json 由 updater-json job 统一组装（各平台各自上传会互相覆盖）
-          uploadUpdaterJson: false
+          includeUpdaterJson: false
           releaseBody: |
             桌面安装包（macOS .dmg / Windows .msi 与 .exe / Linux .deb 与 .rpm 等）
             与 story-studio CLI 二进制见下方 Assets。
