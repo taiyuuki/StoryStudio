@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    name: 桌面端 ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS Apple Silicon
+            os: macos-latest
+            # 显式 target 使 updater 产物命名带 arch 后缀（*_aarch64.app.tar.gz），
+            # 与 updater-json job 的匹配模式对齐
+            target: aarch64-apple-darwin
+          - label: macOS Intel
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - label: Windows x64
+            os: windows-latest
+          - label: Linux x64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # tag 必须与 tauri.conf.json 版本一致，否则发布出错误版本号的安装包
+      - name: 校验 tag 与版本号一致
+        shell: bash
+        run: |
+          v="v$(jq -r .version app/src-tauri/tauri.conf.json)"
+          if [ "$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 tauri.conf.json 版本 $v 不一致，请先同步版本号再打 tag"
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.5.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: 安装桌面壳编译所需系统库
+        if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
+          librsvg2-dev libxdo-dev
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # updater 产物签名密钥（应用内自动更新用；丢失则旧版无法收到更新）
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: StoryStudio ${{ github.ref_name }}
+          releaseBody: |
+            桌面安装包（macOS .dmg / Windows .msi 与 .exe / Linux .deb 与 .rpm 等）
+            与 story-studio CLI 二进制见下方 Assets。
+            已安装旧版的可在应用内「设置 → 关于」检测更新直接升级。
+            应用未做 OS 级代码签名，macOS 首次打开与 Windows SmartScreen 需手动放行。
+          args: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+  # 多平台矩阵各自只产出本平台 updater 产物，latest.json 统一在此组装
+  # （避免各平台 job 竞争上传互相覆盖，见 tauri-action#1055）
+  updater-json:
+    name: 组装 updater latest.json
+    needs: desktop
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: 组装并上传 latest.json
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          ver="${tag#v}"
+          # latest.json platform key|updater 产物模式（Windows 取 NSIS 安装包）
+          platforms=(
+            "darwin-aarch64|*_aarch64.app.tar.gz"
+            "darwin-x86_64|*_x64.app.tar.gz"
+            "windows-x86_64|*-setup.exe.nsis.zip"
+            "linux-x86_64|*.AppImage"
+          )
+          jq_args=(--arg version "$ver" --arg notes "$(gh release view "$tag" --json body -q .body)" --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          for entry in "${platforms[@]}"; do
+            key="${entry%%|*}"
+            glob="${entry#*|}"
+            d="sig-$key"
+            mkdir "$d"
+            gh release download "$tag" --pattern "$glob.sig" --dir "$d" >/dev/null
+            n=$(ls "$d" | wc -l)
+            if [ "$n" -ne 1 ]; then
+              echo "::error::platform $key 的模式 $glob.sig 匹配到 $n 个文件，期望恰好 1 个"
+              exit 1
+            fi
+            asset=$(ls "$d")
+            asset="${asset%.sig}"
+            norm=${key//-/_}
+            jq_args+=(
+              --arg "sig_$norm" "$(cat "$d/$asset.sig")"
+              --arg "url_$norm" "https://github.com/$REPO/releases/download/$tag/$asset"
+            )
+          done
+          jq -n "${jq_args[@]}" '{
+            version: $version,
+            notes: $notes,
+            pub_date: $pub_date,
+            platforms: {
+              "darwin-aarch64":  { signature: $sig_darwin_aarch64,  url: $url_darwin_aarch64 },
+              "darwin-x86_64":   { signature: $sig_darwin_x86_64,   url: $url_darwin_x86_64 },
+              "windows-x86_64":  { signature: $sig_windows_x86_64,  url: $url_windows_x86_64 },
+              "linux-x86_64":    { signature: $sig_linux_x86_64,    url: $url_linux_x86_64 }
+            }
+          }' > latest.json
+          cat latest.json
+          gh release upload "$tag" latest.json --clobber
+
+  cli:
+    name: CLI 二进制 ${{ matrix.artifact }}
+    needs: desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            artifact: x86_64-pc-windows-msvc
+          - os: macos-latest
+            artifact: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p story-studio
+      - name: 打包
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          name="story-studio-${ver}-${{ matrix.artifact }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "${name}.zip" ./target/release/story-studio.exe
+          else
+            tar -czf "${name}.tar.gz" -C target/release story-studio
+          fi
+      - name: 上传到 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" story-studio-* --clobber
