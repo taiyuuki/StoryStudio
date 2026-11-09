@@ -468,14 +468,30 @@ pub struct DiagDto {
 // 场景属性补丁 — Option<Option<T>> 三态语义（None=不改 / null=清空 / 值=设置）
 // ============================================================================
 
+/// Tauri IPC（JSON）里 null 与字段缺失在 serde 默认 derive 下都会塌缩成 None，
+/// 三态里的"清空"（Some(None)）无法表达——必须逐字段用本反序列化器区分。
+fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase")]
 pub struct ScenePatchDto {
+    #[serde(default, deserialize_with = "double_option")]
     pub title: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub pov: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub mood: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub function: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub summary: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub story_time: Option<Option<StoryTimeDef>>,
 }
 
@@ -1746,5 +1762,30 @@ mod knowledge_tests {
         let k = build_knowledge(&root).unwrap();
         assert!(k.assertions.is_empty());
         assert!(k.fragments.is_empty()); // 尚无片段
+    }
+}
+
+/// 三态补丁的 JSON 侧语义：null（清空）与字段缺失（不改）必须可区分，
+/// 否则前端清空 POV/情绪基调等操作会被静默丢弃。
+/// （serde 默认 derive 下两者都塌缩成 None，因此需要 double_option。）
+#[cfg(test)]
+mod scene_patch_tests {
+    use super::ScenePatchDto;
+
+    #[test]
+    fn tri_state_null_vs_missing_vs_value() {
+        // 前端 SceneMetaPopover 始终携带全部字段，清空即发 null
+        let p: ScenePatchDto =
+            serde_json::from_str(r#"{"pov":null,"mood":null,"storyTime":null}"#).unwrap();
+        assert_eq!(p.pov, Some(None), "JSON null = 清空");
+        assert_eq!(p.mood, Some(None));
+        assert_eq!(p.story_time, Some(None));
+
+        let p: ScenePatchDto = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(p.pov, None, "字段缺失 = 不改");
+        assert_eq!(p.story_time, None);
+
+        let p: ScenePatchDto = serde_json::from_str(r#"{"pov":"ch_hero"}"#).unwrap();
+        assert_eq!(p.pov, Some(Some("ch_hero".to_string())), "值 = 设置");
     }
 }
