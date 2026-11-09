@@ -9,6 +9,7 @@ import { useUiStore } from '@/stores/ui'
 import { api, type ProjectPeekDto } from '@/api/backend'
 import ContinueCard from '@/components/start/ContinueCard.vue'
 import NewProjectDialog from '@/components/start/NewProjectDialog.vue'
+import appIcon from '@/assets/app-icon.png'
 import { formatRelativeTime, formatWordCount } from '@/utils/format'
 
 const router = useRouter()
@@ -127,7 +128,7 @@ async function openBookPanel(root: string) {
     <!-- 空态：第一次进来 -->
     <div v-if="!projects.length" class="home-content home-welcome">
       <div class="welcome-hero">
-        <div class="hero-seal seal-font">书</div>
+        <img class="hero-seal" :src="appIcon" alt="StoryStudio" />
         <h1 class="hero-title">StoryStudio</h1>
         <p class="hero-sub">设定为骨 · 伏笔为脉 · 一气呵成</p>
       </div>
@@ -478,15 +479,9 @@ async function openBookPanel(root: string) {
   margin-bottom: 36px;
 
   .hero-seal {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     width: 76px;
     height: 76px;
     border-radius: 18px;
-    background: var(--btn-primary-bg);
-    color: var(--btn-primary-color);
-    font-size: 38px;
     box-shadow: var(--ui-shadow-hover);
     margin-bottom: 18px;
   }

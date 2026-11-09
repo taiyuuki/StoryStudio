@@ -17,6 +17,7 @@ import { AUDIENCES, GENRES, POVS, SCALES, STYLES, WORD_OPTIONS } from '@/constan
 import ConceptForm from '@/components/start/aiBook/ConceptForm.vue'
 import WorldForm from '@/components/start/aiBook/WorldForm.vue'
 import OutlineForm from '@/components/start/aiBook/OutlineForm.vue'
+import appIcon from '@/assets/app-icon.png'
 
 const router = useRouter()
 const store = useWorkspaceStore()
@@ -589,7 +590,7 @@ function goBack() {
           <!-- 第 4 步：完成 -->
           <div v-else-if="step === 4" class="ab-report">
             <div class="rep-head">
-              <span class="rep-seal seal-font">书</span>
+              <img class="rep-seal" :src="appIcon" alt="StoryStudio" />
               <div class="rep-titles">
                 <span class="rep-title">《{{ concept.title }}》</span>
                 <span v-if="concept.tagline" class="rep-tagline">{{ concept.tagline }}</span>
@@ -1106,15 +1107,9 @@ function goBack() {
 }
 
 .rep-seal {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 58px;
   height: 58px;
   border-radius: 14px;
-  background: var(--btn-primary-bg);
-  color: var(--btn-primary-color);
-  font-size: 29px;
   flex-shrink: 0;
   box-shadow: var(--ui-shadow-hover);
 }

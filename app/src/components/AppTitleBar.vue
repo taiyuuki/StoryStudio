@@ -9,6 +9,7 @@ import { api } from '@/api/backend'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useUpdateCheck } from '@/composables/useUpdateCheck'
+import appIcon from '@/assets/app-icon.png'
 
 defineProps<{ title?: string }>()
 const emit = defineEmits<{ backHome: [] }>()
@@ -67,7 +68,13 @@ async function close() {
 <template>
   <header class="title-bar" :class="{ 'title-bar--mac': isMac }" data-tauri-drag-region>
     <div class="tb-left">
-      <span class="tb-logo seal-font" data-tauri-drag-region>书</span>
+      <img
+        class="tb-logo"
+        :src="appIcon"
+        alt="StoryStudio"
+        draggable="false"
+        data-tauri-drag-region
+      />
       <!-- 显式返回主页入口（与设置 / AI 开书页头的返回按钮同模式）；
            书名只作展示 + 拖拽区，不再承担返回职责 -->
       <button
@@ -177,16 +184,10 @@ async function close() {
 }
 
 .tb-logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 26px;
   height: 26px;
   border-radius: 6px;
-  background: var(--btn-primary-bg);
-  color: var(--btn-primary-color);
-  font-size: 15px;
-  letter-spacing: 0;
+  flex-shrink: 0;
 }
 
 .tb-title {

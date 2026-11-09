@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import appIcon from '@/assets/app-icon.png'
 
 const route = useRoute()
 
@@ -22,7 +23,7 @@ const settingsActive = computed(() => isActive('/settings'))
 <template>
   <aside class="nav-rail">
     <router-link class="nav-brand" to="/">
-      <span class="brand-seal seal-font">书</span>
+      <img class="brand-seal" :src="appIcon" alt="StoryStudio" />
       <span class="brand-name">StoryStudio</span>
     </router-link>
 
@@ -71,17 +72,10 @@ const settingsActive = computed(() => isActive('/settings'))
 }
 
 .brand-seal {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: var(--btn-primary-bg);
-  color: var(--btn-primary-color);
-  font-size: 16px;
   box-shadow: var(--ui-shadow);
-  letter-spacing: 0;
   flex-shrink: 0;
 }
 
