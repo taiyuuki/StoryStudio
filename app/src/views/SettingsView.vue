@@ -1531,7 +1531,8 @@ function goBack() {
 .sv-purpose-card,
 .sv-agent-card,
 .sv-mcp-card,
-.sv-editor {
+.sv-editor,
+.sv-about-card {
   padding: 18px 20px;
 }
 
