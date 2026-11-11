@@ -5,15 +5,17 @@
 //! - 渲染信息（章节编号、页码）在管道内计算，不写回 IR
 //! - 锚点注释在导出时剥离
 //!
-//! v0.1 实现 Markdown 导出。EPUB / PDF 留待后续。
+//! v0.1 实现 Markdown / TXT 导出。EPUB / PDF 留待后续。
 
 pub mod manuscript;
 pub mod markdown;
+pub mod txt;
 
 pub use manuscript::{
     collect_manuscript, strip_anchor_comments, ChapterText, Manuscript, SceneText,
 };
 pub use markdown::MarkdownExporter;
+pub use txt::TxtExporter;
 
 use serde::{Deserialize, Serialize};
 use story_ir::StoryIR;
@@ -23,6 +25,8 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExportFormat {
     Markdown,
+    /// 纯文本（网文投稿 / 有声书稿等场景）
+    Txt,
     Html,
     Epub,
     Pdf,
@@ -40,6 +44,10 @@ pub struct ExportOptions {
     pub scene_titles: bool,
     /// 是否添加章节编号前缀「第N章 」（默认 false：不加，仅用章节标题原文）
     pub chapter_numbering: bool,
+    /// 段首缩进：每个正文段落前加两个全角空格（默认 false）
+    ///
+    /// 仅 TXT 导出生效——中文纯文本稿件的习惯排版，Markdown 语义下无意义。
+    pub paragraph_indent: bool,
     /// 锚点处理方式
     pub anchor_handling: AnchorHandling,
 }
@@ -51,6 +59,7 @@ impl Default for ExportOptions {
             include_appendix: false,
             scene_titles: false,
             chapter_numbering: false,
+            paragraph_indent: false,
             anchor_handling: AnchorHandling::Strip,
         }
     }

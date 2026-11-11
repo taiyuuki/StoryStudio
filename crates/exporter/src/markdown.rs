@@ -5,7 +5,7 @@
 
 use story_ir::StoryIR;
 
-use crate::manuscript::collect_manuscript;
+use crate::manuscript::{collect_manuscript, format_chapter_heading, make_chapter_filename};
 use crate::{
     AnchorHandling, ChapterFile, ExportError, ExportFormat, ExportOptions, ExportOutput, Exporter,
 };
@@ -146,7 +146,7 @@ impl MarkdownExporter {
             }
 
             files.push(ChapterFile {
-                filename: make_chapter_filename(chapter.number, &chapter.title),
+                filename: make_chapter_filename(chapter.number, &chapter.title, "md"),
                 content: md,
             });
         }
@@ -159,26 +159,17 @@ impl MarkdownExporter {
         let mut appendix = String::new();
         appendix.push_str("---\n\n## 附录：角色表\n\n");
 
-        let mut characters: Vec<_> = ir
-            .semantic
-            .all_entities()
-            .filter(|e| matches!(e, story_ir::SemanticNode::Character(_)))
-            .collect();
-
-        // 按 display_name 排序（确定性）
-        characters.sort_by_key(|e| e.display_name().to_string());
+        let characters = crate::manuscript::sorted_characters(ir);
 
         if characters.is_empty() {
             appendix.push_str("（无角色）\n");
         } else {
-            for entity in &characters {
-                if let story_ir::SemanticNode::Character(char) = entity {
-                    appendix.push_str(&format!("- **{}**", char.display_name));
-                    if !char.aliases.is_empty() {
-                        appendix.push_str(&format!("（{}）", char.aliases.join("、")));
-                    }
-                    appendix.push('\n');
+            for char in characters {
+                appendix.push_str(&format!("- **{}**", char.display_name));
+                if !char.aliases.is_empty() {
+                    appendix.push_str(&format!("（{}）", char.aliases.join("、")));
                 }
+                appendix.push('\n');
             }
         }
 
@@ -186,56 +177,7 @@ impl MarkdownExporter {
     }
 }
 
-// ============================================================================
-// 辅助函数
-// ============================================================================
-
-/// 格式化章节标题文本。
-///
-/// - `chapter_numbering = true`：`第N章 标题`（或仅 `第N章`，标题为空时）
-/// - `chapter_numbering = false`（默认）：`标题`（或 `第N章`，标题为空时 fallback）
-fn format_chapter_heading(
-    chapter: &crate::manuscript::ChapterText,
-    options: &ExportOptions,
-) -> String {
-    if options.chapter_numbering {
-        if chapter.title.is_empty() {
-            format!("第{}章", chapter.number)
-        } else {
-            format!("第{}章 {}", chapter.number, chapter.title)
-        }
-    } else if chapter.title.is_empty() {
-        // 标题为空时 fallback 到编号，保证至少有内容
-        format!("第{}章", chapter.number)
-    } else {
-        chapter.title.clone()
-    }
-}
-
-/// 生成章节文件名。
-///
-/// 序号补零（至少两位），标题过滤文件系统非法字符。
-/// 文件名始终带序号前缀以确保排序正确，不受 `chapter_numbering` 影响。
-fn make_chapter_filename(number: usize, title: &str) -> String {
-    let sanitized = sanitize_filename(title);
-    if sanitized.is_empty() {
-        format!("第{:02}章.md", number)
-    } else {
-        format!("第{:02}章_{}.md", number, sanitized)
-    }
-}
-
-/// 过滤文件名中的非法字符（跨平台：Windows 限制最严格）
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => c,
-        })
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
+// 注：章节标题格式化 / 章节文件名生成在 manuscript.rs（与 TXT Exporter 共用）
 
 // ============================================================================
 // Tests

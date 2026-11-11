@@ -50,6 +50,9 @@ enum Commands {
         output: Option<String>,
         #[arg(long)]
         appendix: bool,
+        /// TXT 段首缩进（两个全角空格）
+        #[arg(long)]
+        indent: bool,
     },
 
     /// 显示项目信息
@@ -195,7 +198,8 @@ fn main() {
             format,
             output,
             appendix,
-        } => cmd_export(&dir, &format, output.as_deref(), appendix),
+            indent,
+        } => cmd_export(&dir, &format, output.as_deref(), appendix, indent),
         Commands::Info { dir } => cmd_info(&dir),
         Commands::Write {
             dir,
@@ -544,15 +548,26 @@ fn cmd_export(
     format: &str,
     output: Option<&str>,
     include_appendix: bool,
+    paragraph_indent: bool,
 ) -> Result<(), StudioError> {
-    if format != "markdown" && format != "md" {
-        return Err(StudioError::Config(format!(
-            "不支持的导出格式：{format}（支持: markdown）"
-        )));
-    }
-
     let project_dir = PathBuf::from(dir);
-    let result = story_studio_lib::export_markdown(&project_dir, include_appendix, false, false)?;
+    let result = match format {
+        "markdown" | "md" => {
+            story_studio_lib::export_markdown(&project_dir, include_appendix, false, false)?
+        }
+        "txt" => story_studio_lib::export_txt(
+            &project_dir,
+            include_appendix,
+            false,
+            false,
+            paragraph_indent,
+        )?,
+        other => {
+            return Err(StudioError::Config(format!(
+                "不支持的导出格式：{other}（支持: markdown, txt）"
+            )))
+        }
+    };
 
     match output {
         Some(path) => {

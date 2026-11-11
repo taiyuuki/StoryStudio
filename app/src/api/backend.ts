@@ -1243,6 +1243,36 @@ export const api = {
       chapterNumbering,
     })
   },
+  exportTxt(
+    root: string,
+    includeAppendix: boolean,
+    sceneTitles: boolean,
+    chapterNumbering: boolean,
+    paragraphIndent: boolean,
+  ) {
+    return call<ExportOutputDto>('export_txt', {
+      root,
+      includeAppendix,
+      sceneTitles,
+      chapterNumbering,
+      paragraphIndent,
+    })
+  },
+  exportChaptersTxt(
+    root: string,
+    includeAppendix: boolean,
+    sceneTitles: boolean,
+    chapterNumbering: boolean,
+    paragraphIndent: boolean,
+  ) {
+    return call<ChapterFileDto[]>('export_chapters_txt', {
+      root,
+      includeAppendix,
+      sceneTitles,
+      chapterNumbering,
+      paragraphIndent,
+    })
+  },
   writeTextFile(path: string, content: string) {
     return call<void>('write_text_file', { path, content })
   },

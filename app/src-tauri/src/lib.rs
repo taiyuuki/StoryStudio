@@ -164,6 +164,8 @@ pub fn run() {
             commands::compile_project,
             commands::export_markdown,
             commands::export_chapters,
+            commands::export_txt,
+            commands::export_chapters_txt,
             commands::write_text_file,
             // AI
             commands::get_ai_config,

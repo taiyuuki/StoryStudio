@@ -53,7 +53,7 @@ pub use book_studio::{
 };
 pub use compile::{compile_project, compile_project_full, CompileResult, CompileStats};
 pub use error::StudioError;
-pub use export::{export_chapters_markdown, export_markdown};
+pub use export::{export_chapters_markdown, export_chapters_txt, export_markdown, export_txt};
 pub use fragment::{save_drafts, scene_of_fragment};
 pub use git::{
     git_commit, git_diff_file, git_diff_summary, git_init, git_log, git_restore, git_status,

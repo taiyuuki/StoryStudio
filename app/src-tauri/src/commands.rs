@@ -872,6 +872,53 @@ pub fn export_chapters(
         .collect())
 }
 
+#[tauri::command]
+pub fn export_txt(
+    root: String,
+    include_appendix: bool,
+    scene_titles: bool,
+    chapter_numbering: bool,
+    paragraph_indent: bool,
+) -> R<story_exporter_types::ExportOutputDto> {
+    let output = lib::export_txt(
+        Path::new(&root),
+        include_appendix,
+        scene_titles,
+        chapter_numbering,
+        paragraph_indent,
+    )
+    .map_err(e)?;
+    Ok(story_exporter_types::ExportOutputDto {
+        content: output.content,
+        filename: output.filename,
+    })
+}
+
+#[tauri::command]
+pub fn export_chapters_txt(
+    root: String,
+    include_appendix: bool,
+    scene_titles: bool,
+    chapter_numbering: bool,
+    paragraph_indent: bool,
+) -> R<Vec<story_exporter_types::ChapterFileDto>> {
+    let files = lib::export_chapters_txt(
+        Path::new(&root),
+        include_appendix,
+        scene_titles,
+        chapter_numbering,
+        paragraph_indent,
+    )
+    .map_err(e)?;
+    Ok(files
+        .into_iter()
+        .map(|f| story_exporter_types::ChapterFileDto {
+            filename: f.filename,
+            content: f.content,
+        })
+        .collect())
+}
+
 /// 把导出内容写入用户选择的路径
 #[tauri::command]
 pub fn write_text_file(path: String, content: String) -> R<()> {

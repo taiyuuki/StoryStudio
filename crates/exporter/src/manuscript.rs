@@ -4,7 +4,7 @@
 //! Fragment 边界不产生视觉分隔——渲染时是连续的叙事。
 
 use serde::{Deserialize, Serialize};
-use story_ir::{DocNode, StableId, StoryIR};
+use story_ir::{CharacterNode, DocNode, SemanticNode, StableId, StoryIR};
 
 // ============================================================================
 // Manuscript 数据结构
@@ -164,6 +164,67 @@ pub fn strip_anchor_comments(text: &str) -> String {
 fn count_words(text: &str) -> usize {
     // 全工作区统一口径：CJK 每字 1、ASCII 词 1、标点不计（ir::count_words）
     story_ir::count_words(text) as usize
+}
+
+/// 格式化章节标题文本（Markdown / TXT 共用）。
+///
+/// - `chapter_numbering = true`：`第N章 标题`（或仅 `第N章`，标题为空时）
+/// - `chapter_numbering = false`（默认）：`标题`（或 `第N章`，标题为空时 fallback）
+pub(crate) fn format_chapter_heading(
+    chapter: &ChapterText,
+    options: &crate::ExportOptions,
+) -> String {
+    if options.chapter_numbering {
+        if chapter.title.is_empty() {
+            format!("第{}章", chapter.number)
+        } else {
+            format!("第{}章 {}", chapter.number, chapter.title)
+        }
+    } else if chapter.title.is_empty() {
+        // 标题为空时 fallback 到编号，保证至少有内容
+        format!("第{}章", chapter.number)
+    } else {
+        chapter.title.clone()
+    }
+}
+
+/// 生成章节文件名（Markdown / TXT 共用）。
+///
+/// 序号补零（至少两位），标题过滤文件系统非法字符。
+/// 文件名始终带序号前缀以确保排序正确，不受 `chapter_numbering` 影响。
+pub(crate) fn make_chapter_filename(number: usize, title: &str, ext: &str) -> String {
+    let sanitized = sanitize_filename(title);
+    if sanitized.is_empty() {
+        format!("第{:02}章.{ext}", number)
+    } else {
+        format!("第{:02}章_{}.{ext}", number, sanitized)
+    }
+}
+
+/// 过滤文件名中的非法字符（跨平台：Windows 限制最严格）
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// 收集全部角色实体，按 display_name 排序（附录生成共用，保证各格式顺序一致）
+pub(crate) fn sorted_characters(ir: &StoryIR) -> Vec<&CharacterNode> {
+    let mut characters: Vec<&CharacterNode> = ir
+        .semantic
+        .all_entities()
+        .filter_map(|e| match e {
+            SemanticNode::Character(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    characters.sort_by_key(|c| c.display_name.clone());
+    characters
 }
 
 // ============================================================================

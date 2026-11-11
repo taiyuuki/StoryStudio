@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api/backend'
@@ -8,10 +8,21 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener'
 
 const store = useWorkspaceStore()
 
+type ExportFmt = 'markdown' | 'txt'
+
+const formats: { value: ExportFmt; label: string; icon: string }[] = [
+  { value: 'markdown', label: 'Markdown', icon: 'fa-brands fa-markdown' },
+  { value: 'txt', label: '纯文本', icon: 'fa-solid fa-file-lines' },
+]
+
+const fmt = ref<ExportFmt>('markdown')
+const isTxt = computed(() => fmt.value === 'txt')
+
 const opts = reactive({
-  includeAppendix: true,
-  sceneTitles: true,
-  chapterNumbering: true,
+  includeAppendix: false,
+  sceneTitles: false,
+  chapterNumbering: false,
+  paragraphIndent: true,
 })
 
 const busy = ref(false)
@@ -21,16 +32,26 @@ async function exportWhole() {
   if (!store.root) return
   busy.value = true
   try {
-    const output = await api.exportMarkdown(
-      store.root,
-      opts.includeAppendix,
-      opts.sceneTitles,
-      opts.chapterNumbering,
-    )
+    const output = isTxt.value
+      ? await api.exportTxt(
+          store.root,
+          opts.includeAppendix,
+          opts.sceneTitles,
+          opts.chapterNumbering,
+          opts.paragraphIndent,
+        )
+      : await api.exportMarkdown(
+          store.root,
+          opts.includeAppendix,
+          opts.sceneTitles,
+          opts.chapterNumbering,
+        )
     const path = await save({
-      title: '导出整本 Markdown',
+      title: isTxt.value ? '导出整本 TXT' : '导出整本 Markdown',
       defaultPath: output.filename,
-      filters: [{ name: 'Markdown', extensions: ['md'] }],
+      filters: isTxt.value
+        ? [{ name: '纯文本', extensions: ['txt'] }]
+        : [{ name: 'Markdown', extensions: ['md'] }],
     })
     if (!path) return
     await api.writeTextFile(path, output.content)
@@ -47,12 +68,20 @@ async function exportByChapter() {
   if (!store.root) return
   busy.value = true
   try {
-    const files = await api.exportChapters(
-      store.root,
-      opts.includeAppendix,
-      opts.sceneTitles,
-      opts.chapterNumbering,
-    )
+    const files = isTxt.value
+      ? await api.exportChaptersTxt(
+          store.root,
+          opts.includeAppendix,
+          opts.sceneTitles,
+          opts.chapterNumbering,
+          opts.paragraphIndent,
+        )
+      : await api.exportChapters(
+          store.root,
+          opts.includeAppendix,
+          opts.sceneTitles,
+          opts.chapterNumbering,
+        )
     if (files.length === 0) {
       ElMessage.warning('还没有可导出的内容')
       return
@@ -88,7 +117,20 @@ async function revealLast() {
   <div class="export-panel">
     <div class="ep-desc">
       <i class="fa-solid fa-file-lines" />
-      <p>把整本书导出为通用的 Markdown 文稿，导出前会自动做一次全文一致性检查。</p>
+      <p>把整本书导出为 Markdown 或纯文本文稿，纯文本模式会自动清除格式标记。</p>
+    </div>
+
+    <div class="ep-format">
+      <button
+        v-for="f in formats"
+        :key="f.value"
+        class="ef-item"
+        :class="{ 'is-active': fmt === f.value }"
+        @click="fmt = f.value"
+      >
+        <i :class="f.icon" />
+        {{ f.label }}
+      </button>
     </div>
 
     <div class="ep-option">
@@ -111,6 +153,13 @@ async function revealLast() {
         <div class="eo-sub">自动加上「第N章」前缀</div>
       </div>
       <ElSwitch v-model="opts.chapterNumbering" />
+    </div>
+    <div v-if="isTxt" class="ep-option">
+      <div>
+        <div class="eo-label">段首缩进</div>
+        <div class="eo-sub">每段开头加两个全角空格，符合投稿排版习惯</div>
+      </div>
+      <ElSwitch v-model="opts.paragraphIndent" />
     </div>
 
     <div class="ep-actions">
@@ -156,6 +205,40 @@ async function revealLast() {
   i {
     color: var(--ink-accent);
     margin-top: 4px;
+  }
+}
+
+.ep-format {
+  display: flex;
+  gap: 8px;
+}
+
+.ef-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 0;
+  border-radius: 10px;
+  border: 1px solid var(--divider);
+  background: var(--surface-1);
+  font-size: 12px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition:
+    color 0.2s,
+    border-color 0.2s,
+    background 0.2s;
+
+  &:hover {
+    color: var(--ink-main);
+  }
+
+  &.is-active {
+    border-color: var(--ink-accent);
+    color: var(--ink-accent);
+    background: var(--surface-2);
   }
 }
 
