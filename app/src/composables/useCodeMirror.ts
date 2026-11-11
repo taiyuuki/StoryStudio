@@ -1,6 +1,6 @@
 // CodeMirror 6 实例管理 — 水墨纸面主题 + 变更回调
 import { onBeforeUnmount, shallowRef, watch, type Ref } from 'vue'
-import { EditorView, keymap } from '@codemirror/view'
+import { EditorView, drawSelection, keymap } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
@@ -77,6 +77,9 @@ export function useCodeMirror(options: UseCodeMirrorOptions) {
         keymap.of([...defaultKeymap, ...historyKeymap]),
         markdown(),
         inkTheme,
+        // 自绘光标/选区：WebKit 的原生 caret 在软换行块里高度会随视觉行
+        // 累积拉高（Tauri 的 WKWebView 上尤甚），改由 CM6 按精确坐标绘制
+        drawSelection(),
         placeholderExt,
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
