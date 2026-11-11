@@ -4142,7 +4142,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "story-ai-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "reqwest",
@@ -4161,7 +4161,7 @@ dependencies = [
 
 [[package]]
 name = "story-compiler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "story-ir",
@@ -4171,7 +4171,7 @@ dependencies = [
 
 [[package]]
 name = "story-exporter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "story-ir",
@@ -4180,7 +4180,7 @@ dependencies = [
 
 [[package]]
 name = "story-ir"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
@@ -4188,7 +4188,7 @@ dependencies = [
 
 [[package]]
 name = "story-knowledge"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "story-ir",
@@ -4197,7 +4197,7 @@ dependencies = [
 
 [[package]]
 name = "story-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -4216,7 +4216,7 @@ dependencies = [
 
 [[package]]
 name = "story-parser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aho-corasick",
  "serde",
@@ -4227,7 +4227,7 @@ dependencies = [
 
 [[package]]
 name = "story-project-format"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pinyin",
  "serde",
@@ -4241,7 +4241,7 @@ dependencies = [
 
 [[package]]
 name = "story-studio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "serde_json",
@@ -4255,7 +4255,7 @@ dependencies = [
 
 [[package]]
 name = "story-studio-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "notify",
  "notify-debouncer-full",
@@ -4279,7 +4279,7 @@ dependencies = [
 
 [[package]]
 name = "story-studio-lib"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
