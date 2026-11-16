@@ -32,6 +32,12 @@ pub const DEFAULT_CHAPTER_WORDS: u64 = 2500;
 pub const CONCEPT_CANDIDATES: usize = 3;
 /// 单批章节上限（防长篇一次排完）
 pub const MAX_BATCH_CHAPTERS: u32 = 40;
+/// 续排上下文里线索简述的截断长度（字符）
+const THREAD_DESC_CHARS: usize = 60;
+/// 世界观概念摘要的截断长度（字符）
+const CONCEPT_SUMMARY_CHARS: usize = 80;
+/// 力量体系规则的截断长度（字符）
+const SYSTEM_RULES_CHARS: usize = 100;
 
 // ============================================================================
 // 参数 / 草稿类型（全部可 serde，前端编辑后原样传回）
@@ -452,6 +458,12 @@ fn world_prompt(concept: &BookConcept, o: &BookCreationOptions, n_chars: u32) ->
         .as_deref()
         .map(|g| format!("【题材】{g}\n"))
         .unwrap_or_default();
+    // 舞台概述与地点生成直接相关，缺失时静默省略
+    let setting_line = if concept.setting.trim().is_empty() {
+        String::new()
+    } else {
+        format!("【故事舞台】{}\n", concept.setting.trim())
+    };
     crate::prompts::render(
         crate::prompts::BOOK_WORLD,
         &[
@@ -460,6 +472,7 @@ fn world_prompt(concept: &BookConcept, o: &BookCreationOptions, n_chars: u32) ->
             ("extras", &extras),
             ("premise", concept.premise.as_str()),
             ("theme", concept.theme.as_str()),
+            ("setting_line", &setting_line),
             ("n_chars", &n_chars.to_string()),
         ],
     )
@@ -819,14 +832,24 @@ pub(crate) struct OutlineContext {
     pub pov: Option<String>,
     pub style: Option<String>,
     pub audience: Option<String>,
+    pub theme: Option<String>,
+    /// 故事舞台概述（outline.toml [story].setting）
+    pub setting: Option<String>,
+    /// 全书体量目标（字数）——卷级节奏规划的基准
+    pub target_words: Option<u64>,
     pub chapter_words: Option<u64>,
+    /// 世界观概念（名称, 摘要）
+    pub worldview_concepts: Vec<(String, String)>,
+    /// 力量体系（名称, 等级链, 规则）
+    pub systems: Vec<(String, String, String)>,
     /// 角色档案（名字, 职业摘要）——大纲必须与身份一致，防止张冠李戴
     pub characters: Vec<(String, String)>,
     /// 地点实体（名称, 类型, 上级名）——大纲必须严格沿用这些名称
     pub locations: Vec<(String, String, String)>,
     /// 势力实体（名称, 类型）
     pub organizations: Vec<(String, String)>,
-    pub thread_titles: Vec<String>,
+    /// 叙事线索（标题, 简述）
+    pub threads: Vec<(String, String)>,
     /// 已有卷（name, order, 已排章数）
     pub volumes: Vec<(String, u32, usize)>,
     /// 最近若干章脉络（标题, 梗概, 钩子）旧 → 新
@@ -890,12 +913,70 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
         })
         .collect();
 
-    // 线索标题
-    let thread_titles: Vec<String> = std::fs::read_to_string(paths.threads_toml())
+    // 线索（标题 + 简述；推进节奏要看清每条线是什么）
+    let threads: Vec<(String, String)> = std::fs::read_to_string(paths.threads_toml())
         .ok()
         .and_then(|c| story_project_format::ThreadsFile::from_toml_str(&c).ok())
-        .map(|f| f.threads.iter().map(|t| t.title.clone()).collect())
+        .map(|f| {
+            f.threads
+                .iter()
+                .map(|t| {
+                    (
+                        t.title.clone(),
+                        truncate_chars(
+                            t.description.as_deref().unwrap_or_default(),
+                            THREAD_DESC_CHARS,
+                        ),
+                    )
+                })
+                .collect()
+        })
         .unwrap_or_default();
+
+    // 世界观概念与力量体系（大纲不得另起体系、写错等级链）
+    let worldview_concepts: Vec<(String, String)> = std::fs::read_to_string(
+        paths.worldview_concepts_toml(),
+    )
+    .ok()
+    .and_then(|c| {
+        use story_project_format::WorldviewSectionFile;
+        story_project_format::ConceptsFile::from_toml_str(&c).ok()
+    })
+    .map(|f| {
+        f.concepts
+            .iter()
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    truncate_chars(c.summary.as_deref().unwrap_or_default(), CONCEPT_SUMMARY_CHARS),
+                )
+            })
+            .collect()
+    })
+    .unwrap_or_default();
+    let systems: Vec<(String, String, String)> =
+        std::fs::read_to_string(paths.worldview_systems_toml())
+            .ok()
+            .and_then(|c| {
+                use story_project_format::WorldviewSectionFile;
+                story_project_format::SystemsFile::from_toml_str(&c).ok()
+            })
+            .map(|f| {
+                f.systems
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.name.clone(),
+                            s.levels.as_deref().unwrap_or_default().to_string(),
+                            truncate_chars(
+                                s.rules.as_deref().unwrap_or_default(),
+                                SYSTEM_RULES_CHARS,
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
     // 章节脉络 + 统一卷结构（唯一真相源在 outline.toml）
     let (chapters_file, unified_volumes) = story_project_format::load_chapters_unified(&paths);
@@ -942,11 +1023,16 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
         pov: outline.story.pov.clone(),
         style: outline.story.style.clone(),
         audience: outline.story.audience.clone(),
+        theme: outline.story.theme.clone(),
+        setting: outline.story.setting.clone(),
+        target_words: outline.story.target_words,
         chapter_words: outline.story.chapter_words,
+        worldview_concepts,
+        systems,
         characters,
         locations,
         organizations,
-        thread_titles,
+        threads,
         volumes,
         recent_chapters,
         completed_summaries,
@@ -990,6 +1076,15 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
     }
     if let Some(s) = &ctx.style {
         head.push_str(&format!("【文风基调】{s}\n"));
+    }
+    if let Some(t) = ctx.theme.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        head.push_str(&format!("【主题】{t}\n"));
+    }
+    if let Some(s) = ctx.setting.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        head.push_str(&format!("【故事舞台】{s}\n"));
+    }
+    if let Some(w) = ctx.target_words.filter(|w| *w > 0) {
+        head.push_str(&format!("【全书体量】约 {} 万字\n", w / 10000));
     }
     if let Some(w) = ctx.chapter_words {
         head.push_str(&format!("【单章篇幅】约 {w} 字\n"));
@@ -1036,11 +1131,22 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
             .collect::<Vec<_>>()
             .join("、")
     };
-    let threads = if ctx.thread_titles.is_empty() {
+    let threads = if ctx.threads.is_empty() {
         "（尚未建线索）".to_string()
     } else {
-        ctx.thread_titles.join("、")
+        ctx.threads
+            .iter()
+            .map(|(t, d)| {
+                if d.is_empty() {
+                    format!("- {t}")
+                } else {
+                    format!("- {t}：{d}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     };
+    let worldview = render_worldview_lists(&ctx.worldview_concepts, &ctx.systems);
     let entities = render_entity_lists(&ctx.characters, &ctx.locations, &ctx.organizations);
 
     crate::prompts::render(
@@ -1051,11 +1157,45 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
             ("existing", &existing),
             ("characters", &characters),
             ("threads", &threads),
+            ("worldview", &worldview),
             ("entities", &entities),
             ("next_index", &next_index.to_string()),
             ("count", &count.to_string()),
         ],
     )
+}
+
+/// 世界观概念与力量体系清单（尚无内容时输出空串，不占上下文）
+fn render_worldview_lists(
+    concepts: &[(String, String)],
+    systems: &[(String, String, String)],
+) -> String {
+    let mut s = String::new();
+    if !concepts.is_empty() {
+        s.push_str("\n【世界观概念（设定基准）】\n");
+        for (name, summary) in concepts {
+            if summary.is_empty() {
+                s.push_str(&format!("- {name}\n"));
+            } else {
+                s.push_str(&format!("- {name}：{summary}\n"));
+            }
+        }
+    }
+    if !systems.is_empty() {
+        s.push_str("\n【力量体系（等级与规则必须严格遵守）】\n");
+        for (name, levels, rules) in systems {
+            let mut line = format!("- {name}");
+            if !levels.is_empty() {
+                line.push_str(&format!("（{levels}）"));
+            }
+            if !rules.is_empty() {
+                line.push_str(&format!("：{rules}"));
+            }
+            s.push_str(&line);
+            s.push('\n');
+        }
+    }
+    s
 }
 
 fn location_kind_zh(kind: &str) -> &str {
@@ -1761,30 +1901,49 @@ mod tests {
             title: "拾灯录".into(),
             premise: "灵灯将熄".into(),
             theme: "执念".into(),
+            setting: "云隐洲".into(),
             ..Default::default()
         };
         let wp = world_prompt(&concept, &options(), 3);
         assert!(wp.contains("【书名】《拾灯录》"));
         assert!(wp.contains("【主线】灵灯将熄"));
+        assert!(wp.contains("【故事舞台】云隐洲"));
         assert!(wp.contains("恰好 3 个主要角色"));
         assert!(wp.contains(
             "[{name, role, gender, occupation, personality, background, aliases:[别名]}]"
         ));
 
+        // 舞台为空时不出对应行
+        let bare = BookConcept {
+            title: "拾灯录".into(),
+            premise: "灵灯将熄".into(),
+            ..Default::default()
+        };
+        assert!(!world_prompt(&bare, &options(), 3).contains("【故事舞台】"));
+
         let ctx = OutlineContext {
             premise: "灵灯将熄".into(),
-            genre: None,
+            genre: Some("玄幻".into()),
             pov: None,
             style: None,
             audience: None,
-            chapter_words: None,
+            theme: Some("传承".into()),
+            setting: Some("云隐洲".into()),
+            target_words: Some(1_000_000),
+            chapter_words: Some(3000),
+            worldview_concepts: vec![("灵灯".into(), "以灯载魂".into())],
+            systems: vec![(
+                "守灯术".into(),
+                "照夜→引星→续日".into(),
+                "点灯折寿".into(),
+            )],
             characters: vec![("阿澈".into(), "守灯学徒".into())],
             locations: vec![
                 ("云隐洲".into(), "continent".into(), String::new()),
                 ("长明镇".into(), "city".into(), "云隐洲".into()),
             ],
             organizations: vec![("守灯阁".into(), "sect".into())],
-            thread_titles: vec![],
+            threads: vec![("祖师熄灯之谜".into(), "灯为何一盏盏熄灭".into())],
             volumes: vec![("第一卷".into(), 1, 3)],
             recent_chapters: vec![],
             completed_summaries: vec![],
@@ -1792,9 +1951,19 @@ mod tests {
         };
         let op = outline_prompt(&ctx, 5);
         assert!(op.contains("第 4 章起，请排 5 章的脉络"));
+        // head 补全：主题 / 舞台 / 体量（卷级节奏的基准）
+        assert!(op.contains("【主题】传承"));
+        assert!(op.contains("【故事舞台】云隐洲"));
+        assert!(op.contains("【全书体量】约 100 万字"));
+        // 线索带简述，推进节奏才能对准每条线
+        assert!(op.contains("【叙事线索】\n- 祖师熄灯之谜：灯为何一盏盏熄灭"));
+        // 世界观概念与力量体系进上下文，禁止另起体系
+        assert!(op.contains("【世界观概念（设定基准）】"));
+        assert!(op.contains("- 灵灯：以灯载魂"));
+        assert!(op.contains("【力量体系（等级与规则必须严格遵守）】"));
+        assert!(op.contains("- 守灯术（照夜→引星→续日）：点灯折寿"));
         // 角色带身份括注，防止大纲张冠李戴
         assert!(op.contains("【主要角色（括注为身份，排大纲必须遵守）】阿澈（守灯学徒）"));
-        assert!(op.contains("【叙事线索】（尚未建线索）"));
         assert!(op.contains("已排 3 章"));
         // 已建档清单 + 一致性硬约束
         assert!(op.contains("【已建档的地点与势力】"));

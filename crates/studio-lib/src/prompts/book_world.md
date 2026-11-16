@@ -3,6 +3,7 @@
 【书名】《{{title}}》
 {{genre_line}}{{extras}}【主线】{{premise}}
 【主题】{{theme}}
+{{setting_line}}
 
 只输出一个 JSON 对象（字符串内的引号用「」），字段：
 - concepts：[{name, category, summary}] 3-6 项基础概念（世界规则/纪元/种族等）
