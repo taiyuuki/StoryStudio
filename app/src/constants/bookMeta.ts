@@ -40,6 +40,8 @@ export const WORD_OPTIONS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 100
 export function isBookMetaEmpty(meta: BookMetaDto): boolean {
   return !(
     meta.genre?.trim() ||
+    meta.tagline?.trim() ||
+    meta.blurb?.trim() ||
     meta.premise?.trim() ||
     meta.theme?.trim() ||
     meta.audience?.trim() ||
@@ -58,6 +60,8 @@ export function normalizeBookMeta(meta: BookMetaDto): BookMetaDto {
   }
   return {
     genre: t(meta.genre),
+    tagline: t(meta.tagline),
+    blurb: t(meta.blurb),
     premise: t(meta.premise),
     theme: t(meta.theme),
     audience: t(meta.audience),

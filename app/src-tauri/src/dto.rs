@@ -1427,6 +1427,10 @@ impl From<story_studio_lib::prompt_custom::PromptEntry> for PromptDto {
 #[serde(rename_all = "camelCase")]
 pub struct BookMetaDto {
     pub genre: Option<String>,
+    /// 一句话卖点（建书向导落盘，表单可改）
+    pub tagline: Option<String>,
+    /// 给读者看的简介
+    pub blurb: Option<String>,
     pub premise: Option<String>,
     pub theme: Option<String>,
     pub audience: Option<String>,
@@ -1440,6 +1444,8 @@ impl From<story_project_format::StoryMeta> for BookMetaDto {
     fn from(m: story_project_format::StoryMeta) -> Self {
         Self {
             genre: m.genre,
+            tagline: m.tagline,
+            blurb: m.blurb,
             premise: m.premise,
             theme: m.theme,
             audience: m.audience,
@@ -1456,6 +1462,8 @@ impl From<BookMetaDto> for story_project_format::StoryMeta {
         Self {
             title: None,
             genre: m.genre,
+            tagline: m.tagline,
+            blurb: m.blurb,
             premise: m.premise,
             theme: m.theme,
             setting: None,

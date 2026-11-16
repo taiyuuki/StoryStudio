@@ -218,6 +218,10 @@ export interface PromptDto {
 
 export interface BookMetaDto {
   genre: string | null
+  /** 一句话卖点（建书向导落盘） */
+  tagline: string | null
+  /** 给读者看的简介 */
+  blurb: string | null
   premise: string | null
   theme: string | null
   audience: string | null

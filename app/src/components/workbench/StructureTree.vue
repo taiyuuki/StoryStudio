@@ -22,6 +22,8 @@ const metaLoading = ref(false)
 const metaSaving = ref(false)
 const meta = ref<BookMetaDto>({
   genre: null,
+  tagline: null,
+  blurb: null,
   premise: null,
   theme: null,
   audience: null,

@@ -30,6 +30,12 @@ pub struct OutlineFile {
 pub struct StoryMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// 一句话卖点（建书向导第 2 步落盘，此前只在内存里展示后丢弃）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tagline: Option<String>,
+    /// 给读者看的简介
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blurb: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

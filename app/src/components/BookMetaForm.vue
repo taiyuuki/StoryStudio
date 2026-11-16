@@ -71,6 +71,15 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
     </div>
 
     <div class="bm-field">
+      <label>一句话卖点</label>
+      <input
+        :value="modelValue.tagline ?? ''"
+        placeholder="如：守灯人只剩最后一个徒弟（可选）"
+        @input="set('tagline', ($event.target as HTMLInputElement).value || null)"
+      />
+    </div>
+
+    <div class="bm-field">
       <label>一句话主线 <span class="bm-tip">续排大纲与逐章成书的走向基准</span></label>
       <textarea
         rows="2"
@@ -86,6 +95,16 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
         :value="modelValue.theme ?? ''"
         placeholder="如：执念与传承（可选）"
         @input="set('theme', ($event.target as HTMLInputElement).value || null)"
+      />
+    </div>
+
+    <div class="bm-field">
+      <label>简介 <span class="bm-tip">给读者看的封底文案</span></label>
+      <textarea
+        rows="3"
+        :value="modelValue.blurb ?? ''"
+        placeholder="80-150 字的读者简介（可选）"
+        @input="set('blurb', ($event.target as HTMLTextAreaElement).value || null)"
       />
     </div>
 

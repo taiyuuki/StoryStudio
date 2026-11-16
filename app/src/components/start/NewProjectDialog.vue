@@ -25,6 +25,8 @@ const defaultDir = ref('')
 const metaExpanded = ref(false)
 const meta = ref<BookMetaDto>({
   genre: null,
+  tagline: null,
+  blurb: null,
   premise: null,
   theme: null,
   audience: null,
@@ -57,6 +59,8 @@ watch(
       metaExpanded.value = false
       Object.assign(meta.value, {
         genre: null,
+        tagline: null,
+        blurb: null,
         premise: null,
         theme: null,
         audience: null,

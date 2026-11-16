@@ -264,6 +264,7 @@ pub fn get_book_meta(dir: &Path) -> Result<StoryMeta, StudioError> {
 /// （分别由建书流程与世界观维护，不在书籍信息表单里）。
 /// outline.toml 的其余段（volumes / arcs / storylines / conflicts）原样保留；
 /// 文件不存在时创建——手动项目补填书籍信息后即可使用续排大纲。
+/// tagline / blurb（卖点与简介）随建书流程落盘，也归表单管辖可改。
 pub fn save_book_meta(dir: &Path, meta: &StoryMeta) -> Result<(), StudioError> {
     let paths = open_project(dir)?.paths();
 

@@ -364,8 +364,9 @@ fn concept_prompt(o: &BookCreationOptions) -> String {
 
 /// 用确认后的概念建项目，返回项目根目录。
 ///
-/// 参数随项目持久化到 outline.toml（audience / target_words / pov / style /
-/// chapter_words），之后逐章成书与续排大纲都会遵守这些约束。
+/// 概念六字段（title / tagline / blurb / premise / theme / setting）与参数
+/// （audience / target_words / pov / style / chapter_words / genre）全部随项目
+/// 持久化到 outline.toml，之后逐章成书与续排大纲都会遵守这些约束。
 pub fn create_book_project(
     parent_dir: &Path,
     concept: &BookConcept,
@@ -385,6 +386,12 @@ pub fn create_book_project(
 
     let mut outline = OutlineFile::default();
     outline.story.title = Some(title.to_string());
+    if !concept.tagline.trim().is_empty() {
+        outline.story.tagline = Some(concept.tagline.trim().to_string());
+    }
+    if !concept.blurb.trim().is_empty() {
+        outline.story.blurb = Some(concept.blurb.trim().to_string());
+    }
     outline.story.genre = o.genre.clone();
     outline.story.premise = Some(concept.premise.trim().to_string());
     if !concept.theme.trim().is_empty() {
@@ -1550,6 +1557,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outline.story.title.as_deref(), Some("拾灯录"));
+        // 卖点与简介随项目落盘（此前只在向导内存里展示后丢弃）
+        assert_eq!(outline.story.tagline.as_deref(), Some("t"));
+        assert_eq!(outline.story.blurb.as_deref(), Some("b"));
         assert_eq!(outline.story.premise.as_deref(), Some("主线：灵灯将熄"));
         assert_eq!(outline.story.audience.as_deref(), Some("男频"));
         assert_eq!(outline.story.pov.as_deref(), Some("第三人称限知"));
