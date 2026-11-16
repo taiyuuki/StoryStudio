@@ -303,7 +303,10 @@ impl Task for WriteChapterTask {
             user.push_str(&format!("【大纲梗概】\n{}\n\n", m.outline_brief));
         }
         if !m.tone_brief.is_empty() {
-            user.push_str(&format!("【全书基调】（全文保持一致）\n{}\n\n", m.tone_brief));
+            user.push_str(&format!(
+                "【全书基调】（全文保持一致）\n{}\n\n",
+                m.tone_brief
+            ));
         }
         if !m.character_cards.is_empty() {
             user.push_str(&format!("【出场人物】\n{}\n\n", m.character_cards));

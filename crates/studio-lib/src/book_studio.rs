@@ -933,26 +933,28 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
         .unwrap_or_default();
 
     // 世界观概念与力量体系（大纲不得另起体系、写错等级链）
-    let worldview_concepts: Vec<(String, String)> = std::fs::read_to_string(
-        paths.worldview_concepts_toml(),
-    )
-    .ok()
-    .and_then(|c| {
-        use story_project_format::WorldviewSectionFile;
-        story_project_format::ConceptsFile::from_toml_str(&c).ok()
-    })
-    .map(|f| {
-        f.concepts
-            .iter()
-            .map(|c| {
-                (
-                    c.name.clone(),
-                    truncate_chars(c.summary.as_deref().unwrap_or_default(), CONCEPT_SUMMARY_CHARS),
-                )
+    let worldview_concepts: Vec<(String, String)> =
+        std::fs::read_to_string(paths.worldview_concepts_toml())
+            .ok()
+            .and_then(|c| {
+                use story_project_format::WorldviewSectionFile;
+                story_project_format::ConceptsFile::from_toml_str(&c).ok()
             })
-            .collect()
-    })
-    .unwrap_or_default();
+            .map(|f| {
+                f.concepts
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.name.clone(),
+                            truncate_chars(
+                                c.summary.as_deref().unwrap_or_default(),
+                                CONCEPT_SUMMARY_CHARS,
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
     let systems: Vec<(String, String, String)> =
         std::fs::read_to_string(paths.worldview_systems_toml())
             .ok()
@@ -1076,10 +1078,20 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
     if let Some(s) = &ctx.style {
         head.push_str(&format!("【文风基调】{s}\n"));
     }
-    if let Some(t) = ctx.theme.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(t) = ctx
+        .theme
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         head.push_str(&format!("【主题】{t}\n"));
     }
-    if let Some(s) = ctx.setting.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(s) = ctx
+        .setting
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         head.push_str(&format!("【故事舞台】{s}\n"));
     }
     if let Some(w) = ctx.target_words.filter(|w| *w > 0) {
@@ -1405,12 +1417,8 @@ pub fn save_book_outline_batch(
                     Some(match char_ids.get(name).cloned() {
                         Some(id) => id,
                         None => {
-                            let id = mutations::create_entity(
-                                &paths,
-                                EntityKind::Character,
-                                name,
-                            )
-                            .ok()?;
+                            let id = mutations::create_entity(&paths, EntityKind::Character, name)
+                                .ok()?;
                             char_ids.insert(name.to_string(), id.clone());
                             id
                         }
@@ -1886,7 +1894,8 @@ mod tests {
             premise: "主线".into(),
             ..Default::default()
         };
-        let root = create_book_project(parent.path(), &concept, &BookCreationOptions::default()).unwrap();
+        let root =
+            create_book_project(parent.path(), &concept, &BookCreationOptions::default()).unwrap();
         // 章节里的「神秘剑客」不在任何已建档角色中：应自动建角色档案而非静默丢弃
         let draft = OutlineBatchDraft {
             volumes: Vec::new(),
@@ -1904,11 +1913,10 @@ mod tests {
         .unwrap();
         assert_eq!(file.chapters[0].characters.len(), 1, "新角色名不应被丢弃");
         let id = &file.chapters[0].characters[0];
-        let entity =
-            story_project_format::EntityFile::from_toml_str(
-                &std::fs::read_to_string(paths.characters_dir().join(format!("{id}.toml"))).unwrap(),
-            )
-            .unwrap();
+        let entity = story_project_format::EntityFile::from_toml_str(
+            &std::fs::read_to_string(paths.characters_dir().join(format!("{id}.toml"))).unwrap(),
+        )
+        .unwrap();
         assert_eq!(entity.display_name, "神秘剑客");
     }
 
@@ -1998,11 +2006,7 @@ mod tests {
             target_words: Some(1_000_000),
             chapter_words: Some(3000),
             worldview_concepts: vec![("灵灯".into(), "以灯载魂".into())],
-            systems: vec![(
-                "守灯术".into(),
-                "照夜→引星→续日".into(),
-                "点灯折寿".into(),
-            )],
+            systems: vec![("守灯术".into(), "照夜→引星→续日".into(), "点灯折寿".into())],
             characters: vec![("阿澈".into(), "守灯学徒".into())],
             locations: vec![
                 ("云隐洲".into(), "continent".into(), String::new()),
