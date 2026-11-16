@@ -2019,7 +2019,9 @@ mod tests {
             completed_summaries: vec![],
             existing_chapters: 3,
         };
-        let op = outline_prompt(&ctx, 5);
+        // Windows checkout（core.autocrlf）下 include_str 模板自带 \r\n，
+        // 断言前归一化，跨模板换行的 contains 才不挑平台
+        let op = outline_prompt(&ctx, 5).replace("\r\n", "\n");
         assert!(op.contains("第 4 章起，请排 5 章的脉络"));
         // head 补全：主题 / 舞台 / 体量（卷级节奏的基准）
         assert!(op.contains("【主题】传承"));
