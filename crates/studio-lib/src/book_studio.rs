@@ -1487,17 +1487,33 @@ fn llm_json(
     // 截断与格式问题分开报：思考型模型耗尽配额时正文为空/残缺，
     // 引导用户调大配置而非"换更稳定的模型"
     if response.stop_reason == StopReason::MaxTokens {
-        return Err(StudioError::Ai(
-            "输出达到 token 上限被截断，未得到完整 JSON。\
-             可在设置 → AI 配置中调大该档案的「输出上限」后重试"
-                .to_string(),
-        ));
+        return Err(StudioError::Ai(truncation_message(
+            response.usage.output_tokens,
+            request.max_tokens,
+        )));
     }
     parse_json_object_lenient(&response.text).map_err(|e| {
         StudioError::Ai(format!(
             "输出无法解析为 JSON（{e}）。请重试，或换一个更稳定的模型"
         ))
     })
+}
+
+/// MAX_TOKENS 截断的可读报错，区分两种成因：
+/// - 输出确实逼近上限（思考型模型耗尽配额）→ 引导调大档案「输出上限」；
+/// - 实际输出远低于上限 → 网关/中转提前掐断了流（其 usage 常只几百 token
+///   却标 MAX_TOKENS），调大配置无效，应重试或换直连端点。
+fn truncation_message(output_tokens: usize, max_tokens: usize) -> String {
+    if max_tokens > 0 && output_tokens >= max_tokens * 95 / 100 {
+        "输出达到 token 上限被截断，未得到完整 JSON。\
+         可在设置 → AI 配置中调大该档案的「输出上限」后重试"
+            .to_string()
+    } else {
+        format!(
+            "输出被提前截断（实际输出约 {output_tokens} token，远低于上限 {max_tokens}），\
+             未得到完整 JSON——疑似网关/中转服务限流，可直接重试，或换一个稳定的端点"
+        )
+    }
 }
 
 /// 宽松解析模型输出的 JSON 对象（统一走 [`crate::llm_json`] 的容错梯度）
@@ -2037,6 +2053,19 @@ mod tests {
         bare.locations = Vec::new();
         bare.organizations = Vec::new();
         assert!(!outline_prompt(&bare, 5).contains("一致性（硬性要求）"));
+    }
+
+    #[test]
+    fn truncation_message_distinguishes_quota_and_gateway() {
+        // 真超限（逼近上限）→ 引导调大输出上限
+        let m = truncation_message(65_000, 65_536);
+        assert!(m.contains("调大该档案的「输出上限」"));
+        // 远低于上限 → 网关/中转提前截断（真实案例：中转标 MAX_TOKENS 但只输出 377 token）
+        let m = truncation_message(377, 65_536);
+        assert!(m.contains("网关/中转"), "应提示疑似网关截断: {m}");
+        assert!(!m.contains("调大该档案"));
+        // 流里没拿到 usage（0）同样按网关截断处理
+        assert!(truncation_message(0, 65_536).contains("网关/中转"));
     }
 
     #[test]
