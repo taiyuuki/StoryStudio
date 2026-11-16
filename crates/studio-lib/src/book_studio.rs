@@ -30,6 +30,8 @@ use crate::mutations::{self, EntityKind};
 pub const DEFAULT_CHAPTER_WORDS: u64 = 2500;
 /// 构思候选数
 pub const CONCEPT_CANDIDATES: usize = 3;
+/// 设定阶段默认生成的角色数
+pub const WORLD_CHARACTER_COUNT: u32 = 6;
 /// 单批章节上限（防长篇一次排完）
 pub const MAX_BATCH_CHAPTERS: u32 = 40;
 /// 续排上下文里线索简述的截断长度（字符）
@@ -63,8 +65,6 @@ pub struct BookCreationOptions {
     pub pov: Option<String>,
     /// 文风基调（热血 / 轻松 / 暗黑 / 细腻…）
     pub style: Option<String>,
-    /// 主要角色数（2..=12）
-    pub character_count: Option<u32>,
 }
 
 impl BookCreationOptions {
@@ -83,7 +83,6 @@ impl BookCreationOptions {
             o.chapter_count.clamp(3, MAX_BATCH_CHAPTERS)
         };
         o.chapter_words = o.chapter_words.filter(|w| (1000..=10000).contains(w));
-        o.character_count = o.character_count.filter(|c| (2..=12).contains(c));
         o
     }
 }
@@ -435,7 +434,7 @@ pub fn ai_book_world(
     provider: Arc<dyn story_ai_runtime::AiProvider>,
 ) -> Result<WorldDraft, StudioError> {
     let o = options.normalized();
-    let n_chars = o.character_count.unwrap_or(6);
+    let n_chars = WORLD_CHARACTER_COUNT;
     with_cancel(|cancel| {
         let json = llm_json(provider, cancel, None, world_prompt(concept, &o, n_chars))?;
         Ok(parse_world_draft(&json, n_chars))
@@ -1651,7 +1650,6 @@ mod tests {
             audience: Some("男频".into()),
             pov: Some("第三人称限知".into()),
             style: Some("热血".into()),
-            character_count: Some(3),
         }
     }
 
