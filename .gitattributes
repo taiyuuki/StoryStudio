@@ -1,0 +1,10 @@
+# 行尾统一：文本文件一律 LF 入库、LF 检出。
+# 背景：include_str! 嵌入的提示词模板与测试的跨行断言依赖一致行尾，
+# Windows 默认 core.autocrlf=true 会检出 CRLF，模板随之带 \r 导致
+# Windows-only 测试失败（见 8496f6f 之前的 CI）。
+* text=auto eol=lf
+
+# 二进制资源不做任何转换
+*.png binary
+*.ico binary
+*.icns binary
