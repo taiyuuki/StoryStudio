@@ -257,6 +257,8 @@ impl Task for WriteFragmentTask {
 pub struct ChapterMaterials {
     /// 大纲梗概（outline.toml 的故事简介，一两句话）
     pub outline_brief: String,
+    /// 全书基调（题材 / 受众 / 视角 / 文风，一行一项；全空 = 未设置）
+    pub tone_brief: String,
     /// 本章卡：标题 + 梗概 + 目标 + 节拍 + 章末钩子（已格式化）
     pub chapter_card: String,
     /// 出场角色卡（已格式化，一行一角色）
@@ -299,6 +301,9 @@ impl Task for WriteChapterTask {
         let mut user = String::new();
         if !m.outline_brief.is_empty() {
             user.push_str(&format!("【大纲梗概】\n{}\n\n", m.outline_brief));
+        }
+        if !m.tone_brief.is_empty() {
+            user.push_str(&format!("【全书基调】（全文保持一致）\n{}\n\n", m.tone_brief));
         }
         if !m.character_cards.is_empty() {
             user.push_str(&format!("【出场人物】\n{}\n\n", m.character_cards));
@@ -630,6 +635,7 @@ mod tests {
         let task = WriteChapterTask {
             materials: ChapterMaterials {
                 outline_brief: "少年林风的江湖行".into(),
+                tone_brief: "题材：武侠\n叙事视角：第三人称限知".into(),
                 chapter_card: "第3章《夜雨》：目标是引出旧案".into(),
                 character_cards: "林风：17 岁，剑客".into(),
                 previous_tail: "……他消失在雨幕里。".into(),
@@ -645,6 +651,7 @@ mod tests {
 
         for section in [
             "【大纲梗概】",
+            "【全书基调】",
             "【出场人物】",
             "【本章设定】",
             "【前文】",
@@ -655,6 +662,7 @@ mod tests {
         ] {
             assert!(ctx.user.contains(section), "缺少分段: {section}");
         }
+        assert!(ctx.user.contains("第三人称限知"), "基调内容缺失");
         assert!(ctx.user.contains("2000"));
         // max_tokens = max(65536, target×8)
         assert_eq!(ctx.model.max_tokens, 65536);
@@ -674,6 +682,8 @@ mod tests {
         assert_eq!(ctx.model.max_tokens, 80000);
         // 空材料时 user 仍应有【本章设定】与【任务】段
         assert!(ctx.user.contains("【任务】"));
+        // 基调未设置时不出对应段（不占上下文）
+        assert!(!ctx.user.contains("【全书基调】"));
     }
 
     #[test]

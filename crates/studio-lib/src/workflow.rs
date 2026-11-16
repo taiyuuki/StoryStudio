@@ -937,6 +937,26 @@ fn build_materials(
             outline_brief.push_str(&format!("主题：{theme}。"));
         }
     }
+    if let Some(setting) = outline.story.setting.as_deref().map(str::trim) {
+        if !setting.is_empty() {
+            outline_brief.push_str(&format!("舞台：{setting}。"));
+        }
+    }
+
+    // 全书基调（题材 / 受众 / 视角 / 文风）——开书时选定、落盘在 outline.toml，
+    // 正文写作必须全程遵守；全空时不占上下文
+    let mut tone_lines: Vec<String> = Vec::new();
+    for (label, value) in [
+        ("题材", outline.story.genre.as_deref()),
+        ("面向人群", outline.story.audience.as_deref()),
+        ("叙事视角", outline.story.pov.as_deref()),
+        ("文风基调", outline.story.style.as_deref()),
+    ] {
+        if let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) {
+            tone_lines.push(format!("{label}：{v}"));
+        }
+    }
+    let tone_brief = tone_lines.join("\n");
 
     // 本章卡
     let mut chapter_card = format!("第 {index} 章《{}》", def.title);
@@ -1015,6 +1035,7 @@ fn build_materials(
 
     Ok(ChapterMaterials {
         outline_brief,
+        tone_brief,
         chapter_card,
         character_cards,
         previous_tail,
