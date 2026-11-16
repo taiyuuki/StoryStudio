@@ -243,6 +243,26 @@ async function openAfterConcept() {
 }
 
 // ── 第 2 → 3 步：保存设定 → 生成首批大纲 ─────────────────
+
+/** 第 2 步「重新生成」：用确认过的概念重出设定草稿（不保存、不前进）
+ * 此前误绑 confirmWorld(true)——跳过保存直接排大纲，草稿没重生成还丢了上下文 */
+async function regenWorld() {
+  if (!concept.value.title.trim()) {
+    ElMessage.warning('先回到「构思」一步确认概念')
+    return
+  }
+  generating.value = true
+  busyPhase.value = 'world'
+  error.value = ''
+  try {
+    worldDraft.value = await api.aiBookWorld(concept.value, buildOptions())
+  } catch (err) {
+    error.value = (err as Error).message
+  } finally {
+    generating.value = false
+  }
+}
+
 async function confirmWorld(reroll: boolean) {
   if (!worldDraft.value || !root.value) {
     // 正常流程不会走到（项目在确认构思时已创建）；提示而非静默无反应
@@ -560,7 +580,7 @@ function goBack() {
             <WorldForm v-model="worldDraft" />
             <div class="step-actions">
               <button class="ink-btn ink-btn--sm" @click="backStep"><i class="fa-solid fa-arrow-left" /> 上一步</button>
-              <button class="ink-btn ink-btn--sm" @click="confirmWorld(true)"><i class="fa-solid fa-rotate" /> 重新生成</button>
+              <button class="ink-btn ink-btn--sm" @click="regenWorld"><i class="fa-solid fa-rotate" /> 重新生成</button>
               <button class="ink-btn ink-btn--sm" @click="openAfterWorld"><i class="fa-solid fa-book-open" /> 保存设定，直接打开</button>
               <button class="ink-btn ink-btn--primary" @click="confirmWorld(false)">
                 保存设定，去排大纲
@@ -599,6 +619,8 @@ function goBack() {
             <p v-if="concept.blurb" class="rep-blurb">{{ concept.blurb }}</p>
             <div class="rep-stats">
               <span v-if="worldReport"><i class="fa-solid fa-users" /> {{ worldReport.characters }} 个角色</span>
+              <span v-if="worldReport"><i class="fa-solid fa-location-dot" /> {{ worldReport.locations }} 处地点</span>
+              <span v-if="worldReport"><i class="fa-solid fa-flag" /> {{ worldReport.organizations }} 个势力</span>
               <span v-if="worldReport"><i class="fa-solid fa-route" /> {{ worldReport.threads }} 条线索</span>
               <span><i class="fa-solid fa-list-ol" /> 已排 {{ outlineSaved }} 章</span>
             </div>
