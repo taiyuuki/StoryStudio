@@ -681,6 +681,43 @@ pub fn add_assertion(
     })
 }
 
+/// 原地更新断言（保留 ID / 状态 / 来源 / 有效期）；
+/// evidence_fragment 传片段 ID 时登记并追加证据，不传则保留现有证据
+#[tauri::command]
+pub fn update_assertion(
+    root: String,
+    assertion_id: String,
+    subject: String,
+    predicate: String,
+    object: String,
+    evidence_fragment: Option<String>,
+) -> R<AssertionOutcomeDto> {
+    let _gate = write_gate(&root);
+    mutations::update_assertion(
+        &paths(&root),
+        &assertion_id,
+        &subject,
+        &predicate,
+        &object,
+        evidence_fragment.as_deref(),
+    )
+    .map_err(e)
+    .map(|o| AssertionOutcomeDto {
+        id: o.id,
+        superseded: o.superseded,
+        deduplicated: o.deduplicated,
+        coexisting: o.coexisting,
+    })
+}
+
+/// 移除断言上的证据引用（按片段 ID 或证据 ID）；
+/// 证据条目不再被任何断言引用时级联删除
+#[tauri::command]
+pub fn remove_assertion_evidence(root: String, assertion_id: String, fragment_id: String) -> R<()> {
+    let _gate = write_gate(&root);
+    mutations::remove_evidence(&paths(&root), &assertion_id, &fragment_id).map_err(e)
+}
+
 /// 修改断言状态：active / superseded / contradicted
 #[tauri::command]
 pub fn set_assertion_status(root: String, assertion_id: String, status: String) -> R<()> {

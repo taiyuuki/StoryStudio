@@ -145,6 +145,8 @@ pub fn run() {
             // 知识断言
             commands::list_knowledge,
             commands::add_assertion,
+            commands::update_assertion,
+            commands::remove_assertion_evidence,
             commands::set_assertion_status,
             commands::delete_assertion,
             // 世界观

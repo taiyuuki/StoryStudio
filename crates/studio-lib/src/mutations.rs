@@ -4251,16 +4251,17 @@ fn coerce_object_value(predicate: &str, object: &str) -> toml::Value {
 ///
 /// `fragment_id` 为片段 ID：会先在 evidence.toml 中解析出该片段对应的
 /// 证据 ID（ev_XXXX），再从断言上移除这些证据引用。
+/// 被移除的证据条目若不再被任何断言引用，一并从 evidence.toml 删除
+/// （同 delete_assertion 的级联——否则留下无主孤儿条目）。
 pub fn remove_evidence(
     paths: &ProjectPaths,
     assertion_id: &str,
     fragment_id: &str,
 ) -> Result<(), StudioError> {
-    let assertions_path = paths.knowledge_dir().join("assertions.toml");
+    let evidence_path = paths.knowledge_dir().join("evidence.toml");
+    let mut evidence_file = EvidenceFile::load_or_default(&evidence_path)?;
 
     // 片段 ID → 该片段的所有证据 ID（兼容直接传 ev_ ID 的调用方）
-    let evidence_file =
-        EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml"))?;
     let ev_ids: Vec<String> = if fragment_id.starts_with("ev_") {
         vec![fragment_id.to_string()]
     } else {
@@ -4272,7 +4273,9 @@ pub fn remove_evidence(
             .collect()
     };
 
-    let mut file: AssertionsFile = AssertionsFile::load_or_default(&assertions_path)?;
+    let assertions_path = paths.knowledge_dir().join("assertions.toml");
+
+    let mut file = AssertionsFile::load_or_default(&assertions_path)?;
 
     let assertion = file
         .assertions
@@ -4289,6 +4292,26 @@ pub fn remove_evidence(
     }
 
     file.save(&assertions_path)?;
+
+    // 级联：被移除的证据条目若不再被任何断言引用，一并删除
+    // （证据按片段登记、可被多条断言共享，只删无主的）
+    let still_used: std::collections::HashSet<&String> = file
+        .assertions
+        .iter()
+        .flat_map(|a| a.evidence.iter())
+        .collect();
+    let orphaned: Vec<String> = ev_ids
+        .into_iter()
+        .filter(|ev| !still_used.contains(ev))
+        .collect();
+    if orphaned.is_empty() {
+        return Ok(());
+    }
+    let before = evidence_file.evidence.len();
+    evidence_file.evidence.retain(|e| !orphaned.contains(&e.id));
+    if evidence_file.evidence.len() != before {
+        evidence_file.save(&evidence_path)?;
+    }
     Ok(())
 }
 
@@ -4374,6 +4397,93 @@ pub fn set_assertion_status(
     assertion.status = normalized.to_string();
     file.save(&assertions_path)?;
     Ok(())
+}
+
+/// 原地更新断言字段（subject / predicate / object / 证据）
+///
+/// 与 add_assertion 的区别：保留原 ID、status、extracted_by 与生效窗口，
+/// 只改字段本身——UI 手动编辑用，避免"改一个错字也要废弃旧值另建新条"。
+///
+/// - object 仍按谓词做类型转换（coerce_object_value）。
+/// - 断言自身为 active 时沿用 add 的时变语义：同主体同谓词的其他 active
+///   断言自动置 superseded（防止改完出现两条并存的"当前状态"）；非时变
+///   谓词收集并存旧值。编辑 superseded/contradicted 的历史条目则不影响
+///   任何 active 断言。
+/// - evidence_fragment 传 Some 时登记（或复用）该片段证据并追加（去重）；
+///   None 时保留原证据不动——UI 的空占位不应误清既有证据。
+pub fn update_assertion(
+    paths: &ProjectPaths,
+    assertion_id: &str,
+    subject: &str,
+    predicate: &str,
+    object: &str,
+    evidence_fragment: Option<&str>,
+) -> Result<AddAssertionOutcome, StudioError> {
+    let assertions_path = paths.knowledge_dir().join("assertions.toml");
+
+    let mut file = AssertionsFile::load_or_default(&assertions_path)?;
+
+    let idx = file
+        .assertions
+        .iter()
+        .position(|a| a.id == assertion_id)
+        .ok_or_else(|| StudioError::NotFound(format!("断言 '{assertion_id}' 不存在")))?;
+
+    let object_value = coerce_object_value(predicate, object);
+    let was_active = is_active_status(&file.assertions[idx].status);
+
+    // 时变谓词：编辑 active 断言时，同主体同谓词（按更新后的值）的其他
+    // active 断言自动失效；可多值谓词收集并存旧值供调用方判断
+    let mut superseded = Vec::new();
+    let mut coexisting = Vec::new();
+    if was_active {
+        if AUTO_SUPERSEDE_PREDICATES.contains(&predicate) {
+            for a in file.assertions.iter_mut() {
+                if a.id != assertion_id
+                    && a.subject == subject
+                    && a.predicate == predicate
+                    && is_active_status(&a.status)
+                {
+                    a.status = "superseded".to_string();
+                    superseded.push(a.id.clone());
+                }
+            }
+        } else {
+            for a in file.assertions.iter() {
+                if a.id != assertion_id
+                    && a.subject == subject
+                    && a.predicate == predicate
+                    && is_active_status(&a.status)
+                    && a.object != object_value
+                {
+                    coexisting.push(object_value_to_string(&a.object));
+                }
+            }
+        }
+    }
+
+    // 证据：Some → 登记/复用并追加（去重）；None → 保留原证据
+    if let Some(fragment_id) = evidence_fragment {
+        let ev = register_evidence(paths, fragment_id)?;
+        let assertion = &mut file.assertions[idx];
+        if !assertion.evidence.contains(&ev) {
+            assertion.evidence.push(ev);
+        }
+    }
+
+    let assertion = &mut file.assertions[idx];
+    assertion.subject = subject.to_string();
+    assertion.predicate = predicate.to_string();
+    assertion.object = object_value;
+
+    file.save(&assertions_path)?;
+
+    Ok(AddAssertionOutcome {
+        id: assertion_id.to_string(),
+        superseded,
+        deduplicated: false,
+        coexisting,
+    })
 }
 
 // ============================================================================
@@ -6306,6 +6416,14 @@ mod tests {
         let file: AssertionsFile = AssertionsFile::load_or_default(&path).unwrap();
         let a = file.assertions.iter().find(|a| a.id == a_id).unwrap();
         assert!(!a.evidence.contains(&ev_id));
+
+        // 级联：证据条目不再被任何断言引用 → 一并删除，不留孤儿
+        let ev_file =
+            EvidenceFile::load_or_default(&paths.knowledge_dir().join("evidence.toml")).unwrap();
+        assert!(
+            !ev_file.evidence.iter().any(|e| e.id == ev_id),
+            "无主证据条目应级联删除"
+        );
     }
 
     #[test]
@@ -6932,6 +7050,111 @@ mod tests {
             .id;
 
         let result = set_assertion_status(&paths, &id, "deleted");
+        assert!(result.is_err());
+    }
+
+    // —— update_assertion（原地更新）——
+
+    #[test]
+    fn update_assertion_edits_in_place() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let id = add_assertion(&paths, "c_0001", "age", "25", None)
+            .unwrap()
+            .id;
+        let outcome = update_assertion(&paths, &id, "c_0001", "age", "26", None).unwrap();
+
+        assert_eq!(outcome.id, id, "原地更新不改 ID");
+        assert!(!outcome.deduplicated);
+        assert!(outcome.superseded.is_empty());
+
+        let file = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
+        assert_eq!(file.assertions.len(), 1, "更新不应新增条目");
+        let a = &file.assertions[0];
+        assert_eq!(a.object, toml::Value::Integer(26), "age 仍按整数转换");
+        assert_eq!(a.status, "active");
+        assert_eq!(a.extracted_by, "manual");
+    }
+
+    /// 编辑 active 时变断言：同主体同谓词的其他 active 自动废弃；
+    /// 编辑 superseded 历史条目则不影响任何 active 断言。
+    #[test]
+    fn update_assertion_supersede_semantics() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        // a1 老宅 → 被 a2 集市取代；手动恢复 a1 制造两条 active 并存
+        let a1 = add_assertion(&paths, "c_0001", "located_at", "l_0001", None)
+            .unwrap()
+            .id;
+        let a2 = add_assertion(&paths, "c_0001", "located_at", "l_0002", None)
+            .unwrap()
+            .id;
+        set_assertion_status(&paths, &a1, "active").unwrap();
+
+        // 编辑 a1：a2（其他 active）应自动废弃
+        let outcome =
+            update_assertion(&paths, &a1, "c_0001", "located_at", "l_0003", None).unwrap();
+        assert_eq!(outcome.superseded, vec![a2.clone()]);
+
+        let file = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
+        let get = |id: &str| file.assertions.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(get(&a1).object, toml::Value::String("l_0003".into()));
+        assert_eq!(get(&a2).status, "superseded");
+
+        // 编辑 superseded 的 a2（历史纠错）：active 的 a1 不受影响
+        let outcome =
+            update_assertion(&paths, &a2, "c_0001", "located_at", "l_0009", None).unwrap();
+        assert!(outcome.superseded.is_empty(), "编辑历史条目不应动 active");
+        let file = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
+        let get = |id: &str| file.assertions.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(get(&a1).status, "active");
+        assert_eq!(get(&a2).object, toml::Value::String("l_0009".into()));
+    }
+
+    /// 证据语义：不传保留原证据；传片段登记/复用并追加（去重）
+    #[test]
+    fn update_assertion_evidence_keep_and_append() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let ch = create_chapter(&paths, "第一章").unwrap();
+        let sc = create_scene(&paths, &ch, "场景", None).unwrap();
+        let f1 = create_fragment(&paths, &sc, "他坐在灯下数着铜币，一共九枚。").unwrap();
+        let f2 = create_fragment(&paths, &sc, "翌日他渡江南下，踪迹全无。").unwrap();
+
+        let id = add_assertion(&paths, "c_0001", "status", "在逃", Some(&f1))
+            .unwrap()
+            .id;
+        let ev1 = register_evidence(&paths, &f1).unwrap();
+
+        // 不传证据：保留
+        update_assertion(&paths, &id, "c_0001", "status", "潜逃", None).unwrap();
+        let file = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
+        assert_eq!(
+            file.assertions[0].evidence,
+            vec![ev1.clone()],
+            "None 不应清掉既有证据"
+        );
+
+        // 传另一片段：追加；传同片段：去重不重复
+        update_assertion(&paths, &id, "c_0001", "status", "潜逃", Some(&f2)).unwrap();
+        update_assertion(&paths, &id, "c_0001", "status", "潜逃", Some(&f1)).unwrap();
+        let file = AssertionsFile::load_or_default(&paths.assertions_toml()).unwrap();
+        assert_eq!(
+            file.assertions[0].evidence.len(),
+            2,
+            "两条片段各一条，不重复"
+        );
+    }
+
+    #[test]
+    fn update_nonexistent_assertion_fails() {
+        let tmp = setup_test_project();
+        let paths = ProjectPaths::new(tmp.path());
+
+        let result = update_assertion(&paths, "a_9999", "c_0001", "alive", "true", None);
         assert!(result.is_err());
     }
 

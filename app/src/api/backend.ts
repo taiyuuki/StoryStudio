@@ -1169,6 +1169,28 @@ export const api = {
       evidenceFragment: evidenceFragment ?? null,
     })
   },
+  /** 原地更新断言（保留 ID/状态/来源/有效期）；evidenceFragment 传片段 ID 时登记并追加证据，不传则保留现有证据 */
+  updateAssertion(
+    root: string,
+    assertionId: string,
+    subject: string,
+    predicate: string,
+    object: string,
+    evidenceFragment?: string,
+  ) {
+    return call<AssertionOutcomeDto>('update_assertion', {
+      root,
+      assertionId,
+      subject,
+      predicate,
+      object,
+      evidenceFragment: evidenceFragment ?? null,
+    })
+  },
+  /** 移除断言上的证据引用（按片段 ID）；证据条目不再被引用时级联删除 */
+  removeAssertionEvidence(root: string, assertionId: string, fragmentId: string) {
+    return call<void>('remove_assertion_evidence', { root, assertionId, fragmentId })
+  },
   /** 修改断言状态：active / superseded / contradicted */
   setAssertionStatus(root: string, assertionId: string, status: string) {
     return call<void>('set_assertion_status', { root, assertionId, status })

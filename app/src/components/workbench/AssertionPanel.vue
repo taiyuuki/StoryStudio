@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { AssertionDto, KnowledgeDto } from '@/api/backend'
+import type { AssertionDto, EvidenceRefDto, KnowledgeDto } from '@/api/backend'
 import { api } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -10,6 +10,8 @@ const store = useWorkspaceStore()
 const knowledge = ref<KnowledgeDto | null>(null)
 const loading = ref(false)
 const creating = ref(false)
+/** 非空 = 编辑该断言（原地更新）；空 = 新建 */
+const editingId = ref<string | null>(null)
 
 // ── 过滤 ─────────────────────────────────────────────
 type StatusFilter = 'all' | 'active' | 'superseded' | 'contradicted'
@@ -86,14 +88,6 @@ const objectEntities = computed(() => {
   return []
 })
 
-// 切换谓词时清空值，避免控件类型与残留值不符
-watch(
-  () => form.value.predicate,
-  () => {
-    form.value.object = ''
-  },
-)
-
 function predicateLabel(p: string): string {
   return PREDICATES.find((x) => x.value === p)?.label ?? p
 }
@@ -130,21 +124,40 @@ watch(
   () => store.root,
   () => {
     knowledge.value = null
-    creating.value = false
+    closeForm()
     void reload()
   },
 )
 
-function openCreate(subject?: string, predicate?: string) {
-  const isCustom = predicate && !PREDICATES.some((p) => p.value === predicate)
+function openCreate() {
+  editingId.value = null
   form.value = {
-    subject: subject ?? store.ws?.entities.find((e) => e.kind === 'character')?.id ?? '',
-    predicate: isCustom ? CUSTOM : (predicate ?? 'alive'),
-    customPredicate: isCustom ? (predicate ?? '') : '',
+    subject: store.ws?.entities.find((e) => e.kind === 'character')?.id ?? '',
+    predicate: 'alive',
+    customPredicate: '',
     object: '',
     evidenceFragment: '',
   }
   creating.value = true
+}
+
+/** 编辑已有断言：全量回填，保存时原地更新（保留 ID/状态/来源） */
+function openEdit(a: AssertionDto) {
+  const isCustom = !PREDICATES.some((p) => p.value === a.predicate)
+  form.value = {
+    subject: a.subject,
+    predicate: isCustom ? CUSTOM : a.predicate,
+    customPredicate: isCustom ? a.predicate : '',
+    object: a.object,
+    evidenceFragment: a.evidence[0]?.fragment ?? '',
+  }
+  editingId.value = a.id
+  creating.value = true
+}
+
+function closeForm() {
+  creating.value = false
+  editingId.value = null
 }
 
 async function save() {
@@ -164,25 +177,38 @@ async function save() {
     return
   }
   try {
-    const outcome = await api.addAssertion(
-      store.root,
-      f.subject,
-      predicate,
-      f.object.trim(),
-      f.evidenceFragment || undefined,
-    )
+    const editId = editingId.value
+    // 编辑：不传证据片段 = 保留现有证据（表单空占位不清数据）
+    const outcome =
+      editId !== null
+        ? await api.updateAssertion(
+            store.root,
+            editId,
+            f.subject,
+            predicate,
+            f.object.trim(),
+            f.evidenceFragment || undefined,
+          )
+        : await api.addAssertion(
+          store.root,
+          f.subject,
+          predicate,
+          f.object.trim(),
+          f.evidenceFragment || undefined,
+        )
+    const done = editId !== null ? '已更新' : '已记录'
     if (outcome.deduplicated) {
       ElMessage.info('已存在相同断言，未重复创建')
     } else if (outcome.superseded.length > 0) {
-      ElMessage.success(`已记录，自动废弃 ${outcome.superseded.length} 条旧值`)
+      ElMessage.success(`${done}，自动废弃 ${outcome.superseded.length} 条旧值`)
     } else if (outcome.coexisting.length > 0) {
       ElMessage.warning(
-        `已记录；同谓词仍有旧值并存（${outcome.coexisting.map(objectText).join('、')}），如属演进请废弃旧值`,
+        `${done}；同谓词仍有旧值并存（${outcome.coexisting.map(objectText).join('、')}），如属演进请废弃旧值`,
       )
     } else {
-      ElMessage.success('断言已记录')
+      ElMessage.success(editId !== null ? '断言已更新' : '断言已记录')
     }
-    creating.value = false
+    closeForm()
     await reload()
     void store.scheduleCompile()
   } catch (err) {
@@ -211,6 +237,18 @@ async function remove(a: AssertionDto) {
   if (!store.root) return
   try {
     await api.deleteAssertion(store.root, a.id)
+    await reload()
+    void store.scheduleCompile()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+}
+
+/** 摘除断言上的一条证据引用（无主证据条目由后端级联清理） */
+async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
+  if (!store.root) return
+  try {
+    await api.removeAssertionEvidence(store.root, a.id, ev.fragment)
     await reload()
     void store.scheduleCompile()
   } catch (err) {
@@ -286,7 +324,8 @@ async function remove(a: AssertionDto) {
             </option>
           </optgroup>
         </select>
-        <select v-model="form.predicate" title="谓词">
+        <!-- 手动切换谓词时清空值，避免控件类型与残留值不符（程序化回填不受影响） -->
+        <select v-model="form.predicate" title="谓词" @change="form.object = ''">
           <option v-for="p in PREDICATES" :key="p.value" :value="p.value">
             {{ p.label }}
           </option>
@@ -317,17 +356,19 @@ async function remove(a: AssertionDto) {
         :placeholder="form.predicate === 'age' ? '年龄（整数）' : '断言值（文本）'"
       />
       <select v-model="form.evidenceFragment" title="证据片段（可选）">
-        <option value="">无证据</option>
+        <option value="">{{ editingId ? '保留现有证据' : '无证据' }}</option>
         <option v-for="f in knowledge?.fragments ?? []" :key="f.id" :value="f.id">
           {{ f.label }}（{{ f.id }}）
         </option>
       </select>
       <p v-if="predicateMeta?.autoSupersede" class="ap-hint">
-        时变谓词：保存后同主体旧值自动废弃
+        时变谓词：保存后同主体其他生效值自动废弃
       </p>
       <div class="tp-row">
-        <button class="ink-btn ink-btn--sm ink-btn--primary" @click="save">记录</button>
-        <button class="ink-btn ink-btn--sm" @click="creating = false">取消</button>
+        <button class="ink-btn ink-btn--sm ink-btn--primary" @click="save">
+          {{ editingId ? '保存' : '记录' }}
+        </button>
+        <button class="ink-btn ink-btn--sm" @click="closeForm">取消</button>
       </div>
     </div>
 
@@ -346,15 +387,14 @@ async function remove(a: AssertionDto) {
         <span class="as-status">{{ statusMeta[a.status]?.label ?? a.status }}</span>
         <span v-if="sourceLabel(a)" class="as-source">{{ sourceLabel(a) }}</span>
         <span style="flex: 1" />
+        <button
+          class="as-act"
+          title="编辑断言（原地更新，保留 ID 与状态）"
+          @click="openEdit(a)"
+        >
+          <i class="fa-solid fa-pen" />
+        </button>
         <template v-if="a.status === 'active'">
-          <button
-            v-if="PREDICATES.some((p) => p.value === a.predicate && p.autoSupersede)"
-            class="as-act"
-            title="记录新值（旧值自动废弃）"
-            @click="openCreate(a.subject, a.predicate)"
-          >
-            <i class="fa-solid fa-pen" />
-          </button>
           <button
             class="as-act"
             title="废弃（superseded：不再参与检查）"
@@ -394,6 +434,13 @@ async function remove(a: AssertionDto) {
       <div v-if="a.evidence.length" class="as-evidence">
         <span v-for="ev in a.evidence" :key="ev.id" :title="`${ev.fragment}（${ev.id}）`">
           <i class="fa-solid fa-quote-left" /> {{ ev.label || ev.fragment }}
+          <button
+            class="as-ev-x"
+            title="摘除该证据引用（不再被引用的证据条目一并清理）"
+            @click="removeEvidence(a, ev)"
+          >
+            <i class="fa-solid fa-xmark" />
+          </button>
         </span>
       </div>
     </div>
@@ -638,6 +685,27 @@ async function remove(a: AssertionDto) {
     i {
       font-size: 9px;
       opacity: 0.7;
+    }
+  }
+
+  .as-ev-x {
+    border: none;
+    background: transparent;
+    color: var(--ink-disabled);
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+
+    &:hover {
+      background: var(--state-danger);
+      color: #fff;
+
+      i {
+        opacity: 1;
+      }
     }
   }
 }
