@@ -1377,9 +1377,10 @@ pub fn save_book_outline_batch(
         .map_err(|e| StudioError::Io(format!("写入卷结构失败: {e}")))?;
 
     let valid_orders: Vec<u32> = volumes.iter().map(|v| v.order).collect();
-    // 向导表单收集的是角色名；workflow 按 StableId 解析 POV 与角色卡，这里统一映射为实体 ID
-    //（名字或别名匹配，匹配不到的丢弃——避免写入悬空名字导致 POV 失效）
-    let char_ids = character_id_map(&paths);
+    // 向导表单收集的是角色名；workflow 按 StableId 解析 POV 与角色卡，这里统一映射为实体 ID。
+    // 名字或别名匹配不到的**自动建角色档案**（草稿经用户编辑确认，静默丢弃会让 POV
+    // 与角色卡失效），建档失败才跳过该名字。
+    let mut char_ids = character_id_map(&paths);
     for c in &draft.chapters {
         let volume_order = if valid_orders.contains(&c.volume_order) {
             c.volume_order
@@ -1396,8 +1397,25 @@ pub fn save_book_outline_batch(
             characters: c
                 .characters
                 .iter()
-                .filter_map(|n| char_ids.get(n.trim()))
-                .cloned()
+                .filter_map(|n| {
+                    let name = n.trim();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    Some(match char_ids.get(name).cloned() {
+                        Some(id) => id,
+                        None => {
+                            let id = mutations::create_entity(
+                                &paths,
+                                EntityKind::Character,
+                                name,
+                            )
+                            .ok()?;
+                            char_ids.insert(name.to_string(), id.clone());
+                            id
+                        }
+                    })
+                })
                 .collect(),
             threads: Vec::new(),
             scenes: Vec::new(),
@@ -1842,6 +1860,40 @@ mod tests {
         // 角色名已映射为实体 ID（workflow 按 ID 解析 POV 与角色卡）
         assert_eq!(file.chapters[0].characters, vec!["c_0001"]);
         assert_eq!(file.chapters[1].characters, vec!["c_0001", "c_0002"]);
+    }
+
+    #[test]
+    fn outline_unmatched_character_auto_created() {
+        let parent = tempfile::tempdir().unwrap();
+        let concept = BookConcept {
+            title: "书".into(),
+            premise: "主线".into(),
+            ..Default::default()
+        };
+        let root = create_book_project(parent.path(), &concept, &BookCreationOptions::default()).unwrap();
+        // 章节里的「神秘剑客」不在任何已建档角色中：应自动建角色档案而非静默丢弃
+        let draft = OutlineBatchDraft {
+            volumes: Vec::new(),
+            chapters: vec![ChapterItem {
+                title: "初遇".into(),
+                characters: vec!["神秘剑客".into()],
+                ..Default::default()
+            }],
+        };
+        save_book_outline_batch(Path::new(&root), &draft).unwrap();
+        let paths = ProjectPaths::new(Path::new(&root));
+        let file = story_project_format::ChaptersFile::from_toml_str(
+            &std::fs::read_to_string(paths.chapters_toml()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(file.chapters[0].characters.len(), 1, "新角色名不应被丢弃");
+        let id = &file.chapters[0].characters[0];
+        let entity =
+            story_project_format::EntityFile::from_toml_str(
+                &std::fs::read_to_string(paths.characters_dir().join(format!("{id}.toml"))).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(entity.display_name, "神秘剑客");
     }
 
     #[test]
