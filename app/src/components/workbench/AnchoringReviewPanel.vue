@@ -12,182 +12,185 @@ const store = useWorkspaceStore()
 const showAll = ref(false)
 
 const refs = computed(() => store.ws?.unresolvedRefs ?? [])
-const pending = computed(() => refs.value.filter((r) => r.status === 'pending'))
+const pending = computed(() => refs.value.filter(r => r.status === 'pending'))
 const visible = computed(() =>
-  showAll.value ? refs.value.filter((r) => r.status !== 'pending') : pending.value,
-)
+    showAll.value ? refs.value.filter(r => r.status !== 'pending') : pending.value)
 
 /** 批量勾选（仅在待处置视图下可用），key = fragmentId::quote */
 const selected = ref(new Set<string>())
 const selectedCount = computed(() => selected.value.size)
-const allSelected = computed(
-  () => pending.value.length > 0 && pending.value.every((r) => selected.value.has(keyOf(r))),
-)
+const allSelected = computed(() => pending.value.length > 0 && pending.value.every(r => selected.value.has(keyOf(r))))
 
 /** 勾选走 change 事件：WebKit 里 label 转发的合成 click 会让 label 上的 click handler 双触发，勾选被来回翻转 */
 function onSelectToggle(r: UnresolvedRefDto, e: Event) {
-  const checked = (e.target as HTMLInputElement).checked
-  const next = new Set(selected.value)
-  if (checked) next.add(keyOf(r))
-  else next.delete(keyOf(r))
-  selected.value = next
+    const checked = (e.target as HTMLInputElement).checked
+    const next = new Set(selected.value)
+    if (checked) next.add(keyOf(r))
+    else next.delete(keyOf(r))
+    selected.value = next
 }
 
 function toggleSelectAll() {
-  selected.value = allSelected.value
-    ? new Set()
-    : new Set(pending.value.map((r) => keyOf(r)))
+    selected.value = allSelected.value
+        ? new Set()
+        : new Set(pending.value.map(r => keyOf(r)))
 }
 
 async function ignoreSelected() {
-  const items = pending.value.filter((r) => selected.value.has(keyOf(r)))
-  if (items.length === 0) return
-  try {
-    await ElMessageBox.confirm(
-      `将忽略 ${items.length} 条指代，后续锚定不再提示。确定？`,
-      '批量忽略',
-      { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  const ok = await store.ignoreUnresolvedRefs(items.map((r) => [r.fragmentId, r.quote]))
-  if (ok) selected.value = new Set()
+    const items = pending.value.filter(r => selected.value.has(keyOf(r)))
+    if (items.length === 0) return
+    try {
+        await ElMessageBox.confirm(
+            `将忽略 ${items.length} 条指代，后续锚定不再提示。确定？`,
+            '批量忽略',
+            { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
+        )
+    }
+    catch {
+        return
+    }
+    const ok = await store.ignoreUnresolvedRefs(items.map(r => [r.fragmentId, r.quote]))
+    if (ok) selected.value = new Set()
 }
 
 async function deleteSelected() {
-  const items = pending.value.filter((r) => selected.value.has(keyOf(r)))
-  if (items.length === 0) return
-  try {
-    await ElMessageBox.confirm(
-      `将从台账删除 ${items.length} 条记录。正文仍含该指代时，下次锚定会重新出现。`,
-      '批量删除',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  const ok = await store.deleteUnresolvedRefs(items.map((r) => [r.fragmentId, r.quote]))
-  if (ok) selected.value = new Set()
+    const items = pending.value.filter(r => selected.value.has(keyOf(r)))
+    if (items.length === 0) return
+    try {
+        await ElMessageBox.confirm(
+            `将从台账删除 ${items.length} 条记录。正文仍含该指代时，下次锚定会重新出现。`,
+            '批量删除',
+            { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+        )
+    }
+    catch {
+        return
+    }
+    const ok = await store.deleteUnresolvedRefs(items.map(r => [r.fragmentId, r.quote]))
+    if (ok) selected.value = new Set()
 }
 
 /** 定位到正文：跳到指代所在片段，滚动到引文处并高亮（多处匹配时连续点击逐次跳转） */
 async function jumpToRef(r: UnresolvedRefDto) {
-  if (!store.root) return
-  let sceneId: string
-  try {
-    sceneId = await api.sceneOfFragment(store.root, r.fragmentId)
-  } catch (err) {
-    ElMessage.error(`定位失败：${(err as Error).message}`)
-    return
-  }
-  // 片段不在当前场景：先切过去，等编辑器挂载完再定位
-  if (store.scene?.id !== sceneId) {
-    await store.selectScene(sceneId)
-    await nextTick()
-  }
-  requestFragmentReveal(r.fragmentId, r.quote)
+    if (!store.root) return
+    let sceneId: string
+    try {
+        sceneId = await api.sceneOfFragment(store.root, r.fragmentId)
+    }
+    catch(err) {
+        ElMessage.error(`定位失败：${(err as Error).message}`)
+
+        return
+    }
+
+    // 片段不在当前场景：先切过去，等编辑器挂载完再定位
+    if (store.scene?.id !== sceneId) {
+        await store.selectScene(sceneId)
+        await nextTick()
+    }
+    requestFragmentReveal(r.fragmentId, r.quote)
 }
 
 /** 引文区点击定位（勾选框的点击不触发） */
 function onQuoteClick(r: UnresolvedRefDto, e: MouseEvent) {
-  if ((e.target as HTMLElement).closest('.ap-check')) return
-  void jumpToRef(r)
+    if ((e.target as HTMLElement).closest('.ap-check')) return
+    void jumpToRef(r)
 }
 
 /** 从台账删除单条记录（不撤销已处置写入的锚点） */
 async function deleteRef(r: UnresolvedRefDto) {
-  try {
-    await ElMessageBox.confirm(
-      `将从台账删除「${r.quote}」的记录。${
-        r.status === 'resolved'
-          ? '仅清台账，不会撤销已补的锚点。'
-          : '正文仍含该指代时，下次锚定会重新出现。'
-      }`,
-      '删除记录',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  await store.deleteUnresolvedRefs([[r.fragmentId, r.quote]])
+    try {
+        await ElMessageBox.confirm(
+            `将从台账删除「${r.quote}」的记录。${
+                r.status === 'resolved'
+                    ? '仅清台账，不会撤销已补的锚点。'
+                    : '正文仍含该指代时，下次锚定会重新出现。'
+            }`,
+            '删除记录',
+            { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+        )
+    }
+    catch {
+        return
+    }
+    await store.deleteUnresolvedRefs([[r.fragmentId, r.quote]])
 }
 
 const entityOptions = computed(() =>
-  (store.ws?.entities ?? []).map((e) => ({ id: e.id, label: `${e.displayName}（${e.id}）` })),
-)
+    (store.ws?.entities ?? []).map(e => ({ id: e.id, label: `${e.displayName}（${e.id}）` })))
 
 /** 展开中的处置行：quote 维度唯一（同片段 quote 唯一） */
 const expanded = reactive<{
-  key: string | null
-  action: 'create' | 'merge' | null
-  name: string
-  kind: EntityKind
-  targetId: string
+    key:      string | null
+    action:   'create' | 'merge' | null
+    name:     string
+    kind:     EntityKind
+    targetId: string
 }>({ key: null, action: null, name: '', kind: 'character', targetId: '' })
 
 function keyOf(r: UnresolvedRefDto): string {
-  return `${r.fragmentId}::${r.quote}`
+    return `${r.fragmentId}::${r.quote}`
 }
 
 function toggle(r: UnresolvedRefDto, action: 'create' | 'merge') {
-  const key = keyOf(r)
-  if (expanded.key === key && expanded.action === action) {
-    expanded.key = null
-    expanded.action = null
-    return
-  }
-  expanded.key = key
-  expanded.action = action
-  expanded.name = ''
-  expanded.kind = 'character'
-  expanded.targetId = ''
+    const key = keyOf(r)
+    if (expanded.key === key && expanded.action === action) {
+        expanded.key = null
+        expanded.action = null
+
+        return
+    }
+    expanded.key = key
+    expanded.action = action
+    expanded.name = ''
+    expanded.kind = 'character'
+    expanded.targetId = ''
 }
 
 async function submitCreate(r: UnresolvedRefDto) {
-  const name = expanded.name.trim()
-  if (!name) return
-  await store.resolveUnresolved(r.fragmentId, r.quote, 'create', {
-    name,
-    kind: expanded.kind,
-  })
-  resetExpanded()
+    const name = expanded.name.trim()
+    if (!name) return
+    await store.resolveUnresolved(r.fragmentId, r.quote, 'create', {
+        name,
+        kind: expanded.kind,
+    })
+    resetExpanded()
 }
 
 async function submitMerge(r: UnresolvedRefDto) {
-  if (!expanded.targetId) return
-  await store.resolveUnresolved(r.fragmentId, r.quote, 'merge', {
-    targetEntityId: expanded.targetId,
-  })
-  resetExpanded()
+    if (!expanded.targetId) return
+    await store.resolveUnresolved(r.fragmentId, r.quote, 'merge', { targetEntityId: expanded.targetId })
+    resetExpanded()
 }
 
 async function ignore(r: UnresolvedRefDto) {
-  await store.resolveUnresolved(r.fragmentId, r.quote, 'ignore')
-  resetExpanded()
+    await store.resolveUnresolved(r.fragmentId, r.quote, 'ignore')
+    resetExpanded()
 }
 
 function resetExpanded() {
-  expanded.key = null
-  expanded.action = null
-  expanded.name = ''
-  expanded.targetId = ''
+    expanded.key = null
+    expanded.action = null
+    expanded.name = ''
+    expanded.targetId = ''
 }
 
 function statusLabel(r: UnresolvedRefDto): string {
-  if (r.status === 'ignored') return '已忽略'
-  if (r.status === 'resolved') {
-    const name = store.ws?.entities.find((e) => e.id === r.target)?.displayName ?? r.target
-    return `已归拢到「${name}」`
-  }
-  return ''
+    if (r.status === 'ignored') return '已忽略'
+    if (r.status === 'resolved') {
+        const name = store.ws?.entities.find(e => e.id === r.target)?.displayName ?? r.target
+
+        return `已归拢到「${name}」`
+    }
+
+    return ''
 }
 
 const kindOptions: { value: EntityKind; label: string }[] = [
-  { value: 'character', label: '角色' },
-  { value: 'location', label: '地点' },
-  { value: 'item', label: '道具' },
-  { value: 'organization', label: '组织' },
+    { value: 'character', label: '角色' },
+    { value: 'location', label: '地点' },
+    { value: 'item', label: '道具' },
+    { value: 'organization', label: '组织' },
 ]
 </script>
 
@@ -207,8 +210,14 @@ const kindOptions: { value: EntityKind; label: string }[] = [
       </button>
     </div>
 
-    <div v-if="!showAll && pending.length > 0" class="ap-bulk">
-      <button class="ink-btn ink-btn--sm" @click="toggleSelectAll">
+    <div
+      v-if="!showAll && pending.length > 0"
+      class="ap-bulk"
+    >
+      <button
+        class="ink-btn ink-btn--sm"
+        @click="toggleSelectAll"
+      >
         {{ allSelected ? '取消全选' : '全选' }}
       </button>
       <button
@@ -229,12 +238,17 @@ const kindOptions: { value: EntityKind; label: string }[] = [
       </button>
     </div>
 
-    <div v-if="visible.length === 0" class="ap-empty">
+    <div
+      v-if="visible.length === 0"
+      class="ap-empty"
+    >
       <i class="fa-solid fa-anchor" />
       <p v-if="pending.length === 0">
-        没有待处置的未锚定指代。<br />写作时理解锚定发现的名册外指代会汇集到这里。
+        没有待处置的未锚定指代。<br>写作时理解锚定发现的名册外指代会汇集到这里。
       </p>
-      <p v-else>没有已处置记录。</p>
+      <p v-else>
+        没有已处置记录。
+      </p>
     </div>
 
     <div
@@ -248,12 +262,15 @@ const kindOptions: { value: EntityKind; label: string }[] = [
         title="定位到正文（多处命中时逐次跳转）"
         @click="onQuoteClick(r, $event)"
       >
-        <label v-if="r.status === 'pending'" class="ap-check">
+        <label
+          v-if="r.status === 'pending'"
+          class="ap-check"
+        >
           <input
             type="checkbox"
             :checked="selected.has(keyOf(r))"
             @change="onSelectToggle(r, $event)"
-          />
+          >
         </label>
         <i class="fa-solid fa-quote-left" />
         {{ r.quote }}
@@ -267,10 +284,16 @@ const kindOptions: { value: EntityKind; label: string }[] = [
         >
           {{ r.fragmentId }}
         </button>
-        <span v-if="r.status !== 'pending'" class="ap-status">{{ statusLabel(r) }}</span>
+        <span
+          v-if="r.status !== 'pending'"
+          class="ap-status"
+        >{{ statusLabel(r) }}</span>
       </div>
 
-      <div v-if="r.status === 'pending'" class="ap-actions">
+      <div
+        v-if="r.status === 'pending'"
+        class="ap-actions"
+      >
         <button
           class="ink-btn ink-btn--sm ink-btn--primary"
           :class="{ 'is-active': expanded.key === keyOf(r) && expanded.action === 'create' }"
@@ -285,7 +308,11 @@ const kindOptions: { value: EntityKind; label: string }[] = [
         >
           <i class="fa-solid fa-code-merge" /> 归拢到…
         </button>
-        <button class="ink-btn ink-btn--sm" title="忽略，后续锚定不再提示" @click="ignore(r)">
+        <button
+          class="ink-btn ink-btn--sm"
+          title="忽略，后续锚定不再提示"
+          @click="ignore(r)"
+        >
           <i class="fa-solid fa-eye-slash" /> 忽略
         </button>
         <button
@@ -296,7 +323,10 @@ const kindOptions: { value: EntityKind; label: string }[] = [
           <i class="fa-solid fa-trash-can" /> 删除
         </button>
       </div>
-      <div v-else class="ap-actions">
+      <div
+        v-else
+        class="ap-actions"
+      >
         <button
           class="ink-btn ink-btn--sm"
           title="从台账删除该记录（不撤销已补的锚点）"
@@ -307,28 +337,54 @@ const kindOptions: { value: EntityKind; label: string }[] = [
       </div>
 
       <!-- 建档（匿名指代可用占位名） -->
-      <div v-if="expanded.key === keyOf(r) && expanded.action === 'create'" class="ap-form">
+      <div
+        v-if="expanded.key === keyOf(r) && expanded.action === 'create'"
+        class="ap-form"
+      >
         <input
           v-model="expanded.name"
           placeholder="档案名（匿名指代可用占位名，如：九一真凶）"
           autofocus
           @keyup.enter="submitCreate(r)"
-        />
+        >
         <div class="ap-form-row">
           <select v-model="expanded.kind">
-            <option v-for="k in kindOptions" :key="k.value" :value="k.value">{{ k.label }}</option>
+            <option
+              v-for="k in kindOptions"
+              :key="k.value"
+              :value="k.value"
+            >
+              {{ k.label }}
+            </option>
           </select>
-          <button class="ink-btn ink-btn--sm ink-btn--primary" @click="submitCreate(r)">
+          <button
+            class="ink-btn ink-btn--sm ink-btn--primary"
+            @click="submitCreate(r)"
+          >
             创建并归拢
           </button>
         </div>
       </div>
 
       <!-- 归拢到已有实体 -->
-      <div v-if="expanded.key === keyOf(r) && expanded.action === 'merge'" class="ap-form">
+      <div
+        v-if="expanded.key === keyOf(r) && expanded.action === 'merge'"
+        class="ap-form"
+      >
         <select v-model="expanded.targetId">
-          <option value="" disabled>选择归拢到的实体</option>
-          <option v-for="e in entityOptions" :key="e.id" :value="e.id">{{ e.label }}</option>
+          <option
+            value=""
+            disabled
+          >
+            选择归拢到的实体
+          </option>
+          <option
+            v-for="e in entityOptions"
+            :key="e.id"
+            :value="e.id"
+          >
+            {{ e.label }}
+          </option>
         </select>
         <div class="ap-form-row">
           <span class="text-ink-muted">

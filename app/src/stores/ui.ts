@@ -2,21 +2,21 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 
-export type ThemeName = 'theme-ink' | 'theme-dark'
-export type DockPanel = 'miao' | 'stats' | 'book' | 'chapters' | 'entities' | 'anchoring' | 'worldview' | 'threads' | 'diagnostics' | 'prompts' | 'export' | 'git' | null
+export type ThemeName = 'theme-dark' | 'theme-ink'
+export type DockPanel = 'anchoring' | 'book' | 'chapters' | 'diagnostics' | 'entities' | 'export' | 'git' | 'miao' | 'prompts' | 'stats' | 'threads' | 'worldview' | null
 
 export interface RecentProject {
-  root: string
-  name: string
-  openedAt: number
+    root:     string
+    name:     string
+    openedAt: number
 }
 
 /** 每个项目的上次编辑位置（首页「继续写作」直达） */
 export interface LastScene {
-  sceneId: string
-  chapterTitle: string
-  sceneTitle: string
-  ts: number
+    sceneId:      string
+    chapterTitle: string
+    sceneTitle:   string
+    ts:           number
 }
 
 /** 主题直接落 localStorage，避免依赖插件的恢复时机 */
@@ -28,107 +28,110 @@ export const DOCK_WIDTH_MAX = 600
 export const DOCK_WIDTH_DEFAULT = 360
 
 function clampDockWidth(w: number): number {
-  return Math.min(DOCK_WIDTH_MAX, Math.max(DOCK_WIDTH_MIN, w))
+    return Math.min(DOCK_WIDTH_MAX, Math.max(DOCK_WIDTH_MIN, w))
 }
 
 export const useUiStore = defineStore(
-  'ui',
-  () => {
-    const theme = ref<ThemeName>(
-      localStorage.getItem(THEME_KEY) === 'theme-dark' ? 'theme-dark' : 'theme-ink',
-    )
-    const recentProjects = ref<RecentProject[]>([])
-    /** root → 上次编辑的场景（随最近项目一起清理与持久化） */
-    const lastScene = ref<Record<string, LastScene>>({})
-    const activePanel = ref<DockPanel>(null)
-    const dockWidth = ref(DOCK_WIDTH_DEFAULT)
-    /** 编辑器 AI 幽灵补全（Tab 采纳 / Esc 关闭） */
-    const aiGhost = ref(true)
-    /** 检测更新：已跳过的版本（不再自动弹窗提醒） */
-    const skippedVersion = ref<string | null>(null)
-    /** 全文检索对话框（StructureTree 入口 + Cmd/Ctrl+F） */
-    const searchOpen = ref(false)
-    /** 整章阅读视图（打开的章节 ID；null = 关闭） */
-    const chapterRead = ref<string | null>(null)
-    
+    'ui',
+    () => {
+        const theme = ref<ThemeName>(localStorage.getItem(THEME_KEY) === 'theme-dark' ? 'theme-dark' : 'theme-ink')
+        const recentProjects = ref<RecentProject[]>([])
 
-    function applyTheme() {
-      const el = document.documentElement
-      el.classList.remove('theme-ink', 'theme-dark')
-      el.classList.add(theme.value)
-      localStorage.setItem(THEME_KEY, theme.value)
-    }
+        /** root → 上次编辑的场景（随最近项目一起清理与持久化） */
+        const lastScene = ref<Record<string, LastScene>>({})
+        const activePanel = ref<DockPanel>(null)
+        const dockWidth = ref(DOCK_WIDTH_DEFAULT)
 
-    function toggleTheme() {
-      theme.value = theme.value === 'theme-ink' ? 'theme-dark' : 'theme-ink'
-    }
+        /** 编辑器 AI 幽灵补全（Tab 采纳 / Esc 关闭） */
+        const aiGhost = ref(true)
 
-    function rememberProject(root: string, name: string) {
-      const list = recentProjects.value.filter((p) => p.root !== root)
-      list.unshift({ root, name, openedAt: Date.now() })
-      recentProjects.value = list.slice(0, 10)
-      // 位置记忆随最近列表一起收敛，避免无限增长
-      const alive = new Set(recentProjects.value.map((p) => p.root))
-      const kept: Record<string, LastScene> = {}
-      for (const [k, v] of Object.entries(lastScene.value)) {
-        if (alive.has(k)) kept[k] = v
-      }
-      lastScene.value = kept
-    }
+        /** 检测更新：已跳过的版本（不再自动弹窗提醒） */
+        const skippedVersion = ref<string | null>(null)
 
-    function forgetProject(root: string) {
-      recentProjects.value = recentProjects.value.filter((p) => p.root !== root)
-      if (lastScene.value[root]) {
-        const next = { ...lastScene.value }
-        delete next[root]
-        lastScene.value = next
-      }
-    }
+        /** 全文检索对话框（StructureTree 入口 + Cmd/Ctrl+F） */
+        const searchOpen = ref(false)
 
-    function rememberScene(root: string, scene: LastScene) {
-      lastScene.value = { ...lastScene.value, [root]: scene }
-    }
+        /** 整章阅读视图（打开的章节 ID；null = 关闭） */
+        const chapterRead = ref<string | null>(null)
 
-    function togglePanel(panel: Exclude<DockPanel, null>) {
-      activePanel.value = activePanel.value === panel ? null : panel
-    }
+        function applyTheme() {
+            const el = document.documentElement
+            el.classList.remove('theme-ink', 'theme-dark')
+            el.classList.add(theme.value)
+            localStorage.setItem(THEME_KEY, theme.value)
+        }
 
-    /** 检测更新：跳过指定版本（清空则恢复提醒） */
-    function setSkippedVersion(v: string | null) {
-      skippedVersion.value = v
-    }
+        function toggleTheme() {
+            theme.value = theme.value === 'theme-ink' ? 'theme-dark' : 'theme-ink'
+        }
 
-    watch(theme, applyTheme)
-    applyTheme()
+        function rememberProject(root: string, name: string) {
+            const list = recentProjects.value.filter(p => p.root !== root)
+            list.unshift({ root, name, openedAt: Date.now() })
+            recentProjects.value = list.slice(0, 10)
 
-    // 持久化恢复或其他写入方给出越界宽度时拉回范围内
-    watch(dockWidth, (w) => {
-      const clamped = clampDockWidth(w)
-      if (clamped !== w) dockWidth.value = clamped
-    })
+            // 位置记忆随最近列表一起收敛，避免无限增长
+            const alive = new Set(recentProjects.value.map(p => p.root))
+            const kept: Record<string, LastScene> = {}
+            for (const [k, v] of Object.entries(lastScene.value)) {
+                if (alive.has(k)) kept[k] = v
+            }
+            lastScene.value = kept
+        }
 
-    return {
-      theme,
-      recentProjects,
-      lastScene,
-      activePanel,
-      dockWidth,
-      aiGhost,
-      searchOpen,
-      chapterRead,
-      skippedVersion,
-      toggleTheme,
-      rememberProject,
-      forgetProject,
-      rememberScene,
-      togglePanel,
-      setSkippedVersion,
-    }
-  },
-  {
-    persist: {
-      storage: localStorage,
-      pick: ['recentProjects', 'lastScene', 'activePanel', 'dockWidth', 'aiGhost', 'skippedVersion'],
+        function forgetProject(root: string) {
+            recentProjects.value = recentProjects.value.filter(p => p.root !== root)
+            if (lastScene.value[root]) {
+                const next = { ...lastScene.value }
+                delete next[root]
+                lastScene.value = next
+            }
+        }
+
+        function rememberScene(root: string, scene: LastScene) {
+            lastScene.value = { ...lastScene.value, [root]: scene }
+        }
+
+        function togglePanel(panel: Exclude<DockPanel, null>) {
+            activePanel.value = activePanel.value === panel ? null : panel
+        }
+
+        /** 检测更新：跳过指定版本（清空则恢复提醒） */
+        function setSkippedVersion(v: string | null) {
+            skippedVersion.value = v
+        }
+
+        watch(theme, applyTheme)
+        applyTheme()
+
+        // 持久化恢复或其他写入方给出越界宽度时拉回范围内
+        watch(dockWidth, w => {
+            const clamped = clampDockWidth(w)
+            if (clamped !== w) dockWidth.value = clamped
+        })
+
+        return {
+            theme,
+            recentProjects,
+            lastScene,
+            activePanel,
+            dockWidth,
+            aiGhost,
+            searchOpen,
+            chapterRead,
+            skippedVersion,
+            toggleTheme,
+            rememberProject,
+            forgetProject,
+            rememberScene,
+            togglePanel,
+            setSkippedVersion,
+        }
     },
-  },
+    {
+        persist: {
+            storage: localStorage,
+            pick:    ['recentProjects', 'lastScene', 'activePanel', 'dockWidth', 'aiGhost', 'skippedVersion'],
+        },
+    },
 )

@@ -15,80 +15,92 @@ const miao = useMiaoStore()
 const store = useWorkspaceStore()
 
 const visible = computed({
-  get: () => reportOpen.value && !!report.value,
-  set: (v: boolean) => {
-    if (!v) closeReport()
-  },
+    get: () => reportOpen.value && !!report.value,
+    set: (v: boolean) => {
+        if (!v) closeReport()
+    },
 })
 
 /** 妙笔会话进行中（含等待回答）：此刻送入的文本会串进当前会话，置灰等待 */
 const miaoBusy = computed(() => miao.running)
 
 const SEV_META: Record<string, { label: string; cls: string }> = {
-  Strong: { label: '强', cls: 'sev-strong' },
-  Medium: { label: '中', cls: 'sev-medium' },
-  Weak: { label: '弱', cls: 'sev-weak' },
+    Strong: { label: '强', cls: 'sev-strong' },
+    Medium: { label: '中', cls: 'sev-medium' },
+    Weak:   { label: '弱', cls: 'sev-weak' },
 }
 
 function sevMeta(it: AiCheckItemDto) {
-  return SEV_META[it.severity] ?? { label: it.severity, cls: 'sev-weak' }
+    return SEV_META[it.severity] ?? { label: it.severity, cls: 'sev-weak' }
 }
 
 /** 勾选态（报告切换时重置为全选） */
 const checkedIdx = ref<Set<number>>(new Set())
 watch(
-  () => report.value,
-  (r) => {
-    checkedIdx.value = new Set((r?.result.items ?? []).map((_, i) => i))
-  },
+    () => report.value,
+    r => {
+        checkedIdx.value = new Set((r?.result.items ?? []).map((_, i) => i))
+    },
 )
 
 function toggle(i: number) {
-  const next = new Set(checkedIdx.value)
-  if (next.has(i)) next.delete(i)
-  else next.add(i)
-  checkedIdx.value = next
+    const next = new Set(checkedIdx.value)
+    if (next.has(i)) next.delete(i)
+    else next.add(i)
+    checkedIdx.value = next
 }
 
 const checkedItems = computed(() =>
-  (report.value?.result.items ?? []).filter((_, i) => checkedIdx.value.has(i)),
-)
+    (report.value?.result.items ?? []).filter((_, i) => checkedIdx.value.has(i)))
 
 function send() {
-  if (!report.value || !checkedItems.value.length) return
-  sendToMiao(report.value, checkedItems.value)
+    if (!report.value || !checkedItems.value.length) return
+    sendToMiao(report.value, checkedItems.value)
 }
 
 /** 跳到命中位置：必要时切场景，编辑器滚动到引文处并高亮 */
 async function jumpToFragment(it: AiCheckItemDto) {
-  if (!it.fragmentId) return
-  let sceneId: string
-  try {
-    sceneId = await api.sceneOfFragment(store.root, it.fragmentId)
-  } catch (err) {
-    ElMessage.error(`定位失败：${(err as Error).message}`)
-    return
-  }
-  // 片段不在当前场景：先切过去，等编辑器挂载完再定位
-  if (store.scene?.id !== sceneId) {
-    await store.selectScene(sceneId)
-    await nextTick()
-  }
-  closeReport()
-  requestFragmentReveal(it.fragmentId, it.quote)
+    if (!it.fragmentId) return
+    let sceneId: string
+    try {
+        sceneId = await api.sceneOfFragment(store.root, it.fragmentId)
+    }
+    catch(err) {
+        ElMessage.error(`定位失败：${(err as Error).message}`)
+
+        return
+    }
+
+    // 片段不在当前场景：先切过去，等编辑器挂载完再定位
+    if (store.scene?.id !== sceneId) {
+        await store.selectScene(sceneId)
+        await nextTick()
+    }
+    closeReport()
+    requestFragmentReveal(it.fragmentId, it.quote)
 }
 </script>
 
 <template>
-  <ElDialog v-model="visible" title="AI 审校报告" width="680px" append-to-body>
-    <div v-if="report" class="acr">
+  <ElDialog
+    v-model="visible"
+    title="AI 审校报告"
+    width="680px"
+    append-to-body
+  >
+    <div
+      v-if="report"
+      class="acr"
+    >
       <div class="acr-head">
         <div class="acr-scope">
           <i class="fa-solid fa-magnifying-glass" />
           {{ report.label }}
           <span class="acr-count num">{{ report.result.items.length }} 处命中</span>
         </div>
-        <p class="acr-summary">{{ report.result.summary }}</p>
+        <p class="acr-summary">
+          {{ report.result.summary }}
+        </p>
       </div>
 
       <div class="acr-list">
@@ -98,10 +110,17 @@ async function jumpToFragment(it: AiCheckItemDto) {
           class="acr-item"
           :class="{ 'is-off': !checkedIdx.has(i) }"
         >
-          <button class="acr-check" :title="checkedIdx.has(i) ? '取消勾选' : '勾选送妙笔改进'" @click="toggle(i)">
+          <button
+            class="acr-check"
+            :title="checkedIdx.has(i) ? '取消勾选' : '勾选送妙笔改进'"
+            @click="toggle(i)"
+          >
             <i :class="checkedIdx.has(i) ? 'fa-regular fa-square-check' : 'fa-regular fa-square'" />
           </button>
-          <span class="acr-sev" :class="sevMeta(it).cls">{{ sevMeta(it).label }}</span>
+          <span
+            class="acr-sev"
+            :class="sevMeta(it).cls"
+          >{{ sevMeta(it).label }}</span>
           <span class="acr-feature">{{ it.featureName }}</span>
           <button
             v-if="it.fragmentId"
@@ -117,8 +136,12 @@ async function jumpToFragment(it: AiCheckItemDto) {
             <i class="fa-solid fa-location-arrow" />
             {{ it.fragmentId }}{{ it.fragmentUncertain ? '?' : '' }}
           </button>
-          <p class="acr-explain">{{ it.explanation }}</p>
-          <blockquote class="acr-quote">{{ it.quote }}</blockquote>
+          <p class="acr-explain">
+            {{ it.explanation }}
+          </p>
+          <blockquote class="acr-quote">
+            {{ it.quote }}
+          </blockquote>
         </div>
       </div>
     </div>
@@ -133,7 +156,13 @@ async function jumpToFragment(it: AiCheckItemDto) {
         丢弃报告
       </button>
       <span style="flex: 1" />
-      <button class="ink-btn" title="只是收起，工具栏可重新打开" @click="closeReport">关闭</button>
+      <button
+        class="ink-btn"
+        title="只是收起，工具栏可重新打开"
+        @click="closeReport"
+      >
+        关闭
+      </button>
       <button
         class="ink-btn ink-btn--primary"
         style="margin-left: 10px"

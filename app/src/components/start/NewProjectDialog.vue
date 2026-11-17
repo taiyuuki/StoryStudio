@@ -11,103 +11,115 @@ import BookMetaForm from '@/components/BookMetaForm.vue'
 const props = defineProps<{ modelValue: boolean }>()
 
 const emit = defineEmits<{
-  'update:modelValue': [v: boolean]
-  created: [root: string]
+    'update:modelValue': [v: boolean]
+    'created':           [root: string]
 }>()
 
 const bookName = ref('')
 const parentDir = ref('')
 const creating = ref(false)
+
 /** 默认存放位置：文稿/StoryStudio（取不到 Documents 时退回用户目录下的 StoryStudio） */
 const defaultDir = ref('')
+
 /** 书籍信息（可选，折叠收纳：跳过稍后在结构树「书籍信息」里补）。
  *  必须用 ref：BookMetaForm 的 v-model 是整体替换赋值，reactive 常量接不住。 */
 const metaExpanded = ref(false)
 const meta = ref<BookMetaDto>({
-  genre: null,
-  tagline: null,
-  blurb: null,
-  premise: null,
-  theme: null,
-  audience: null,
-  pov: null,
-  style: null,
-  targetWords: null,
-  chapterWords: null,
+    genre:        null,
+    tagline:      null,
+    blurb:        null,
+    premise:      null,
+    theme:        null,
+    audience:     null,
+    pov:          null,
+    style:        null,
+    targetWords:  null,
+    chapterWords: null,
 })
 
-onMounted(async () => {
-  try {
-    const base = (await documentDir()) || (await homeDir())
-    if (base) defaultDir.value = `${base.replace(/\/$/, '')}/StoryStudio`
-  } catch {
+onMounted(async() => {
     try {
-      const base = await homeDir()
-      if (base) defaultDir.value = `${base.replace(/\/$/, '')}/StoryStudio`
-    } catch {
-      // 都拿不到就退回必须手选
+        const base = await documentDir() || await homeDir()
+        if (base) defaultDir.value = `${base.replace(/\/$/, '')}/StoryStudio`
     }
-  }
+    catch {
+        try {
+            const base = await homeDir()
+            if (base) defaultDir.value = `${base.replace(/\/$/, '')}/StoryStudio`
+        }
+        catch {
+
+            // 都拿不到就退回必须手选
+        }
+    }
 })
 
 // 每次打开清空上次的书名与书籍信息，目录选择保留（连续开书常见）
 watch(
-  () => props.modelValue,
-  (v) => {
-    if (v) {
-      bookName.value = ''
-      metaExpanded.value = false
-      Object.assign(meta.value, {
-        genre: null,
-        tagline: null,
-        blurb: null,
-        premise: null,
-        theme: null,
-        audience: null,
-        pov: null,
-        style: null,
-        targetWords: null,
-        chapterWords: null,
-      })
-    }
-  },
+    () => props.modelValue,
+    v => {
+        if (v) {
+            bookName.value = ''
+            metaExpanded.value = false
+            Object.assign(meta.value, {
+                genre:        null,
+                tagline:      null,
+                blurb:        null,
+                premise:      null,
+                theme:        null,
+                audience:     null,
+                pov:          null,
+                style:        null,
+                targetWords:  null,
+                chapterWords: null,
+            })
+        }
+    },
 )
 
 async function pickDir() {
-  const dir = await open({ directory: true, title: '选择项目存放目录' })
-  if (typeof dir === 'string') parentDir.value = dir
+    const dir = await open({ directory: true, title: '选择项目存放目录' })
+    if (typeof dir === 'string') parentDir.value = dir
 }
 
 async function create() {
-  if (!bookName.value.trim()) {
-    ElMessage.warning('先给书起个名字')
-    return
-  }
-  // 目录可选：不选就放到默认位置（文稿/StoryStudio），后端会自动创建
-  const dir = parentDir.value.trim() || defaultDir.value
-  if (!dir) {
-    ElMessage.warning('没能找到默认存放位置，请手动选择')
-    return
-  }
-  creating.value = true
-  try {
-    const root = await api.createProject(dir, bookName.value.trim())
-    // 书籍信息补写 outline.toml：项目已建，失败只提示不回滚
-    if (!isBookMetaEmpty(meta.value)) {
-      try {
-        await api.saveBookMeta(root, normalizeBookMeta(meta.value))
-      } catch (err) {
-        ElMessage.warning(`书籍信息保存失败：${(err as Error).message}`)
-      }
+    if (!bookName.value.trim()) {
+        ElMessage.warning('先给书起个名字')
+
+        return
     }
-    ElMessage.success('项目已创建')
-    emit('update:modelValue', false)
-    emit('created', root)
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    creating.value = false
-  }
+
+    // 目录可选：不选就放到默认位置（文稿/StoryStudio），后端会自动创建
+    const dir = parentDir.value.trim() || defaultDir.value
+    if (!dir) {
+        ElMessage.warning('没能找到默认存放位置，请手动选择')
+
+        return
+    }
+    creating.value = true
+    try {
+        const root = await api.createProject(dir, bookName.value.trim())
+
+        // 书籍信息补写 outline.toml：项目已建，失败只提示不回滚
+        if (!isBookMetaEmpty(meta.value)) {
+            try {
+                await api.saveBookMeta(root, normalizeBookMeta(meta.value))
+            }
+            catch(err) {
+                ElMessage.warning(`书籍信息保存失败：${(err as Error).message}`)
+            }
+        }
+        ElMessage.success('项目已创建')
+        emit('update:modelValue', false)
+        emit('created', root)
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
+    finally {
+        creating.value = false
+    }
 }
 </script>
 
@@ -130,7 +142,7 @@ async function create() {
           placeholder="例：山海拾遗录"
           maxlength="60"
           @keyup.enter="create"
-        />
+        >
       </label>
 
       <label class="field">
@@ -142,8 +154,11 @@ async function create() {
             :placeholder="defaultDir ? `默认：${defaultDir}` : '默认：文稿/StoryStudio'"
             readonly
             @click="pickDir"
-          />
-          <button class="ink-btn" @click="pickDir">
+          >
+          <button
+            class="ink-btn"
+            @click="pickDir"
+          >
             <i class="fa-regular fa-folder-open" />
             浏览
           </button>
@@ -156,8 +171,15 @@ async function create() {
       </div>
 
       <!-- 书籍信息（可选）——册页式折叠 -->
-      <div class="meta-fold" :class="{ 'is-open': metaExpanded }">
-        <button type="button" class="meta-toggle" @click="metaExpanded = !metaExpanded">
+      <div
+        class="meta-fold"
+        :class="{ 'is-open': metaExpanded }"
+      >
+        <button
+          type="button"
+          class="meta-toggle"
+          @click="metaExpanded = !metaExpanded"
+        >
           <span class="meta-fold-line" />
           <i class="fa-solid fa-book-open meta-fold-icon" />
           <span class="meta-fold-label">书籍信息</span>
@@ -169,14 +191,22 @@ async function create() {
           {{ metaExpanded ? '题材 · 主线 · 体量……填了更懂你要写什么' : '题材 / 主线 / 体量……稍后也可在工作台补' }}
         </p>
         <Transition name="meta-unfold">
-          <div v-if="metaExpanded" class="meta-body">
+          <div
+            v-if="metaExpanded"
+            class="meta-body"
+          >
             <BookMetaForm v-model="meta" />
           </div>
         </Transition>
       </div>
 
       <div class="npd-foot">
-        <button class="ink-btn" @click="emit('update:modelValue', false)">取消</button>
+        <button
+          class="ink-btn"
+          @click="emit('update:modelValue', false)"
+        >
+          取消
+        </button>
         <button
           class="ink-btn ink-btn--primary ink-btn--lg create-btn"
           :disabled="creating"

@@ -1,10 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
 import { computed, ref } from 'vue'
-import { useBookStore } from '@/stores/book'
-import { useMiaoStore } from '@/stores/miao'
-import { useUiStore, DOCK_WIDTH_DEFAULT, DOCK_WIDTH_MAX, DOCK_WIDTH_MIN } from '@/stores/ui'
-import { useWorkspaceStore } from '@/stores/workspace'
 import AiPanel from './AiPanel.vue'
 import AnchoringReviewPanel from './AnchoringReviewPanel.vue'
 import AssertionPanel from './AssertionPanel.vue'
@@ -18,6 +14,10 @@ import StatsPanel from './StatsPanel.vue'
 import WorldviewPanel from './WorldviewPanel.vue'
 import ChaptersPanel from './ChaptersPanel.vue'
 import PromptsPanel from './PromptsPanel.vue'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { DOCK_WIDTH_DEFAULT, DOCK_WIDTH_MAX, DOCK_WIDTH_MIN, useUiStore } from '@/stores/ui'
+import { useMiaoStore } from '@/stores/miao'
+import { useBookStore } from '@/stores/book'
 
 const ui = useUiStore()
 const store = useWorkspaceStore()
@@ -26,91 +26,96 @@ const book = useBookStore()
 
 /** 会话/流水线进行中（含面板关闭时）：对应轨道图标呼吸提示后台还在跑 */
 const busyPanels = computed<Record<string, boolean>>(() => ({
-  miao: miao.running,
-  book: book.running,
+    miao: miao.running,
+    book: book.running,
 }))
 
 // 轨道顺序按使用频率排：写作时高频查阅在前（妙笔/脉络/设定/统计），
 // 批量生产居中，质检维护靠后（有角标主动提醒，不依赖位置），里程碑动作垫底
-const panels = computed(
-  () =>
+const panels = computed(() =>
     new Map<string, { label: string; icon: string; comp: Component; badge?: number }>([
-      ['miao', { label: '妙笔', icon: 'fa-solid fa-feather-pointed', comp: AiPanel }],
-      ['chapters', { label: '章节脉络', icon: 'fa-solid fa-list-ol', comp: ChaptersPanel }],
-      ['entities', { label: '设定', icon: 'fa-solid fa-users', comp: EntityPanel }],
-      ['stats', { label: '码字统计', icon: 'fa-solid fa-chart-simple', comp: StatsPanel }],
-      ['worldview', { label: '世界观', icon: 'fa-solid fa-globe', comp: WorldviewPanel }],
-      ['book', { label: '逐章成书', icon: 'fa-solid fa-book-open', comp: BookPanel }],
-      ['threads', { label: '叙事线索', icon: 'fa-solid fa-route', comp: ThreadPanel }],
-      ['knowledge', { label: '知识断言', icon: 'fa-solid fa-database', comp: AssertionPanel }],
-      [
-        'diagnostics',
-        {
-          label: '一致性检查',
-          icon: 'fa-solid fa-stethoscope',
-          comp: DiagnosticsPanel,
-          badge: store.errorCount + store.warningCount,
-        },
-      ],
-      [
-        'anchoring',
-        {
-          label: '锚定待审',
-          icon: 'fa-solid fa-anchor',
-          comp: AnchoringReviewPanel,
-          badge: store.ws?.unresolvedRefs.filter((r) => r.status === 'pending').length ?? 0,
-        },
-      ],
-      ['git', { label: '版本', icon: 'fa-solid fa-code-branch', comp: GitPanel }],
-      ['prompts', { label: '提示词', icon: 'fa-solid fa-scroll', comp: PromptsPanel }],
-      ['export', { label: '导出成书', icon: 'fa-solid fa-file-export', comp: ExportPanel }],
-    ]),
-)
+        ['miao', { label: '妙笔', icon: 'fa-solid fa-feather-pointed', comp: AiPanel }],
+        ['chapters', { label: '章节脉络', icon: 'fa-solid fa-list-ol', comp: ChaptersPanel }],
+        ['entities', { label: '设定', icon: 'fa-solid fa-users', comp: EntityPanel }],
+        ['stats', { label: '码字统计', icon: 'fa-solid fa-chart-simple', comp: StatsPanel }],
+        ['worldview', { label: '世界观', icon: 'fa-solid fa-globe', comp: WorldviewPanel }],
+        ['book', { label: '逐章成书', icon: 'fa-solid fa-book-open', comp: BookPanel }],
+        ['threads', { label: '叙事线索', icon: 'fa-solid fa-route', comp: ThreadPanel }],
+        ['knowledge', { label: '知识断言', icon: 'fa-solid fa-database', comp: AssertionPanel }],
+        [
+            'diagnostics',
+            {
+                label: '一致性检查',
+                icon:  'fa-solid fa-stethoscope',
+                comp:  DiagnosticsPanel,
+                badge: store.errorCount + store.warningCount,
+            },
+        ],
+        [
+            'anchoring',
+            {
+                label: '锚定待审',
+                icon:  'fa-solid fa-anchor',
+                comp:  AnchoringReviewPanel,
+                badge: store.ws?.unresolvedRefs.filter(r => r.status === 'pending').length ?? 0,
+            },
+        ],
+        ['git', { label: '版本', icon: 'fa-solid fa-code-branch', comp: GitPanel }],
+        ['prompts', { label: '提示词', icon: 'fa-solid fa-scroll', comp: PromptsPanel }],
+        ['export', { label: '导出成书', icon: 'fa-solid fa-file-export', comp: ExportPanel }],
+    ]))
 
 const activeComp = computed(() => {
-  if (!ui.activePanel) return null
-  return panels.value.get(ui.activePanel)?.comp ?? null
+    if (!ui.activePanel) return null
+
+    return panels.value.get(ui.activePanel)?.comp ?? null
 })
 
 const activeMeta = computed(() => {
-  if (!ui.activePanel) return null
-  return panels.value.get(ui.activePanel) ?? null
+    if (!ui.activePanel) return null
+
+    return panels.value.get(ui.activePanel) ?? null
 })
 
 // ── 左缘拖拽调宽（面板打开时出现把手，双击复位） ──────────────
 const resizing = ref(false)
 
 function startResize(e: PointerEvent) {
-  if (e.button !== 0) return
-  e.preventDefault()
-  const handle = e.currentTarget as HTMLElement
-  const startX = e.clientX
-  const startWidth = ui.dockWidth
-  // 小窗口下再留出空间给编辑器，右栏最多占窗口 45%
-  const maxWidth = Math.min(DOCK_WIDTH_MAX, Math.floor(window.innerWidth * 0.45))
-  const onMove = (ev: PointerEvent) => {
-    const w = startWidth - (ev.clientX - startX)
-    ui.dockWidth = Math.round(Math.min(maxWidth, Math.max(DOCK_WIDTH_MIN, w)))
-  }
-  const stop = () => {
-    resizing.value = false
-    document.documentElement.classList.remove('dock-resizing')
-    handle.removeEventListener('pointermove', onMove)
-    handle.removeEventListener('pointerup', stop)
-    handle.removeEventListener('lostpointercapture', stop)
-  }
-  resizing.value = true
-  document.documentElement.classList.add('dock-resizing')
-  // 指针捕获后 move/up 全部回落到把手，拖出窗口边界也不丢事件
-  handle.setPointerCapture(e.pointerId)
-  handle.addEventListener('pointermove', onMove)
-  handle.addEventListener('pointerup', stop)
-  handle.addEventListener('lostpointercapture', stop)
+    if (e.button !== 0) return
+    e.preventDefault()
+    const handle = e.currentTarget as HTMLElement
+    const startX = e.clientX
+    const startWidth = ui.dockWidth
+
+    // 小窗口下再留出空间给编辑器，右栏最多占窗口 45%
+    const maxWidth = Math.min(DOCK_WIDTH_MAX, Math.floor(window.innerWidth * 0.45))
+    const onMove = (ev: PointerEvent) => {
+        const w = startWidth - (ev.clientX - startX)
+        ui.dockWidth = Math.round(Math.min(maxWidth, Math.max(DOCK_WIDTH_MIN, w)))
+    }
+    const stop = () => {
+        resizing.value = false
+        document.documentElement.classList.remove('dock-resizing')
+        handle.removeEventListener('pointermove', onMove)
+        handle.removeEventListener('pointerup', stop)
+        handle.removeEventListener('lostpointercapture', stop)
+    }
+    resizing.value = true
+    document.documentElement.classList.add('dock-resizing')
+
+    // 指针捕获后 move/up 全部回落到把手，拖出窗口边界也不丢事件
+    handle.setPointerCapture(e.pointerId)
+    handle.addEventListener('pointermove', onMove)
+    handle.addEventListener('pointerup', stop)
+    handle.addEventListener('lostpointercapture', stop)
 }
 </script>
 
 <template>
-  <aside v-if="store.ws" class="dock">
+  <aside
+    v-if="store.ws"
+    class="dock"
+  >
     <div
       v-if="activeComp"
       class="dock-resizer"
@@ -120,18 +125,27 @@ function startResize(e: PointerEvent) {
       @dblclick="ui.dockWidth = DOCK_WIDTH_DEFAULT"
     />
     <Transition name="dock-panel">
-      <div v-if="activeComp && activeMeta" class="dock-panel">
+      <div
+        v-if="activeComp && activeMeta"
+        class="dock-panel"
+      >
         <div class="dock-head">
           <i :class="activeMeta.icon" />
           <span>{{ activeMeta.label }}</span>
-          <button class="ink-icon-btn dock-close" @click="ui.activePanel = null">
+          <button
+            class="ink-icon-btn dock-close"
+            @click="ui.activePanel = null"
+          >
             <i class="fa-solid fa-xmark" />
           </button>
         </div>
         <div class="dock-body">
           <!-- 只缓存妙笔面板：AI 会话进行中切走/关闭再回来，时间线与流式状态不丢 -->
           <KeepAlive include="AiPanel">
-            <component :is="activeComp" v-if="activeComp" />
+            <component
+              :is="activeComp"
+              v-if="activeComp"
+            />
           </KeepAlive>
         </div>
       </div>
@@ -148,7 +162,10 @@ function startResize(e: PointerEvent) {
         @click="ui.togglePanel(key as any)"
       >
         <i :class="p.icon" />
-        <span v-if="p.badge" class="rail-badge num">{{ p.badge > 99 ? '99+' : p.badge }}</span>
+        <span
+          v-if="p.badge"
+          class="rail-badge num"
+        >{{ p.badge > 99 ? '99+' : p.badge }}</span>
       </button>
     </div>
   </aside>

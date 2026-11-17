@@ -14,6 +14,7 @@ const store = useWorkspaceStore()
 const MAX_HITS = 200
 
 const query = ref('')
+
 /** null = 尚未搜索（区分空结果） */
 const hits = ref<SearchHitDto[] | null>(null)
 const searching = ref(false)
@@ -21,63 +22,72 @@ const inputEl = useTemplateRef<HTMLInputElement>('queryInput')
 
 // Cmd/Ctrl+F 打开（Tauri webview 没有原生查找栏，接过来做全书检索）
 function onKeydown(e: KeyboardEvent) {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
-    e.preventDefault()
-    ui.searchOpen = true
-  }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        ui.searchOpen = true
+    }
 }
 window.addEventListener('keydown', onKeydown)
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 watch(
-  () => ui.searchOpen,
-  (open) => {
-    if (open) void nextTick(() => inputEl.value?.focus())
-  },
+    () => ui.searchOpen,
+    open => {
+        if (open) void nextTick(() => inputEl.value?.focus())
+    },
 )
 
 async function run() {
-  const q = query.value.trim()
-  if (!q || searching.value || !store.root) return
-  searching.value = true
-  try {
-    hits.value = await api.searchText(store.root, q)
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    searching.value = false
-  }
+    const q = query.value.trim()
+    if (!q || searching.value || !store.root) return
+    searching.value = true
+    try {
+        hits.value = await api.searchText(store.root, q)
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
+    finally {
+        searching.value = false
+    }
 }
 
 /** 摘录按【】分段：命中段渲染 <mark>（不用 v-html——正文可能含任意字符） */
 function excerptParts(excerpt: string): { text: string; hit: boolean }[] {
-  const out: { text: string; hit: boolean }[] = []
-  const re = /【([^】]*)】/g
-  let last = 0
-  let m: RegExpExecArray | null
-  while ((m = re.exec(excerpt))) {
-    if (m.index > last) out.push({ text: excerpt.slice(last, m.index), hit: false })
-    out.push({ text: m[1], hit: true })
-    last = m.index + m[0].length
-  }
-  if (last < excerpt.length) out.push({ text: excerpt.slice(last), hit: false })
-  return out
+    const out: { text: string; hit: boolean }[] = []
+    const re = /【([^】]*)】/g
+    let last = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(excerpt)) !== null) {
+        if (m.index > last) out.push({ text: excerpt.slice(last, m.index), hit: false })
+        out.push({ text: m[1], hit: true })
+        last = m.index + m[0].length
+    }
+    if (last < excerpt.length) out.push({ text: excerpt.slice(last), hit: false })
+
+    return out
 }
 
 /** 跳到命中处：切场景 → 编辑器滚动到命中段并高亮（引文取【】标记的原文） */
 async function jumpTo(hit: SearchHitDto) {
-  const quote = excerptParts(hit.excerpt).find((p) => p.hit)?.text ?? ''
-  if (store.scene?.id !== hit.sceneId) {
-    await store.selectScene(hit.sceneId)
-    await nextTick()
-  }
-  ui.searchOpen = false
-  requestFragmentReveal(hit.fragmentId, quote)
+    const quote = excerptParts(hit.excerpt).find(p => p.hit)?.text ?? ''
+    if (store.scene?.id !== hit.sceneId) {
+        await store.selectScene(hit.sceneId)
+        await nextTick()
+    }
+    ui.searchOpen = false
+    requestFragmentReveal(hit.fragmentId, quote)
 }
 </script>
 
 <template>
-  <ElDialog v-model="ui.searchOpen" title="全文检索" width="560px" align-center append-to-body>
+  <ElDialog
+    v-model="ui.searchOpen"
+    title="全文检索"
+    width="560px"
+    align-center
+    append-to-body
+  >
     <div class="sd-box">
       <div class="sd-bar">
         <input
@@ -85,7 +95,7 @@ async function jumpTo(hit: SearchHitDto) {
           v-model="query"
           placeholder="搜索全书正文关键词…"
           @keyup.enter="run"
-        />
+        >
         <button
           class="ink-btn ink-btn--sm ink-btn--primary"
           :disabled="searching || !query.trim()"
@@ -96,24 +106,43 @@ async function jumpTo(hit: SearchHitDto) {
         </button>
       </div>
 
-      <div v-if="hits !== null" class="sd-meta">
+      <div
+        v-if="hits !== null"
+        class="sd-meta"
+      >
         {{ hits.length > 0 ? `${hits.length} 个片段命中` : '没有匹配的正文' }}
-        <template v-if="hits.length >= MAX_HITS">（已达上限，试试更具体的关键词）</template>
+        <template v-if="hits.length >= MAX_HITS">
+          （已达上限，试试更具体的关键词）
+        </template>
       </div>
 
-      <div v-if="hits !== null && hits.length === 0" class="sd-empty">
+      <div
+        v-if="hits !== null && hits.length === 0"
+        class="sd-empty"
+      >
         <i class="fa-solid fa-feather" />
         <p>全书正文没有出现这个关键词。</p>
       </div>
 
-      <div v-else-if="hits !== null" class="sd-results">
-        <button v-for="h in hits" :key="h.fragmentId" class="sd-hit" @click="jumpTo(h)">
+      <div
+        v-else-if="hits !== null"
+        class="sd-results"
+      >
+        <button
+          v-for="h in hits"
+          :key="h.fragmentId"
+          class="sd-hit"
+          @click="jumpTo(h)"
+        >
           <span class="sd-loc">
             {{ h.chapterTitle }} · {{ h.sceneTitle }}
             <template v-if="h.occurrences > 1">×{{ h.occurrences }}</template>
           </span>
           <span class="sd-excerpt">
-            <template v-for="(p, i) in excerptParts(h.excerpt)" :key="i">
+            <template
+              v-for="(p, i) in excerptParts(h.excerpt)"
+              :key="i"
+            >
               <mark v-if="p.hit">{{ p.text }}</mark>
               <template v-else>{{ p.text }}</template>
             </template>

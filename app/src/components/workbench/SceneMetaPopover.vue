@@ -7,42 +7,42 @@ const emit = defineEmits<{ close: [] }>()
 const store = useWorkspaceStore()
 
 const form = reactive({
-  title: '',
-  pov: '' as string,
-  mood: '',
-  year: null as number | null,
-  month: null as number | null,
-  day: null as number | null,
+    title: '',
+    pov:   '' as string,
+    mood:  '',
+    year:  null as number | null,
+    month: null as number | null,
+    day:   null as number | null,
 })
 
 watch(
-  () => store.scene?.id,
-  () => {
-    const s = store.scene
-    if (!s) return
-    form.title = s.title ?? ''
-    form.pov = s.pov ?? ''
-    form.mood = s.mood ?? ''
-    form.year = s.storyTime?.year ?? null
-    form.month = s.storyTime?.month ?? null
-    form.day = s.storyTime?.day ?? null
-  },
-  { immediate: true },
+    () => store.scene?.id,
+    () => {
+        const s = store.scene
+        if (!s) return
+        form.title = s.title ?? ''
+        form.pov = s.pov ?? ''
+        form.mood = s.mood ?? ''
+        form.year = s.storyTime?.year ?? null
+        form.month = s.storyTime?.month ?? null
+        form.day = s.storyTime?.day ?? null
+    },
+    { immediate: true },
 )
 
 async function save() {
-  if (!store.scene) return
-  const storyTime: StoryTimeDto | null =
-    form.year != null
-      ? { year: form.year, month: form.month, day: form.day }
-      : null
-  await store.updateScene(store.scene.id, {
-    title: form.title,
-    pov: form.pov || null,
-    mood: form.mood || null,
-    storyTime,
-  })
-  emit('close')
+    if (!store.scene) return
+    const storyTime: StoryTimeDto | null
+        = form.year == null
+            ? null
+            : { year: form.year, month: form.month, day: form.day }
+    await store.updateScene(store.scene.id, {
+        title: form.title,
+        pov:   form.pov || null,
+        mood:  form.mood || null,
+        storyTime,
+    })
+    emit('close')
 }
 </script>
 
@@ -50,14 +50,23 @@ async function save() {
   <div class="meta-form">
     <div class="mf-row">
       <label>场景标题</label>
-      <input v-model="form.title" placeholder="场景标题" />
+      <input
+        v-model="form.title"
+        placeholder="场景标题"
+      >
     </div>
 
     <div class="mf-row">
       <label>视角角色</label>
       <select v-model="form.pov">
-        <option value="">（未指定）</option>
-        <option v-for="c in store.characters" :key="c.id" :value="c.id">
+        <option value="">
+          （未指定）
+        </option>
+        <option
+          v-for="c in store.characters"
+          :key="c.id"
+          :value="c.id"
+        >
           {{ c.displayName }}
         </option>
       </select>
@@ -65,20 +74,47 @@ async function save() {
 
     <div class="mf-row">
       <label>情绪基调</label>
-      <input v-model="form.mood" placeholder="例：压抑、惊惧" />
+      <input
+        v-model="form.mood"
+        placeholder="例：压抑、惊惧"
+      >
     </div>
 
     <div class="mf-row">
       <label>故事时间</label>
       <div class="time-row">
-        <input v-model.number="form.year" type="number" placeholder="年" class="num" />
-        <input v-model.number="form.month" type="number" placeholder="月" min="1" max="12" class="num" />
-        <input v-model.number="form.day" type="number" placeholder="日" min="1" max="31" class="num" />
+        <input
+          v-model.number="form.year"
+          type="number"
+          placeholder="年"
+          class="num"
+        >
+        <input
+          v-model.number="form.month"
+          type="number"
+          placeholder="月"
+          min="1"
+          max="12"
+          class="num"
+        >
+        <input
+          v-model.number="form.day"
+          type="number"
+          placeholder="日"
+          min="1"
+          max="31"
+          class="num"
+        >
       </div>
     </div>
 
     <div class="mf-actions">
-      <button class="ink-btn ink-btn--sm ink-btn--primary" @click="save">保存</button>
+      <button
+        class="ink-btn ink-btn--sm ink-btn--primary"
+        @click="save"
+      >
+        保存
+      </button>
     </div>
   </div>
 </template>

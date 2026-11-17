@@ -21,97 +21,94 @@ const metaVisible = ref(false)
 const metaLoading = ref(false)
 const metaSaving = ref(false)
 const meta = ref<BookMetaDto>({
-  genre: null,
-  tagline: null,
-  blurb: null,
-  premise: null,
-  theme: null,
-  audience: null,
-  pov: null,
-  style: null,
-  targetWords: null,
-  chapterWords: null,
+    genre:        null,
+    tagline:      null,
+    blurb:        null,
+    premise:      null,
+    theme:        null,
+    audience:     null,
+    pov:          null,
+    style:        null,
+    targetWords:  null,
+    chapterWords: null,
 })
 
 async function openMeta() {
-  metaVisible.value = true
-  if (!store.root) return
-  metaLoading.value = true
-  try {
-    meta.value = await api.getBookMeta(store.root)
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    metaLoading.value = false
-  }
+    metaVisible.value = true
+    if (!store.root) return
+    metaLoading.value = true
+    try {
+        meta.value = await api.getBookMeta(store.root)
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
+    finally {
+        metaLoading.value = false
+    }
 }
 
 async function saveMeta() {
-  if (!store.root || metaSaving.value) return
-  const next = normalizeBookMeta(meta.value)
-  metaSaving.value = true
-  try {
-    await api.saveBookMeta(store.root, next)
-    meta.value = next
-    metaVisible.value = false
-    ElMessage.success('书籍信息已保存')
-    if (!next.premise) {
-      ElMessage.info('续排大纲需要「一句话主线」，建议补上')
+    if (!store.root || metaSaving.value) return
+    const next = normalizeBookMeta(meta.value)
+    metaSaving.value = true
+    try {
+        await api.saveBookMeta(store.root, next)
+        meta.value = next
+        metaVisible.value = false
+        ElMessage.success('书籍信息已保存')
+        if (!next.premise) {
+            ElMessage.info('续排大纲需要「一句话主线」，建议补上')
+        }
     }
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    metaSaving.value = false
-  }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
+    finally {
+        metaSaving.value = false
+    }
 }
 
-interface TreeScene extends SceneDto {
-  chapterTitle: string
-}
+interface TreeScene extends SceneDto { chapterTitle: string }
 
 const filtered = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  const chapters: (ChapterDto & { scenes: SceneDto[] })[] = []
-  for (const ch of store.ws?.chapters ?? []) {
-    if (!q || ch.title.toLowerCase().includes(q)) {
-      chapters.push({ ...ch, scenes: [...ch.scenes] })
-      continue
+    const q = query.value.trim().toLowerCase()
+    const chapters: (ChapterDto & { scenes: SceneDto[] })[] = []
+    for (const ch of store.ws?.chapters ?? []) {
+        if (!q || ch.title.toLowerCase().includes(q)) {
+            chapters.push({ ...ch, scenes: [...ch.scenes] })
+            continue
+        }
+        const scenes = ch.scenes.filter(s => (s.title ?? '').toLowerCase().includes(q) || s.id.toLowerCase().includes(q))
+        if (scenes.length > 0) chapters.push({ ...ch, scenes })
     }
-    const scenes = ch.scenes.filter(
-      (s) => (s.title ?? '').toLowerCase().includes(q) || s.id.toLowerCase().includes(q),
-    )
-    if (scenes.length > 0) chapters.push({ ...ch, scenes })
-  }
-  return chapters
+
+    return chapters
 })
 
 const flatScenes = computed<TreeScene[]>(() => {
-  const list: TreeScene[] = []
-  for (const ch of store.ws?.chapters ?? []) {
-    for (const sc of ch.scenes) list.push({ ...sc, chapterTitle: ch.title })
-  }
-  return list
-})
+    const list: TreeScene[] = []
+    for (const ch of store.ws?.chapters ?? []) {
+        for (const sc of ch.scenes) list.push({ ...sc, chapterTitle: ch.title })
+    }
 
-const sceneIndex = computed(() => {
-  const idx = flatScenes.value.findIndex((s) => s.id === store.scene?.id)
-  return idx >= 0 ? idx : -1
+    return list
 })
 
 function toggleChapter(id: string) {
-  const set = new Set(collapsed.value)
-  if (set.has(id)) set.delete(id)
-  else set.add(id)
-  collapsed.value = set
+    const set = new Set(collapsed.value)
+    if (set.has(id)) set.delete(id)
+    else set.add(id)
+    collapsed.value = set
 }
 
 function selectScene(id: string) {
-  if (renaming.value) return
-  void store.selectScene(id)
+    if (renaming.value) return
+    void store.selectScene(id)
 }
 
 function chapterWords(ch: ChapterDto): number {
-  return ch.scenes.reduce((sum, s) => sum + s.wordCount, 0)
+    return ch.scenes.reduce((sum, s) => sum + s.wordCount, 0)
 }
 
 // ── 新建 ────────────────────────────────────────────────
@@ -119,47 +116,48 @@ const creating = ref<'chapter' | null>(null)
 const newName = ref('')
 
 async function startCreateChapter() {
-  creating.value = 'chapter'
-  newName.value = ''
+    creating.value = 'chapter'
+    newName.value = ''
 }
 
 async function confirmCreate() {
-  const title = newName.value.trim()
-  if (!title) {
+    const title = newName.value.trim()
+    if (!title) {
+        creating.value = null
+
+        return
+    }
+    const ch = await store.createChapter(title)
+    if (ch) collapsed.value.delete(ch.id)
     creating.value = null
-    return
-  }
-  const ch = await store.createChapter(title)
-  if (ch) collapsed.value.delete(ch.id)
-  creating.value = null
 }
 
 async function createScene(chapterId: string) {
-  const { value } = await ElMessageBox.prompt('场景标题', '新建场景', {
-    confirmButtonText: '创建',
-    cancelButtonText: '取消',
-    inputPlaceholder: '例：夜访旧宅',
-    inputValue: '',
-  }).catch(() => ({ value: '' }))
-  if (value.trim()) await store.createScene(chapterId, value.trim())
+    const { value } = await ElMessageBox.prompt('场景标题', '新建场景', {
+        confirmButtonText: '创建',
+        cancelButtonText:  '取消',
+        inputPlaceholder:  '例：夜访旧宅',
+        inputValue:        '',
+    }).catch(() => ({ value: '' }))
+    if (value.trim()) await store.createScene(chapterId, value.trim())
 }
 
 // ── 重命名 ──────────────────────────────────────────────
 function startRename(kind: 'chapter' | 'scene', id: string, current: string) {
-  renaming.value = { kind, id, value: current }
+    renaming.value = { kind, id, value: current }
 }
 
 async function confirmRename() {
-  const r = renaming.value
-  renaming.value = null
-  if (!r || !r.value.trim() || r.value === r.id) return
-  const title = r.value.trim()
-  if (r.kind === 'chapter') await store.renameChapter(r.id, title)
-  else await store.updateScene(r.id, { title })
+    const r = renaming.value
+    renaming.value = null
+    if (!r || !r.value.trim() || r.value === r.id) return
+    const title = r.value.trim()
+    if (r.kind === 'chapter') await store.renameChapter(r.id, title)
+    else await store.updateScene(r.id, { title })
 }
 
 function sceneTitle(s: SceneDto): string {
-  return s.title?.trim() || '未命名场景'
+    return s.title?.trim() || '未命名场景'
 }
 </script>
 
@@ -168,7 +166,10 @@ function sceneTitle(s: SceneDto): string {
     <div class="tree-head">
       <div class="search-row">
         <i class="fa-solid fa-magnifying-glass" />
-        <input v-model="query" placeholder="搜索章节 / 场景" />
+        <input
+          v-model="query"
+          placeholder="搜索章节 / 场景"
+        >
       </div>
       <button
         class="ink-icon-btn"
@@ -177,10 +178,18 @@ function sceneTitle(s: SceneDto): string {
       >
         <i class="fa-solid fa-file-magnifying-glass" />
       </button>
-      <button class="ink-icon-btn" title="书籍信息（题材 / 主线 / 体量……）" @click="openMeta">
+      <button
+        class="ink-icon-btn"
+        title="书籍信息（题材 / 主线 / 体量……）"
+        @click="openMeta"
+      >
         <i class="fa-solid fa-circle-info" />
       </button>
-      <button class="ink-icon-btn" title="新建章节" @click="startCreateChapter">
+      <button
+        class="ink-icon-btn"
+        title="新建章节"
+        @click="startCreateChapter"
+      >
         <i class="fa-solid fa-plus" />
       </button>
     </div>
@@ -194,7 +203,10 @@ function sceneTitle(s: SceneDto): string {
       append-to-body
       :close-on-click-modal="false"
     >
-      <div v-if="metaLoading" class="meta-loading">
+      <div
+        v-if="metaLoading"
+        class="meta-loading"
+      >
         <i class="fa-solid fa-circle-notch fa-spin" />
       </div>
       <template v-else>
@@ -204,16 +216,27 @@ function sceneTitle(s: SceneDto): string {
         </p>
       </template>
       <template #footer>
-        <button class="ink-btn" :disabled="metaSaving" @click="metaVisible = false">取消</button>
+        <button
+          class="ink-btn"
+          :disabled="metaSaving"
+          @click="metaVisible = false"
+        >
+          取消
+        </button>
         <button
           class="ink-btn ink-btn--primary"
           :disabled="metaLoading || metaSaving"
           @click="saveMeta"
-        >{{ metaSaving ? '保存中…' : '保存' }}</button>
+        >
+          {{ metaSaving ? '保存中…' : '保存' }}
+        </button>
       </template>
     </ElDialog>
 
-    <div v-if="creating === 'chapter'" class="new-chapter-row">
+    <div
+      v-if="creating === 'chapter'"
+      class="new-chapter-row"
+    >
       <i class="fa-solid fa-layer-group" />
       <input
         v-model="newName"
@@ -222,18 +245,33 @@ function sceneTitle(s: SceneDto): string {
         @keyup.enter="confirmCreate"
         @keyup.escape="creating = null"
         @blur="confirmCreate"
-      />
+      >
     </div>
 
     <div class="tree-scroll">
-      <div v-if="filtered.length === 0" class="tree-empty">
+      <div
+        v-if="filtered.length === 0"
+        class="tree-empty"
+      >
         <i class="fa-regular fa-file-lines" />
         <p>尚无章节</p>
-        <button class="ink-btn ink-btn--sm" @click="startCreateChapter">写第一章</button>
+        <button
+          class="ink-btn ink-btn--sm"
+          @click="startCreateChapter"
+        >
+          写第一章
+        </button>
       </div>
 
-      <div v-for="ch in filtered" :key="ch.id" class="chapter">
-        <div class="chapter-row" @click="toggleChapter(ch.id)">
+      <div
+        v-for="ch in filtered"
+        :key="ch.id"
+        class="chapter"
+      >
+        <div
+          class="chapter-row"
+          @click="toggleChapter(ch.id)"
+        >
           <i
             class="fa-solid fa-angle-right chev"
             :class="{ 'chev--open': !collapsed.has(ch.id) }"
@@ -247,17 +285,23 @@ function sceneTitle(s: SceneDto): string {
               @keyup.escape="renaming = null"
               @blur="confirmRename"
               @click.stop
-            />
+            >
           </template>
           <template v-else>
             <span class="chapter-title">{{ ch.title }}</span>
             <span class="chapter-words num">{{ chapterWords(ch) }}</span>
-            <ElDropdown trigger="click" @command="(cmd: string) => {
-              if (cmd === 'scene') createScene(ch.id)
-              else if (cmd === 'rename') startRename('chapter', ch.id, ch.title)
-              else if (cmd === 'delete') store.deleteChapter(ch.id)
-            }">
-              <button class="row-menu" @click.stop>
+            <ElDropdown
+              trigger="click"
+              @command="(cmd: string) => {
+                if (cmd === 'scene') createScene(ch.id)
+                else if (cmd === 'rename') startRename('chapter', ch.id, ch.title)
+                else if (cmd === 'delete') store.deleteChapter(ch.id)
+              }"
+            >
+              <button
+                class="row-menu"
+                @click.stop
+              >
                 <i class="fa-solid fa-ellipsis" />
               </button>
               <template #dropdown>
@@ -268,7 +312,10 @@ function sceneTitle(s: SceneDto): string {
                   <ElDropdownItem command="rename">
                     <i class="fa-solid fa-pen" /> 重命名
                   </ElDropdownItem>
-                  <ElDropdownItem command="delete" divided>
+                  <ElDropdownItem
+                    command="delete"
+                    divided
+                  >
                     <i class="fa-solid fa-trash" /> 删除章节
                   </ElDropdownItem>
                 </ElDropdownMenu>
@@ -277,7 +324,10 @@ function sceneTitle(s: SceneDto): string {
           </template>
         </div>
 
-        <div v-show="!collapsed.has(ch.id)" class="scene-list">
+        <div
+          v-show="!collapsed.has(ch.id)"
+          class="scene-list"
+        >
           <div
             v-for="sc in ch.scenes"
             :key="sc.id"
@@ -299,11 +349,15 @@ function sceneTitle(s: SceneDto): string {
               @blur="confirmRename"
               @click.stop
               @keyup.stop
-            />
+            >
             <template v-else>
               <span class="scene-dot" />
               <span class="scene-title">{{ sceneTitle(sc) }}</span>
-              <span v-if="sc.pov" class="scene-pov" :title="`视角：${store.entityName(sc.pov)}`">
+              <span
+                v-if="sc.pov"
+                class="scene-pov"
+                :title="`视角：${store.entityName(sc.pov)}`"
+              >
                 {{ store.entityName(sc.pov) }}
               </span>
               <span class="scene-words num">{{ sc.wordCount }}</span>
@@ -314,7 +368,11 @@ function sceneTitle(s: SceneDto): string {
                   else if (cmd === 'delete') store.deleteScene(sc.id)
                 }"
               >
-                <button class="row-menu" title="场景操作" @click.stop>
+                <button
+                  class="row-menu"
+                  title="场景操作"
+                  @click.stop
+                >
                   <i class="fa-solid fa-ellipsis" />
                 </button>
                 <template #dropdown>
@@ -322,7 +380,10 @@ function sceneTitle(s: SceneDto): string {
                     <ElDropdownItem command="rename">
                       <i class="fa-solid fa-pen" /> 重命名
                     </ElDropdownItem>
-                    <ElDropdownItem command="delete" divided>
+                    <ElDropdownItem
+                      command="delete"
+                      divided
+                    >
                       <i class="fa-solid fa-trash" /> 删除场景
                     </ElDropdownItem>
                   </ElDropdownMenu>
@@ -330,7 +391,10 @@ function sceneTitle(s: SceneDto): string {
               </ElDropdown>
             </template>
           </div>
-          <button class="scene-add" @click="createScene(ch.id)">
+          <button
+            class="scene-add"
+            @click="createScene(ch.id)"
+          >
             <i class="fa-solid fa-plus" />
             新建场景
           </button>

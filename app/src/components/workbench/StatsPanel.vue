@@ -15,71 +15,74 @@ const PAGE_SIZE = 10
 const page = ref(1)
 
 onMounted(() => {
-  void store.refreshStats()
-  if (store.root) {
-    api.aiLedgerSummary(store.root).then(
-      (v) => {
-        ledger.value = v
-        page.value = 1
-      },
-      () => {},
-    )
-  }
-  goalDraft.value = store.stats?.dailyGoal ?? 2000
+    void store.refreshStats()
+    if (store.root) {
+        api.aiLedgerSummary(store.root).then(
+            v => {
+                ledger.value = v
+                page.value = 1
+            },
+            () => {},
+        )
+    }
+    goalDraft.value = store.stats?.dailyGoal ?? 2000
 })
 
 const totalPages = computed(() =>
-  ledger.value ? Math.max(1, Math.ceil(ledger.value.recent.length / PAGE_SIZE)) : 1,
-)
+    ledger.value ? Math.max(1, Math.ceil(ledger.value.recent.length / PAGE_SIZE)) : 1)
 const pagedRecords = computed(() => {
-  const list = ledger.value?.recent ?? []
-  return list.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE)
+    const list = ledger.value?.recent ?? []
+
+    return list.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE)
 })
 
 function turnPage(delta: number) {
-  page.value = Math.min(totalPages.value, Math.max(1, page.value + delta))
+    page.value = Math.min(totalPages.value, Math.max(1, page.value + delta))
 }
 
 const stats = computed(() => store.stats)
 const todayTotal = computed(() => (stats.value?.today.manual ?? 0) + (stats.value?.today.ai ?? 0))
 const goalPercent = computed(() =>
-  stats.value?.dailyGoal ? Math.min(100, Math.round((todayTotal.value / stats.value.dailyGoal) * 100)) : 0,
-)
+    stats.value?.dailyGoal ? Math.min(100, Math.round(todayTotal.value / stats.value.dailyGoal * 100)) : 0)
 const maxDayWords = computed(() =>
-  Math.max(1, ...(stats.value?.recentDays ?? []).map((d) => d.count.manual + d.count.ai)),
-)
+    Math.max(1, ...(stats.value?.recentDays ?? []).map(d => d.count.manual + d.count.ai)))
 
 function weekday(dateStr: string): string {
-  return ['日', '一', '二', '三', '四', '五', '六'][new Date(dateStr + 'T00:00:00').getDay()]
-}
-function shortDate(dateStr: string): string {
-  return dateStr.slice(5).replace('-', '/')
+    return ['日', '一', '二', '三', '四', '五', '六'][new Date(`${dateStr}T00:00:00`).getDay()]
 }
 
 async function saveGoal() {
-  await store.setDailyGoal(goalDraft.value)
-  goalEditing.value = false
+    await store.setDailyGoal(goalDraft.value)
+    goalEditing.value = false
 }
 
 function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  const s = Math.round(ms / 1000)
-  if (s < 60) return `${s}s`
-  return `${Math.floor(s / 60)}m${s % 60}s`
+    if (ms < 1000) return `${ms}ms`
+    const s = Math.round(ms / 1000)
+    if (s < 60) return `${s}s`
+
+    return `${Math.floor(s / 60)}m${s % 60}s`
 }
 
 function formatTime(ts: number): string {
-  return new Date(ts).toLocaleString('zh-CN', { hour12: false })
+    return new Date(ts).toLocaleString('zh-CN', { hour12: false })
 }
 </script>
 
 <template>
   <div class="stats-panel">
     <!-- 今日 -->
-    <section v-if="stats" class="today-card">
+    <section
+      v-if="stats"
+      class="today-card"
+    >
       <div class="today-head">
         <span class="today-label">今日码字</span>
-        <span v-if="stats.streakDays > 0" class="streak" title="连续码字天数">
+        <span
+          v-if="stats.streakDays > 0"
+          class="streak"
+          title="连续码字天数"
+        >
           <i class="fa-solid fa-fire" />
           连续 {{ stats.streakDays }} 天
         </span>
@@ -103,26 +106,62 @@ function formatTime(ts: number): string {
           <span class="goal-text">
             每日目标 <span class="num">{{ stats.dailyGoal.toLocaleString() }}</span> 字（{{ goalPercent }}%）
           </span>
-          <button class="ink-icon-btn" title="修改目标" @click="goalDraft = stats.dailyGoal; goalEditing = true">
+          <button
+            class="ink-icon-btn"
+            title="修改目标"
+            @click="goalDraft = stats.dailyGoal; goalEditing = true"
+          >
             <i class="fa-solid fa-pen" />
           </button>
         </template>
         <template v-else>
-          <ElInputNumber v-model="goalDraft" :min="100" :max="50000" :step="100" size="small" />
-          <button class="ink-btn ink-btn--sm ink-btn--primary" @click="saveGoal">保存</button>
-          <button class="ink-btn ink-btn--sm" @click="goalEditing = false">取消</button>
+          <ElInputNumber
+            v-model="goalDraft"
+            :min="100"
+            :max="50000"
+            :step="100"
+            size="small"
+          />
+          <button
+            class="ink-btn ink-btn--sm ink-btn--primary"
+            @click="saveGoal"
+          >
+            保存
+          </button>
+          <button
+            class="ink-btn ink-btn--sm"
+            @click="goalEditing = false"
+          >
+            取消
+          </button>
         </template>
       </div>
     </section>
 
     <!-- 近 7 天 -->
-    <section v-if="stats" class="recent-card">
-      <h4 class="card-title">近 7 天</h4>
+    <section
+      v-if="stats"
+      class="recent-card"
+    >
+      <h4 class="card-title">
+        近 7 天
+      </h4>
       <div class="bar-chart">
-        <div v-for="d in stats.recentDays" :key="d.date" class="bar-col" :title="`${d.date}：手写 ${d.count.manual} / AI ${d.count.ai} 字`">
+        <div
+          v-for="d in stats.recentDays"
+          :key="d.date"
+          class="bar-col"
+          :title="`${d.date}：手写 ${d.count.manual} / AI ${d.count.ai} 字`"
+        >
           <div class="bar-stack">
-            <div class="bar ai" :style="{ height: `${(d.count.ai / maxDayWords) * 100}%` }" />
-            <div class="bar manual" :style="{ height: `${(d.count.manual / maxDayWords) * 100}%` }" />
+            <div
+              class="bar ai"
+              :style="{ height: `${d.count.ai / maxDayWords * 100}%` }"
+            />
+            <div
+              class="bar manual"
+              :style="{ height: `${d.count.manual / maxDayWords * 100}%` }"
+            />
           </div>
           <span class="bar-label">{{ weekday(d.date) }}</span>
         </div>
@@ -138,8 +177,13 @@ function formatTime(ts: number): string {
 
     <!-- AI 调用账本 -->
     <section class="ledger-card">
-      <h4 class="card-title">AI 调用</h4>
-      <div v-if="ledger && ledger.totalCalls > 0" class="ledger-body">
+      <h4 class="card-title">
+        AI 调用
+      </h4>
+      <div
+        v-if="ledger && ledger.totalCalls > 0"
+        class="ledger-body"
+      >
         <div class="ledger-totals">
           <div class="lt-item">
             <span class="num">{{ ledger.totalCalls.toLocaleString() }}</span>
@@ -155,7 +199,10 @@ function formatTime(ts: number): string {
           </div>
         </div>
         <ul class="ledger-list">
-          <li v-for="(r, i) in pagedRecords" :key="`${page}-${i}`">
+          <li
+            v-for="(r, i) in pagedRecords"
+            :key="`${page}-${i}`"
+          >
             <i
               class="fa-solid"
               :class="r.ok ? 'fa-circle-check text-success' : 'fa-circle-exclamation text-danger'"
@@ -169,7 +216,10 @@ function formatTime(ts: number): string {
             <span class="lr-time">{{ formatTime(r.ts) }}</span>
           </li>
         </ul>
-        <div v-if="totalPages > 1" class="ledger-pager">
+        <div
+          v-if="totalPages > 1"
+          class="ledger-pager"
+        >
           <button
             class="ink-icon-btn"
             :disabled="page <= 1"
@@ -189,7 +239,12 @@ function formatTime(ts: number): string {
           </button>
         </div>
       </div>
-      <p v-else class="ledger-empty">还没有 AI 调用记录；续写、妙笔对话、逐章成书的花销会记在这里</p>
+      <p
+        v-else
+        class="ledger-empty"
+      >
+        还没有 AI 调用记录；续写、妙笔对话、逐章成书的花销会记在这里
+      </p>
     </section>
   </div>
 </template>

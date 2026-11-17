@@ -23,50 +23,53 @@ const maximized = shallowRef(false)
 const isTauri = computed(() => !!window.__TAURI_INTERNALS__)
 const needsControls = computed(() => isTauri.value && !isMac.value)
 
-const themeIcon = computed(() => (ui.theme === 'theme-ink' ? 'fa-regular fa-moon' : 'fa-solid fa-sun'))
+const themeIcon = computed(() => ui.theme === 'theme-ink' ? 'fa-regular fa-moon' : 'fa-solid fa-sun')
 
 /** 文件监听断开警示（RFC-0019 §6.4）：仅失败停止时显示，点击重启 */
-const watchBroken = computed(
-  () =>
-    !!workspace.root &&
-    workspace.watchState?.state === 'stopped' &&
-    !!workspace.watchState.reason,
-)
+const watchBroken = computed(() =>
+    !!workspace.root
+    && workspace.watchState?.state === 'stopped'
+    && !!workspace.watchState.reason)
 
 async function restartWatch() {
-  if (!workspace.root) return
-  try {
-    workspace.watchState = await api.watchStart(workspace.root)
-  } catch (err) {
-    ElMessage.error(`重启文件监听失败：${(err as Error).message}`)
-  }
+    if (!workspace.root) return
+    try {
+        workspace.watchState = await api.watchStart(workspace.root)
+    }
+    catch(err) {
+        ElMessage.error(`重启文件监听失败：${(err as Error).message}`)
+    }
 }
 
-onMounted(async () => {
-  isMac.value = /mac/i.test(navigator.userAgent)
-  if (!isTauri.value || isMac.value) return
-  const win = getCurrentWindow()
-  maximized.value = await win.isMaximized()
-  await win.onResized(async () => {
+onMounted(async() => {
+    isMac.value = /mac/i.test(navigator.userAgent)
+    if (!isTauri.value || isMac.value) return
+    const win = getCurrentWindow()
     maximized.value = await win.isMaximized()
-  })
+    await win.onResized(async() => {
+        maximized.value = await win.isMaximized()
+    })
 })
 
 async function minimize() {
-  await getCurrentWindow().minimize()
+    await getCurrentWindow().minimize()
 }
 
 async function toggleMaximize() {
-  await getCurrentWindow().toggleMaximize()
+    await getCurrentWindow().toggleMaximize()
 }
 
 async function close() {
-  await getCurrentWindow().close()
+    await getCurrentWindow().close()
 }
 </script>
 
 <template>
-  <header class="title-bar" :class="{ 'title-bar--mac': isMac }" data-tauri-drag-region>
+  <header
+    class="title-bar"
+    :class="{ 'title-bar--mac': isMac }"
+    data-tauri-drag-region
+  >
     <div class="tb-left">
       <img
         class="tb-logo"
@@ -74,7 +77,7 @@ async function close() {
         alt="StoryStudio"
         draggable="false"
         data-tauri-drag-region
-      />
+      >
       <!-- 显式返回主页入口（与设置 / AI 开书页头的返回按钮同模式）；
            书名只作展示 + 拖拽区，不再承担返回职责 -->
       <button
@@ -85,7 +88,11 @@ async function close() {
       >
         <i class="fa-solid fa-arrow-left" />
       </button>
-      <span v-if="title" class="tb-title" data-tauri-drag-region>
+      <span
+        v-if="title"
+        class="tb-title"
+        data-tauri-drag-region
+      >
         <i class="fa-solid fa-book-open" />
         {{ title }}
       </span>
@@ -116,18 +123,34 @@ async function close() {
       >
         <i :class="themeIcon" />
       </button>
-      <button class="ink-icon-btn" title="AI 设置" @click="router.push('/settings')">
+      <button
+        class="ink-icon-btn"
+        title="AI 设置"
+        @click="router.push('/settings')"
+      >
         <i class="fa-solid fa-gear" />
       </button>
       <template v-if="needsControls">
         <span class="tb-sep" />
-        <button class="tb-ctrl" title="最小化" @click="minimize">
+        <button
+          class="tb-ctrl"
+          title="最小化"
+          @click="minimize"
+        >
           <i class="fa-solid fa-minus" />
         </button>
-        <button class="tb-ctrl" title="最大化" @click="toggleMaximize">
+        <button
+          class="tb-ctrl"
+          title="最大化"
+          @click="toggleMaximize"
+        >
           <i :class="maximized ? 'fa-regular fa-window-restore' : 'fa-regular fa-square'" />
         </button>
-        <button class="tb-ctrl tb-ctrl--close" title="关闭" @click="close">
+        <button
+          class="tb-ctrl tb-ctrl--close"
+          title="关闭"
+          @click="close"
+        >
           <i class="fa-solid fa-xmark" />
         </button>
       </template>

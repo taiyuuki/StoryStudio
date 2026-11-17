@@ -12,294 +12,316 @@ const { offerUndo } = useUndo()
 const knowledge = ref<KnowledgeDto | null>(null)
 const loading = ref(false)
 const creating = ref(false)
+
 /** 非空 = 编辑该断言（原地更新）；空 = 新建 */
 const editingId = ref<string | null>(null)
 
 // ── 过滤 ─────────────────────────────────────────────
-type StatusFilter = 'all' | 'active' | 'superseded' | 'contradicted'
+type StatusFilter = 'active' | 'all' | 'contradicted' | 'superseded'
 const filterStatus = ref<StatusFilter>('active')
 const filterSubject = ref('') // '' = 全部主体
 
 const statusChips: { value: StatusFilter; label: string }[] = [
-  { value: 'active', label: '生效中' },
-  { value: 'superseded', label: '已废弃' },
-  { value: 'contradicted', label: '矛盾' },
-  { value: 'all', label: '全部' },
+    { value: 'active', label: '生效中' },
+    { value: 'superseded', label: '已废弃' },
+    { value: 'contradicted', label: '矛盾' },
+    { value: 'all', label: '全部' },
 ]
 
 const statusMeta: Record<string, { label: string; cls: string }> = {
-  active: { label: '生效中', cls: 'as-active' },
-  superseded: { label: '已废弃', cls: 'as-superseded' },
-  contradicted: { label: '矛盾', cls: 'as-contradicted' },
+    active:       { label: '生效中', cls: 'as-active' },
+    superseded:   { label: '已废弃', cls: 'as-superseded' },
+    contradicted: { label: '矛盾', cls: 'as-contradicted' },
 }
 
 const subjectOptions = computed(() => store.ws?.entities ?? [])
 
 const assertions = computed(() => {
-  let list = knowledge.value?.assertions ?? []
-  if (filterStatus.value !== 'all') list = list.filter((a) => a.status === filterStatus.value)
-  if (filterSubject.value) list = list.filter((a) => a.subject === filterSubject.value)
-  return list
+    let list = knowledge.value?.assertions ?? []
+    if (filterStatus.value !== 'all') list = list.filter(a => a.status === filterStatus.value)
+    if (filterSubject.value) list = list.filter(a => a.subject === filterSubject.value)
+
+    return list
 })
 
-const activeCount = computed(
-  () => knowledge.value?.assertions.filter((a) => a.status === 'active').length ?? 0,
-)
+const activeCount = computed(() => knowledge.value?.assertions.filter(a => a.status === 'active').length ?? 0)
 
 // ── 谓词元数据（与后端 coerce_object_value / AUTO_SUPERSEDE_PREDICATES 对齐）──
 interface PredicateMeta {
-  value: string
-  label: string
-  /** 值输入控件类型 */
-  kind: 'bool' | 'item' | 'location' | 'org' | 'text'
-  /** 时变谓词：新值自动废弃同主体同谓词旧值 */
-  autoSupersede: boolean
+    value: string
+    label: string
+
+    /** 值输入控件类型 */
+    kind: 'bool' | 'item' | 'location' | 'org' | 'text'
+
+    /** 时变谓词：新值自动废弃同主体同谓词旧值 */
+    autoSupersede: boolean
 }
 
 const PREDICATES: PredicateMeta[] = [
-  { value: 'alive', label: '存活', kind: 'bool', autoSupersede: true },
-  { value: 'age', label: '年龄', kind: 'text', autoSupersede: true },
-  { value: 'located_at', label: '所在', kind: 'location', autoSupersede: true },
-  { value: 'status', label: '状态', kind: 'text', autoSupersede: true },
-  { value: 'holds', label: '持有', kind: 'item', autoSupersede: false },
-  { value: 'member_of', label: '隶属', kind: 'org', autoSupersede: false },
-  { value: 'identity', label: '身份', kind: 'text', autoSupersede: false },
+    { value: 'alive', label: '存活', kind: 'bool', autoSupersede: true },
+    { value: 'age', label: '年龄', kind: 'text', autoSupersede: true },
+    { value: 'located_at', label: '所在', kind: 'location', autoSupersede: true },
+    { value: 'status', label: '状态', kind: 'text', autoSupersede: true },
+    { value: 'holds', label: '持有', kind: 'item', autoSupersede: false },
+    { value: 'member_of', label: '隶属', kind: 'org', autoSupersede: false },
+    { value: 'identity', label: '身份', kind: 'text', autoSupersede: false },
 ]
 
 const CUSTOM = '__custom__'
 
 const form = ref({
-  subject: '',
-  predicate: 'alive',
-  customPredicate: '',
-  object: '',
-  evidenceFragment: '',
+    subject:          '',
+    predicate:        'alive',
+    customPredicate:  '',
+    object:           '',
+    evidenceFragment: '',
 })
 
 const predicateMeta = computed<PredicateMeta | null>(() => {
-  if (form.value.predicate === CUSTOM) return null
-  return PREDICATES.find((p) => p.value === form.value.predicate) ?? null
+    if (form.value.predicate === CUSTOM) return null
+
+    return PREDICATES.find(p => p.value === form.value.predicate) ?? null
 })
 
 /** 值控件候选：按谓词联动实体类型 */
 const objectEntities = computed(() => {
-  const kind = predicateMeta.value?.kind
-  if (kind === 'item') return store.ws?.entities.filter((e) => e.kind === 'item') ?? []
-  if (kind === 'location') return store.ws?.entities.filter((e) => e.kind === 'location') ?? []
-  if (kind === 'org') return store.ws?.entities.filter((e) => e.kind === 'organization') ?? []
-  return []
+    const kind = predicateMeta.value?.kind
+    if (kind === 'item') return store.ws?.entities.filter(e => e.kind === 'item') ?? []
+    if (kind === 'location') return store.ws?.entities.filter(e => e.kind === 'location') ?? []
+    if (kind === 'org') return store.ws?.entities.filter(e => e.kind === 'organization') ?? []
+
+    return []
 })
 
 function predicateLabel(p: string): string {
-  return PREDICATES.find((x) => x.value === p)?.label ?? p
+    return PREDICATES.find(x => x.value === p)?.label ?? p
 }
 
 /** 值展示：实体 ID → 名称；布尔 → 存活/已故 */
 function objectDisplay(a: AssertionDto): string {
-  if (a.predicate === 'alive') return a.object === 'true' ? '存活' : '已故'
-  const entity = store.ws?.entities.find((e) => e.id === a.object)
-  if (entity) return entity.displayName
-  return a.object
+    if (a.predicate === 'alive') return a.object === 'true' ? '存活' : '已故'
+    const entity = store.ws?.entities.find(e => e.id === a.object)
+    if (entity) return entity.displayName
+
+    return a.object
 }
 
 /** 来源标签：AI 抽取的显示模型名；手动记录的不显示 */
 function sourceLabel(a: AssertionDto): string {
-  if (a.extractedBy.startsWith('ai:')) return `AI · ${a.extractedBy.slice(3)}`
-  return ''
+    if (a.extractedBy.startsWith('ai:')) return `AI · ${a.extractedBy.slice(3)}`
+
+    return ''
 }
 
 // ── 加载与操作 ────────────────────────────────────────
 async function reload() {
-  if (!store.root) return
-  loading.value = true
-  try {
-    knowledge.value = await api.listKnowledge(store.root)
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    loading.value = false
-  }
+    if (!store.root) return
+    loading.value = true
+    try {
+        knowledge.value = await api.listKnowledge(store.root)
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
+    finally {
+        loading.value = false
+    }
 }
 
 onMounted(reload)
 watch(
-  () => store.root,
-  () => {
-    knowledge.value = null
-    closeForm()
-    void reload()
-  },
+    () => store.root,
+    () => {
+        knowledge.value = null
+        closeForm()
+        void reload()
+    },
 )
 
 function openCreate() {
-  editingId.value = null
-  form.value = {
-    subject: store.ws?.entities.find((e) => e.kind === 'character')?.id ?? '',
-    predicate: 'alive',
-    customPredicate: '',
-    object: '',
-    evidenceFragment: '',
-  }
-  creating.value = true
+    editingId.value = null
+    form.value = {
+        subject:          store.ws?.entities.find(e => e.kind === 'character')?.id ?? '',
+        predicate:        'alive',
+        customPredicate:  '',
+        object:           '',
+        evidenceFragment: '',
+    }
+    creating.value = true
 }
 
 /** 编辑已有断言：全量回填，保存时原地更新（保留 ID/状态/来源） */
 function openEdit(a: AssertionDto) {
-  const isCustom = !PREDICATES.some((p) => p.value === a.predicate)
-  form.value = {
-    subject: a.subject,
-    predicate: isCustom ? CUSTOM : a.predicate,
-    customPredicate: isCustom ? a.predicate : '',
-    object: a.object,
-    evidenceFragment: a.evidence[0]?.fragment ?? '',
-  }
-  editingId.value = a.id
-  creating.value = true
+    const isCustom = !PREDICATES.some(p => p.value === a.predicate)
+    form.value = {
+        subject:          a.subject,
+        predicate:        isCustom ? CUSTOM : a.predicate,
+        customPredicate:  isCustom ? a.predicate : '',
+        object:           a.object,
+        evidenceFragment: a.evidence[0]?.fragment ?? '',
+    }
+    editingId.value = a.id
+    creating.value = true
 }
 
 function closeForm() {
-  creating.value = false
-  editingId.value = null
+    creating.value = false
+    editingId.value = null
 }
 
 async function save() {
-  if (!store.root) return
-  const f = form.value
-  const predicate = f.predicate === CUSTOM ? f.customPredicate.trim() : f.predicate
-  if (!f.subject) {
-    ElMessage.warning('请选择断言主体')
-    return
-  }
-  if (!predicate) {
-    ElMessage.warning('请填写谓词')
-    return
-  }
-  if (!f.object.trim() && f.object !== 'true' && f.object !== 'false') {
-    ElMessage.warning('请填写断言值')
-    return
-  }
-  try {
-    const editId = editingId.value
-    // 编辑：不传证据片段 = 保留现有证据（表单空占位不清数据）
-    const outcome =
-      editId !== null
-        ? await api.updateAssertion(
-            store.root,
-            editId,
-            f.subject,
-            predicate,
-            f.object.trim(),
-            f.evidenceFragment || undefined,
-          )
-        : await api.addAssertion(
-          store.root,
-          f.subject,
-          predicate,
-          f.object.trim(),
-          f.evidenceFragment || undefined,
-        )
-    const done = editId !== null ? '已更新' : '已记录'
-    if (outcome.deduplicated) {
-      ElMessage.info('已存在相同断言，未重复创建')
-    } else if (outcome.superseded.length > 0) {
-      ElMessage.success(`${done}，自动废弃 ${outcome.superseded.length} 条旧值`)
-    } else if (outcome.coexisting.length > 0) {
-      ElMessage.warning(
-        `${done}；同谓词仍有旧值并存（${outcome.coexisting.map(objectText).join('、')}），如属演进请废弃旧值`,
-      )
-    } else {
-      ElMessage.success(editId !== null ? '断言已更新' : '断言已记录')
+    if (!store.root) return
+    const f = form.value
+    const predicate = f.predicate === CUSTOM ? f.customPredicate.trim() : f.predicate
+    if (!f.subject) {
+        ElMessage.warning('请选择断言主体')
+
+        return
     }
-    closeForm()
-    await reload()
-    void store.scheduleCompile()
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  }
+    if (!predicate) {
+        ElMessage.warning('请填写谓词')
+
+        return
+    }
+    if (!f.object.trim() && f.object !== 'true' && f.object !== 'false') {
+        ElMessage.warning('请填写断言值')
+
+        return
+    }
+    try {
+        const editId = editingId.value
+
+        // 编辑：不传证据片段 = 保留现有证据（表单空占位不清数据）
+        const outcome
+            = editId === null
+                ? await api.addAssertion(
+                    store.root,
+                    f.subject,
+                    predicate,
+                    f.object.trim(),
+                    f.evidenceFragment || undefined,
+                )
+                : await api.updateAssertion(
+                    store.root,
+                    editId,
+                    f.subject,
+                    predicate,
+                    f.object.trim(),
+                    f.evidenceFragment || undefined,
+                )
+        const done = editId === null ? '已记录' : '已更新'
+        if (outcome.deduplicated) {
+            ElMessage.info('已存在相同断言，未重复创建')
+        }
+        else if (outcome.superseded.length > 0) {
+            ElMessage.success(`${done}，自动废弃 ${outcome.superseded.length} 条旧值`)
+        }
+        else if (outcome.coexisting.length > 0) {
+            ElMessage.warning(`${done}；同谓词仍有旧值并存（${outcome.coexisting.map(objectText).join('、')}），如属演进请废弃旧值`)
+        }
+        else {
+            ElMessage.success(editId === null ? '断言已记录' : '断言已更新')
+        }
+        closeForm()
+        await reload()
+        void store.scheduleCompile()
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
 }
 
 function objectText(v: string): string {
-  if (v === 'true') return '存活'
-  if (v === 'false') return '已故'
-  return store.ws?.entities.find((e) => e.id === v)?.displayName ?? v
+    if (v === 'true') return '存活'
+    if (v === 'false') return '已故'
+
+    return store.ws?.entities.find(e => e.id === v)?.displayName ?? v
 }
 
 async function setStatus(a: AssertionDto, status: string) {
-  if (!store.root) return
-  try {
-    await api.setAssertionStatus(store.root, a.id, status)
-    await reload()
-    void store.scheduleCompile()
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  }
+    if (!store.root) return
+    try {
+        await api.setAssertionStatus(store.root, a.id, status)
+        await reload()
+        void store.scheduleCompile()
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
 }
 
 async function remove(a: AssertionDto) {
-  if (!store.root) return
-  const label = `断言「${store.entityName(a.subject)}：${a.object}」`
-  try {
-    await ElMessageBox.confirm(`删除${label}？8 秒内可撤销。`, '删除断言', {
-      type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-    })
-  } catch {
-    return
-  }
-  const root = store.root
-  // 撤销快照：addAssertion 重建（新 ID），状态与逐条证据在重建后补齐
-  const snap = {
-    subject: a.subject,
-    predicate: a.predicate,
-    object: a.object,
-    status: a.status,
-    evidence: a.evidence.map((e) => e.fragment),
-  }
-  try {
-    await api.deleteAssertion(root, a.id)
-    await reload()
-    void store.scheduleCompile()
-    offerUndo(label, async () => {
-      const r = await api.addAssertion(
-        root,
-        snap.subject,
-        snap.predicate,
-        snap.object,
-        snap.evidence[0],
-      )
-      if (snap.status !== 'active') await api.setAssertionStatus(root, r.id, snap.status)
-      // 追加证据：updateAssertion 不传证据则保留现有，传则登记并追加
-      for (const f of snap.evidence.slice(1)) {
-        await api.updateAssertion(root, r.id, snap.subject, snap.predicate, snap.object, f)
-      }
-      await reload()
-      void store.scheduleCompile()
-    })
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  }
+    if (!store.root) return
+    const label = `断言「${store.entityName(a.subject)}：${a.object}」`
+    try {
+        await ElMessageBox.confirm(`删除${label}？8 秒内可撤销。`, '删除断言', {
+            type:              'warning',
+            confirmButtonText: '删除',
+            cancelButtonText:  '取消',
+        })
+    }
+    catch {
+        return
+    }
+    const root = store.root
+
+    // 撤销快照：addAssertion 重建（新 ID），状态与逐条证据在重建后补齐
+    const snap = {
+        subject:   a.subject,
+        predicate: a.predicate,
+        object:    a.object,
+        status:    a.status,
+        evidence:  a.evidence.map(e => e.fragment),
+    }
+    try {
+        await api.deleteAssertion(root, a.id)
+        await reload()
+        void store.scheduleCompile()
+        offerUndo(label, async() => {
+            const r = await api.addAssertion(
+                root,
+                snap.subject,
+                snap.predicate,
+                snap.object,
+                snap.evidence[0],
+            )
+            if (snap.status !== 'active') await api.setAssertionStatus(root, r.id, snap.status)
+
+            // 追加证据：updateAssertion 不传证据则保留现有，传则登记并追加
+            for (const f of snap.evidence.slice(1)) {
+                await api.updateAssertion(root, r.id, snap.subject, snap.predicate, snap.object, f)
+            }
+            await reload()
+            void store.scheduleCompile()
+        })
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
 }
 
 /** 摘除断言上的一条证据引用（无主证据条目由后端级联清理） */
 async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
-  if (!store.root) return
-  const root = store.root
-  const label = `「${a.object}」的证据（${ev.label}）`
-  // 撤销快照：断言三元组与证据片段（updateAssertion 传片段 ID 会重新登记该证据）
-  const snap = { id: a.id, subject: a.subject, predicate: a.predicate, object: a.object, fragment: ev.fragment }
-  try {
-    await api.removeAssertionEvidence(root, snap.id, snap.fragment)
-    await reload()
-    void store.scheduleCompile()
-    offerUndo(label, async () => {
-      await api.updateAssertion(root, snap.id, snap.subject, snap.predicate, snap.object, snap.fragment)
-      await reload()
-      void store.scheduleCompile()
-    })
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  }
+    if (!store.root) return
+    const root = store.root
+    const label = `「${a.object}」的证据（${ev.label}）`
+
+    // 撤销快照：断言三元组与证据片段（updateAssertion 传片段 ID 会重新登记该证据）
+    const snap = { id: a.id, subject: a.subject, predicate: a.predicate, object: a.object, fragment: ev.fragment }
+    try {
+        await api.removeAssertionEvidence(root, snap.id, snap.fragment)
+        await reload()
+        void store.scheduleCompile()
+        offerUndo(label, async() => {
+            await api.updateAssertion(root, snap.id, snap.subject, snap.predicate, snap.object, snap.fragment)
+            await reload()
+            void store.scheduleCompile()
+        })
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
 }
 </script>
 
@@ -307,7 +329,10 @@ async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
   <div class="assertion-panel">
     <div class="ap-head">
       <span class="text-ink-muted">知识断言 · {{ activeCount }} 生效</span>
-      <button class="ink-btn ink-btn--sm ink-btn--primary" @click="openCreate()">
+      <button
+        class="ink-btn ink-btn--sm ink-btn--primary"
+        @click="openCreate()"
+      >
         <i class="fa-solid fa-plus" />
         新断言
       </button>
@@ -330,18 +355,33 @@ async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
           {{ c.label }}
         </button>
       </div>
-      <select v-model="filterSubject" class="ap-subject">
-        <option value="">全部主体</option>
-        <option v-for="e in subjectOptions" :key="e.id" :value="e.id">
+      <select
+        v-model="filterSubject"
+        class="ap-subject"
+      >
+        <option value="">
+          全部主体
+        </option>
+        <option
+          v-for="e in subjectOptions"
+          :key="e.id"
+          :value="e.id"
+        >
           {{ e.displayName }}
         </option>
       </select>
     </div>
 
     <!-- 添加表单 -->
-    <div v-if="creating" class="ap-create">
+    <div
+      v-if="creating"
+      class="ap-create"
+    >
       <div class="tp-row">
-        <select v-model="form.subject" title="断言主体">
+        <select
+          v-model="form.subject"
+          title="断言主体"
+        >
           <optgroup label="角色">
             <option
               v-for="e in store.ws?.entities.filter((x) => x.kind === 'character')"
@@ -371,11 +411,21 @@ async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
           </optgroup>
         </select>
         <!-- 手动切换谓词时清空值，避免控件类型与残留值不符（程序化回填不受影响） -->
-        <select v-model="form.predicate" title="谓词" @change="form.object = ''">
-          <option v-for="p in PREDICATES" :key="p.value" :value="p.value">
+        <select
+          v-model="form.predicate"
+          title="谓词"
+          @change="form.object = ''"
+        >
+          <option
+            v-for="p in PREDICATES"
+            :key="p.value"
+            :value="p.value"
+          >
             {{ p.label }}
           </option>
-          <option :value="CUSTOM">自定义…</option>
+          <option :value="CUSTOM">
+            自定义…
+          </option>
         </select>
       </div>
       <input
@@ -383,15 +433,36 @@ async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
         v-model="form.customPredicate"
         class="tp-input"
         placeholder="自定义谓词（如 death_cause）"
-      />
+      >
       <!-- 值输入：按谓词联动 -->
-      <select v-if="predicateMeta?.kind === 'bool'" v-model="form.object" title="断言值">
-        <option value="true">存活</option>
-        <option value="false">已故</option>
+      <select
+        v-if="predicateMeta?.kind === 'bool'"
+        v-model="form.object"
+        title="断言值"
+      >
+        <option value="true">
+          存活
+        </option>
+        <option value="false">
+          已故
+        </option>
       </select>
-      <select v-else-if="objectEntities.length" v-model="form.object" title="断言值">
-        <option value="" disabled>选择{{ predicateMeta?.label }}…</option>
-        <option v-for="e in objectEntities" :key="e.id" :value="e.id">
+      <select
+        v-else-if="objectEntities.length"
+        v-model="form.object"
+        title="断言值"
+      >
+        <option
+          value=""
+          disabled
+        >
+          选择{{ predicateMeta?.label }}…
+        </option>
+        <option
+          v-for="e in objectEntities"
+          :key="e.id"
+          :value="e.id"
+        >
           {{ e.displayName }}
         </option>
       </select>
@@ -400,38 +471,69 @@ async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
         v-model="form.object"
         class="tp-input"
         :placeholder="form.predicate === 'age' ? '年龄（整数）' : '断言值（文本）'"
-      />
-      <select v-model="form.evidenceFragment" title="证据片段（可选）">
-        <option value="">{{ editingId ? '保留现有证据' : '无证据' }}</option>
-        <option v-for="f in knowledge?.fragments ?? []" :key="f.id" :value="f.id">
+      >
+      <select
+        v-model="form.evidenceFragment"
+        title="证据片段（可选）"
+      >
+        <option value="">
+          {{ editingId ? '保留现有证据' : '无证据' }}
+        </option>
+        <option
+          v-for="f in knowledge?.fragments ?? []"
+          :key="f.id"
+          :value="f.id"
+        >
           {{ f.label }}（{{ f.id }}）
         </option>
       </select>
-      <p v-if="predicateMeta?.autoSupersede" class="ap-hint">
+      <p
+        v-if="predicateMeta?.autoSupersede"
+        class="ap-hint"
+      >
         时变谓词：保存后同主体其他生效值自动废弃
       </p>
       <div class="tp-row">
-        <button class="ink-btn ink-btn--sm ink-btn--primary" @click="save">
+        <button
+          class="ink-btn ink-btn--sm ink-btn--primary"
+          @click="save"
+        >
           {{ editingId ? '保存' : '记录' }}
         </button>
-        <button class="ink-btn ink-btn--sm" @click="closeForm">取消</button>
+        <button
+          class="ink-btn ink-btn--sm"
+          @click="closeForm"
+        >
+          取消
+        </button>
       </div>
     </div>
 
     <!-- 空状态 -->
-    <div v-if="!loading && assertions.length === 0 && !creating" class="ap-empty">
+    <div
+      v-if="!loading && assertions.length === 0 && !creating"
+      class="ap-empty"
+    >
       <i class="fa-solid fa-database" />
       <p>
-        知识断言是设定事实的台账：生死、年龄、持有、位置……<br />
+        知识断言是设定事实的台账：生死、年龄、持有、位置……<br>
         编译器据此检查矛盾（死亡角色复活、年龄错位等）。
       </p>
     </div>
 
     <!-- 断言卡片 -->
-    <div v-for="a in assertions" :key="a.id" class="as-card" :class="[statusMeta[a.status]?.cls]">
+    <div
+      v-for="a in assertions"
+      :key="a.id"
+      class="as-card"
+      :class="[statusMeta[a.status]?.cls]"
+    >
       <div class="as-head">
         <span class="as-status">{{ statusMeta[a.status]?.label ?? a.status }}</span>
-        <span v-if="sourceLabel(a)" class="as-source">{{ sourceLabel(a) }}</span>
+        <span
+          v-if="sourceLabel(a)"
+          class="as-source"
+        >{{ sourceLabel(a) }}</span>
         <span style="flex: 1" />
         <button
           class="as-act"
@@ -464,7 +566,11 @@ async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
         >
           <i class="fa-solid fa-rotate-left" />
         </button>
-        <button class="as-act as-act--danger" title="删除" @click="remove(a)">
+        <button
+          class="as-act as-act--danger"
+          title="删除"
+          @click="remove(a)"
+        >
           <i class="fa-regular fa-trash-can" />
         </button>
       </div>
@@ -473,12 +579,22 @@ async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
         <span class="as-pred">{{ predicateLabel(a.predicate) }}</span>
         <span class="as-object">{{ objectDisplay(a) }}</span>
       </div>
-      <div v-if="a.validFrom || a.validUntil" class="as-valid">
+      <div
+        v-if="a.validFrom || a.validUntil"
+        class="as-valid"
+      >
         <i class="fa-regular fa-clock" />
         {{ a.validFrom ?? '…' }} → {{ a.validUntil ?? '至今' }}
       </div>
-      <div v-if="a.evidence.length" class="as-evidence">
-        <span v-for="ev in a.evidence" :key="ev.id" :title="`${ev.fragment}（${ev.id}）`">
+      <div
+        v-if="a.evidence.length"
+        class="as-evidence"
+      >
+        <span
+          v-for="ev in a.evidence"
+          :key="ev.id"
+          :title="`${ev.fragment}（${ev.id}）`"
+        >
           <i class="fa-solid fa-quote-left" /> {{ ev.label || ev.fragment }}
           <button
             class="as-ev-x"

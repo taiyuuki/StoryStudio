@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useUiStore } from '@/stores/ui'
-import { api, type ProjectPeekDto } from '@/api/backend'
+import { type ProjectPeekDto, api } from '@/api/backend'
 import ShelfCard from '@/components/start/ShelfCard.vue'
 import NewProjectDialog from '@/components/start/NewProjectDialog.vue'
 
@@ -18,30 +18,32 @@ const showNew = ref(false)
 const projects = computed(() => ui.recentProjects)
 
 async function loadPeeks() {
-  const roots = ui.recentProjects.map((p) => p.root)
-  if (!roots.length) return
-  try {
-    const entries = await api.peekProjects(roots)
-    const map: Record<string, ProjectPeekDto | null> = {}
-    for (const en of entries) map[en.root] = en.peek
-    peeks.value = map
-  } catch {
+    const roots = ui.recentProjects.map(p => p.root)
+    if (!roots.length) return
+    try {
+        const entries = await api.peekProjects(roots)
+        const map: Record<string, ProjectPeekDto | null> = {}
+        for (const en of entries) map[en.root] = en.peek
+        peeks.value = map
+    }
+    catch {
+
     // 概览拉不到不弹错误打扰，卡片回退骨架/灰化态
-  }
+    }
 }
 
 onMounted(loadPeeks)
 
 async function openProject(root: string) {
-  if (await store.openRoot(root)) router.push('/workbench')
+    if (await store.openRoot(root)) router.push('/workbench')
 }
 
 async function pickAndOpen() {
-  const dir = await openDialog({
-    directory: true,
-    title: '选择 StoryStudio 作品文件夹（含 project.toml）',
-  })
-  if (typeof dir === 'string') openProject(dir)
+    const dir = await openDialog({
+        directory: true,
+        title:     '选择 StoryStudio 作品文件夹（含 project.toml）',
+    })
+    if (typeof dir === 'string') openProject(dir)
 }
 </script>
 
@@ -51,20 +53,38 @@ async function pickAndOpen() {
 
     <div class="works-content">
       <!-- 空态 -->
-      <div v-if="!projects.length" class="works-empty">
-        <div class="we-icon"><i class="fa-regular fa-folder-open" /></div>
-        <h2 class="we-title">还没有作品</h2>
-        <p class="we-sub text-ink-muted">从一本新书开始，或者让 AI 从一句话灵感帮你开书</p>
+      <div
+        v-if="!projects.length"
+        class="works-empty"
+      >
+        <div class="we-icon">
+          <i class="fa-regular fa-folder-open" />
+        </div>
+        <h2 class="we-title">
+          还没有作品
+        </h2>
+        <p class="we-sub text-ink-muted">
+          从一本新书开始，或者让 AI 从一句话灵感帮你开书
+        </p>
         <div class="we-actions">
-          <button class="ink-btn ink-btn--primary ink-btn--lg" @click="showNew = true">
+          <button
+            class="ink-btn ink-btn--primary ink-btn--lg"
+            @click="showNew = true"
+          >
             <i class="fa-solid fa-feather-pointed" />
             新建作品
           </button>
-          <button class="ink-btn ink-btn--lg" @click="pickAndOpen">
+          <button
+            class="ink-btn ink-btn--lg"
+            @click="pickAndOpen"
+          >
             <i class="fa-regular fa-folder-open" />
             打开已有作品
           </button>
-          <button class="ink-btn ink-btn--lg" @click="router.push('/create')">
+          <button
+            class="ink-btn ink-btn--lg"
+            @click="router.push('/create')"
+          >
             <i class="fa-solid fa-wand-magic-sparkles" />
             AI 开书
           </button>
@@ -75,15 +95,23 @@ async function pickAndOpen() {
       <template v-else>
         <div class="works-head">
           <div>
-            <h2 class="works-title">作品</h2>
+            <h2 class="works-title">
+              作品
+            </h2>
             <span class="works-sub text-ink-muted">共 {{ projects.length }} 部 · 点击卡片继续写作</span>
           </div>
           <div class="works-actions">
-            <button class="ink-btn" @click="pickAndOpen">
+            <button
+              class="ink-btn"
+              @click="pickAndOpen"
+            >
               <i class="fa-regular fa-folder-open" />
               打开项目目录
             </button>
-            <button class="ink-btn ink-btn--primary" @click="showNew = true">
+            <button
+              class="ink-btn ink-btn--primary"
+              @click="showNew = true"
+            >
               <i class="fa-solid fa-plus" />
               新建作品
             </button>
@@ -107,7 +135,10 @@ async function pickAndOpen() {
       </template>
     </div>
 
-    <NewProjectDialog v-model="showNew" @created="openProject" />
+    <NewProjectDialog
+      v-model="showNew"
+      @created="openProject"
+    />
   </div>
 </template>
 

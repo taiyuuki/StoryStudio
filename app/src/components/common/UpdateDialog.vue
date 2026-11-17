@@ -10,27 +10,30 @@ const { update, dialogOpen, downloading, progress, runUpdate, skipVersion } = us
 
 const currentVersion = ref('')
 
-onMounted(async () => {
-  try {
-    currentVersion.value = await getVersion()
-  } catch {
+onMounted(async() => {
+    try {
+        currentVersion.value = await getVersion()
+    }
+    catch {
+
     // 拿不到就不展示当前版本，不影响更新流程
-  }
+    }
 })
 
 /** 进度百分比（total 未知时为 null，退文本字节数） */
 const percent = computed(() => {
-  const p = progress.value
-  if (!p || !p.total) return null
-  return Math.min(100, Math.round((p.received / p.total) * 100))
+    const p = progress.value
+    if (!p || !p.total) return null
+
+    return Math.min(100, Math.round(p.received / p.total * 100))
 })
 
 function fmtMB(n: number): string {
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
+    return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
 function close() {
-  if (!downloading.value) dialogOpen.value = false
+    if (!downloading.value) dialogOpen.value = false
 }
 </script>
 
@@ -45,18 +48,27 @@ function close() {
     :show-close="!downloading"
     @update:model-value="dialogOpen = $event"
   >
-    <div v-if="update" class="upd">
+    <div
+      v-if="update"
+      class="upd"
+    >
       <div class="upd-versions">
         <span class="upd-ver">v{{ currentVersion || '…' }}</span>
         <i class="fa-solid fa-arrow-right-long" />
         <span class="upd-ver upd-ver--new">v{{ update.version }}</span>
       </div>
 
-      <div v-if="update.body" class="upd-notes">
+      <div
+        v-if="update.body"
+        class="upd-notes"
+      >
         <MarkdownView :text="update.body" />
       </div>
 
-      <div v-if="downloading" class="upd-progress">
+      <div
+        v-if="downloading"
+        class="upd-progress"
+      >
         <ElProgress
           v-if="percent !== null"
           :percentage="percent"
@@ -64,7 +76,10 @@ function close() {
           striped
           striped-flow
         />
-        <p v-else class="upd-progress-text">
+        <p
+          v-else
+          class="upd-progress-text"
+        >
           正在下载… 已下载 {{ fmtMB(progress?.received ?? 0) }}
         </p>
       </div>
@@ -79,8 +94,18 @@ function close() {
           跳过此版本
         </button>
         <div class="upd-actions">
-          <button class="ink-btn" :disabled="downloading" @click="close">以后再说</button>
-          <button class="ink-btn ink-btn--primary" :disabled="downloading" @click="runUpdate">
+          <button
+            class="ink-btn"
+            :disabled="downloading"
+            @click="close"
+          >
+            以后再说
+          </button>
+          <button
+            class="ink-btn ink-btn--primary"
+            :disabled="downloading"
+            @click="runUpdate"
+          >
             <i :class="downloading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-circle-arrow-down'" />
             {{ downloading ? '下载中…' : '更新并重启' }}
           </button>

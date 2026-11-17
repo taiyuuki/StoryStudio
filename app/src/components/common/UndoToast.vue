@@ -6,18 +6,34 @@ const { current, restoring, runUndo, dismissUndo } = useUndo()
 
 <template>
   <Transition name="undo-pop">
-    <div v-if="current" :key="current.id" class="undo-toast" role="status">
+    <div
+      v-if="current"
+      :key="current.id"
+      class="undo-toast"
+      role="status"
+    >
       <i class="fa-solid fa-trash-can undo-icon" />
       <span class="undo-label">已删除「{{ current.label }}」</span>
-      <button class="ink-btn ink-btn--sm undo-btn" :disabled="restoring" @click="runUndo">
+      <button
+        class="ink-btn ink-btn--sm undo-btn"
+        :disabled="restoring"
+        @click="runUndo"
+      >
         <i :class="restoring ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-rotate-left'" />
         撤销
       </button>
-      <button class="undo-close" title="关闭" @click="dismissUndo">
+      <button
+        class="undo-close"
+        title="关闭"
+        @click="dismissUndo"
+      >
         <i class="fa-solid fa-xmark" />
       </button>
       <!-- 存活倒计时：随 TTL 线性收缩，条目 key 变化时自动重放 -->
-      <span class="undo-bar" :style="{ animationDuration: `${UNDO_TTL_MS}ms` }" />
+      <span
+        class="undo-bar"
+        :style="{ animationDuration: `${UNDO_TTL_MS}ms` }"
+      />
     </div>
   </Transition>
 </template>

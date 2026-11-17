@@ -8,5 +8,5 @@ const md = new MarkdownIt({ html: false, breaks: true, linkify: true })
 
 /** 把 markdown 文本渲染成 HTML 片段。容忍流式半截语法，未闭合的部分原样输出。 */
 export function renderMarkdown(text: string): string {
-  return md.render(text ?? '')
+    return md.render(text ?? '')
 }

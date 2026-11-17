@@ -7,14 +7,15 @@ const route = useRoute()
 
 // 导航项：后续扩展（榜单 / 素材库……）在此追加即可
 const navItems = [
-  { to: '/', label: '首页', icon: 'fa-house' },
-  { to: '/works', label: '作品', icon: 'fa-book-open' },
-  { to: '/create', label: 'AI 建书', icon: 'fa-wand-magic-sparkles' },
+    { to: '/', label: '首页', icon: 'fa-house' },
+    { to: '/works', label: '作品', icon: 'fa-book-open' },
+    { to: '/create', label: 'AI 建书', icon: 'fa-wand-magic-sparkles' },
 ]
 
 function isActive(to: string): boolean {
-  if (to === '/') return route.path === '/'
-  return route.path === to || route.path.startsWith(`${to}/`)
+    if (to === '/') return route.path === '/'
+
+    return route.path === to || route.path.startsWith(`${to}/`)
 }
 
 const settingsActive = computed(() => isActive('/settings'))
@@ -22,8 +23,15 @@ const settingsActive = computed(() => isActive('/settings'))
 
 <template>
   <aside class="nav-rail">
-    <router-link class="nav-brand" to="/">
-      <img class="brand-seal" :src="appIcon" alt="StoryStudio" />
+    <router-link
+      class="nav-brand"
+      to="/"
+    >
+      <img
+        class="brand-seal"
+        :src="appIcon"
+        alt="StoryStudio"
+      >
       <span class="brand-name">StoryStudio</span>
     </router-link>
 
@@ -35,7 +43,10 @@ const settingsActive = computed(() => isActive('/settings'))
         :class="{ 'is-active': isActive(item.to) }"
         :to="item.to"
       >
-        <i class="fa-solid" :class="item.icon" />
+        <i
+          class="fa-solid"
+          :class="item.icon"
+        />
         <span>{{ item.label }}</span>
       </router-link>
     </nav>
@@ -43,7 +54,11 @@ const settingsActive = computed(() => isActive('/settings'))
     <div class="nav-spacer" />
 
     <nav class="nav-group nav-group--bottom">
-      <router-link class="nav-item" :class="{ 'is-active': settingsActive }" to="/settings">
+      <router-link
+        class="nav-item"
+        :class="{ 'is-active': settingsActive }"
+        to="/settings"
+      >
         <i class="fa-solid fa-gear" />
         <span>设置</span>
       </router-link>

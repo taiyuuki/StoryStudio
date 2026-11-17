@@ -4,14 +4,15 @@ import type { RecentProject } from '@/stores/ui'
 import { formatRelativeTime, formatWordCount } from '@/utils/format'
 
 defineProps<{
-  recent: RecentProject
-  /** undefined = 尚未加载；null = 目录不可用 */
-  peek: ProjectPeekDto | null | undefined
+    recent: RecentProject
+
+    /** undefined = 尚未加载；null = 目录不可用 */
+    peek: ProjectPeekDto | null | undefined
 }>()
 
 const emit = defineEmits<{
-  open: [root: string]
-  remove: [root: string]
+    open:   [root: string]
+    remove: [root: string]
 }>()
 </script>
 
@@ -33,14 +34,25 @@ const emit = defineEmits<{
 
     <!-- 目录已不存在（peek 显式为 null）：明确不可点，常显移除 -->
     <template v-if="peek === null">
-      <div class="sc-icon"><i class="fa-regular fa-folder-open" /></div>
-      <div class="sc-name">{{ recent.name }}</div>
-      <div class="sc-miss">目录已不存在或已被移动</div>
-      <button class="ink-btn ink-btn--sm sc-remove-btn" @click.stop="emit('remove', recent.root)">
+      <div class="sc-icon">
+        <i class="fa-regular fa-folder-open" />
+      </div>
+      <div class="sc-name">
+        {{ recent.name }}
+      </div>
+      <div class="sc-miss">
+        目录已不存在或已被移动
+      </div>
+      <button
+        class="ink-btn ink-btn--sm sc-remove-btn"
+        @click.stop="emit('remove', recent.root)"
+      >
         <i class="fa-solid fa-xmark" />
         从列表移除
       </button>
-      <div class="sc-time">{{ formatRelativeTime(recent.openedAt) }}</div>
+      <div class="sc-time">
+        {{ formatRelativeTime(recent.openedAt) }}
+      </div>
     </template>
 
     <!-- 加载中 / 尚未返回：骨架 -->
@@ -51,12 +63,18 @@ const emit = defineEmits<{
     </template>
 
     <template v-else>
-      <div class="sc-icon"><i class="fa-solid fa-book" /></div>
-      <div class="sc-name">{{ peek.name }}</div>
+      <div class="sc-icon">
+        <i class="fa-solid fa-book" />
+      </div>
+      <div class="sc-name">
+        {{ peek.name }}
+      </div>
       <div class="sc-meta num">
         {{ formatWordCount(peek.wordCount) }}字 · {{ peek.chapterCount }} 章
       </div>
-      <div class="sc-time">{{ formatRelativeTime(recent.openedAt) }}</div>
+      <div class="sc-time">
+        {{ formatRelativeTime(recent.openedAt) }}
+      </div>
     </template>
   </div>
 </template>

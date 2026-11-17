@@ -14,55 +14,68 @@ const chapter = ref<ChapterReadDto | null>(null)
 const loading = ref(false)
 
 watch(
-  () => ui.chapterRead,
-  async (chapterId) => {
-    chapter.value = null
-    if (!chapterId || !store.root) return
-    loading.value = true
-    try {
-      chapter.value = await api.readChapter(store.root, chapterId)
-      // 从正在编辑的场景接着读：定位到该场景（阅读是快照，正文改动以编辑视图为准）
-      await nextTick()
-      if (store.scene) {
-        document.getElementById(`read-scene-${store.scene.id}`)?.scrollIntoView()
-      }
-    } catch (err) {
-      ElMessage.error((err as Error).message)
-      ui.chapterRead = null
-    } finally {
-      loading.value = false
-    }
-  },
-  { immediate: true },
+    () => ui.chapterRead,
+    async chapterId => {
+        chapter.value = null
+        if (!chapterId || !store.root) return
+        loading.value = true
+        try {
+            chapter.value = await api.readChapter(store.root, chapterId)
+
+            // 从正在编辑的场景接着读：定位到该场景（阅读是快照，正文改动以编辑视图为准）
+            await nextTick()
+            if (store.scene) {
+                document.getElementById(`read-scene-${store.scene.id}`)?.scrollIntoView()
+            }
+        }
+        catch(err) {
+            ElMessage.error((err as Error).message)
+            ui.chapterRead = null
+        }
+        finally {
+            loading.value = false
+        }
+    },
+    { immediate: true },
 )
 
 function close() {
-  ui.chapterRead = null
+    ui.chapterRead = null
 }
 
 /** 跳到某场景编辑（点场景标题） */
 async function editScene(sceneId: string) {
-  ui.chapterRead = null
-  if (store.scene?.id !== sceneId) await store.selectScene(sceneId)
+    ui.chapterRead = null
+    if (store.scene?.id !== sceneId) await store.selectScene(sceneId)
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && ui.chapterRead) close()
+    if (e.key === 'Escape' && ui.chapterRead) close()
 }
 window.addEventListener('keydown', onKeydown)
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
-  <div v-if="ui.chapterRead" class="ink-bg-container read-overlay">
+  <div
+    v-if="ui.chapterRead"
+    class="ink-bg-container read-overlay"
+  >
     <div class="paper-texture" />
 
     <header class="read-topbar">
-      <button class="ink-btn ink-btn--sm" title="关闭阅读（Esc）" @click="close">
+      <button
+        class="ink-btn ink-btn--sm"
+        title="关闭阅读（Esc）"
+        @click="close"
+      >
         <i class="fa-solid fa-arrow-left" />
         回到编辑
       </button>
-      <div v-if="chapter" class="read-topmeta">
+      <div
+        v-if="chapter"
+        class="read-topmeta"
+      >
         <span class="seal-font">{{ chapter.title }}</span>
         <span class="num">{{ chapter.scenes.length }} 场景 · {{ chapter.wordCount.toLocaleString() }} 字</span>
       </div>
@@ -71,12 +84,20 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     </header>
 
     <div class="read-scroll">
-      <div v-if="loading" class="read-loading">
+      <div
+        v-if="loading"
+        class="read-loading"
+      >
         <i class="fa-solid fa-circle-notch fa-spin" />
       </div>
 
-      <div v-else-if="chapter" class="read-paper">
-        <h1 class="read-chapter-title">{{ chapter.title }}</h1>
+      <div
+        v-else-if="chapter"
+        class="read-paper"
+      >
+        <h1 class="read-chapter-title">
+          {{ chapter.title }}
+        </h1>
 
         <section
           v-for="(s, i) in chapter.scenes"
@@ -92,10 +113,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           >
             <span class="read-scene-no seal-font">第{{ ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'][i] ?? i + 1 }}场</span>
             <span class="read-scene-name">{{ s.title?.trim() || '未命名场景' }}</span>
-            <i v-if="s.sceneId === store.scene?.id" class="fa-solid fa-location-dot" title="正在编辑" />
+            <i
+              v-if="s.sceneId === store.scene?.id"
+              class="fa-solid fa-location-dot"
+              title="正在编辑"
+            />
           </button>
-          <MarkdownView v-if="s.text" :text="s.text" class="read-body" />
-          <p v-else class="read-scene-blank">（这一场还是白纸）</p>
+          <MarkdownView
+            v-if="s.text"
+            :text="s.text"
+            class="read-body"
+          />
+          <p
+            v-else
+            class="read-scene-blank"
+          >
+            （这一场还是白纸）
+          </p>
         </section>
       </div>
     </div>

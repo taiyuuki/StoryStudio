@@ -4,29 +4,31 @@ import { useWorkspaceStore } from '@/stores/workspace'
 
 const store = useWorkspaceStore()
 
-type Sev = 'error' | 'warning' | 'all'
+type Sev = 'all' | 'error' | 'warning'
 const filter = ref<Sev>('all')
 
 const result = computed(() => store.compileResult)
 const visible = computed(() => {
-  if (!result.value?.ok) return []
-  if (filter.value === 'all') return result.value.diagnostics
-  return result.value.diagnostics.filter((d) => d.severity === filter.value)
+    if (!result.value?.ok) return []
+    if (filter.value === 'all') return result.value.diagnostics
+
+    return result.value.diagnostics.filter(d => d.severity === filter.value)
 })
 
 const sevMeta: Record<string, { label: string; cls: string; icon: string }> = {
-  error: { label: '错误', cls: 'sev-error', icon: 'fa-solid fa-circle-xmark' },
-  warning: { label: '警告', cls: 'sev-warning', icon: 'fa-solid fa-triangle-exclamation' },
-  hint: { label: '提示', cls: 'sev-hint', icon: 'fa-solid fa-lightbulb' },
-  info: { label: '信息', cls: 'sev-info', icon: 'fa-solid fa-circle-info' },
+    error:   { label: '错误', cls: 'sev-error', icon: 'fa-solid fa-circle-xmark' },
+    warning: { label: '警告', cls: 'sev-warning', icon: 'fa-solid fa-triangle-exclamation' },
+    hint:    { label: '提示', cls: 'sev-hint', icon: 'fa-solid fa-lightbulb' },
+    info:    { label: '信息', cls: 'sev-info', icon: 'fa-solid fa-circle-info' },
 }
 
 const stats = computed(() => result.value?.stats)
 
 function locText(entity: string | null, fragment: string | null): string {
-  if (entity) return `涉及：${store.entityName(entity)}`
-  if (fragment) return '涉及正文段落'
-  return ''
+    if (entity) return `涉及：${store.entityName(entity)}`
+    if (fragment) return '涉及正文段落'
+
+    return ''
 }
 </script>
 
@@ -34,31 +36,53 @@ function locText(entity: string | null, fragment: string | null): string {
   <div class="diag-panel">
     <div class="dp-head">
       <div class="dp-filters">
-        <button class="dp-filter" :class="{ 'is-active': filter === 'all' }" @click="filter = 'all'">
+        <button
+          class="dp-filter"
+          :class="{ 'is-active': filter === 'all' }"
+          @click="filter = 'all'"
+        >
           全部 <span class="num">{{ result?.diagnostics.length ?? 0 }}</span>
         </button>
-        <button class="dp-filter" :class="{ 'is-active': filter === 'error' }" @click="filter = 'error'">
+        <button
+          class="dp-filter"
+          :class="{ 'is-active': filter === 'error' }"
+          @click="filter = 'error'"
+        >
           错误 <span class="num">{{ store.errorCount }}</span>
         </button>
-        <button class="dp-filter" :class="{ 'is-active': filter === 'warning' }" @click="filter = 'warning'">
+        <button
+          class="dp-filter"
+          :class="{ 'is-active': filter === 'warning' }"
+          @click="filter = 'warning'"
+        >
           警告 <span class="num">{{ store.warningCount }}</span>
         </button>
       </div>
-      <button class="ink-btn ink-btn--sm" :disabled="store.loading" @click="store.runCompile()">
+      <button
+        class="ink-btn ink-btn--sm"
+        :disabled="store.loading"
+        @click="store.runCompile()"
+      >
         <i class="fa-solid fa-rotate" />
         重查
       </button>
     </div>
 
     <!-- 解析失败 -->
-    <div v-if="result && !result.ok" class="dp-fatal">
+    <div
+      v-if="result && !result.ok"
+      class="dp-fatal"
+    >
       <i class="fa-solid fa-circle-xmark" />
       <p>暂时无法完成检查，请检查最近修改的内容</p>
       <pre>{{ result.error }}</pre>
     </div>
 
     <!-- 通过 -->
-    <div v-else-if="visible.length === 0" class="dp-clean">
+    <div
+      v-else-if="visible.length === 0"
+      class="dp-clean"
+    >
       <i class="fa-solid fa-circle-check" />
       <p>很好，没有发现{{ filter === 'error' ? '错误' : filter === 'warning' ? '警告' : '问题' }}</p>
     </div>
@@ -72,15 +96,23 @@ function locText(entity: string | null, fragment: string | null): string {
     >
       <i :class="sevMeta[d.severity]?.icon ?? 'fa-solid fa-circle-info'" />
       <div class="di-main">
-        <div class="di-msg">{{ d.message }}</div>
-        <div v-if="locText(d.entity, d.fragment)" class="di-meta">
+        <div class="di-msg">
+          {{ d.message }}
+        </div>
+        <div
+          v-if="locText(d.entity, d.fragment)"
+          class="di-meta"
+        >
           <span>{{ locText(d.entity, d.fragment) }}</span>
         </div>
       </div>
     </div>
 
     <!-- 统计 -->
-    <div v-if="stats" class="dp-stats">
+    <div
+      v-if="stats"
+      class="dp-stats"
+    >
       <div class="stat">
         <span class="num">{{ stats.fragmentCount }}</span>
         <label>段落</label>

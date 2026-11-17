@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { useUiStore } from '@/stores/ui'
-import { useWorkspaceStore } from '@/stores/workspace'
-import { useAiCheck } from '@/composables/useAiCheck'
 import FragmentBlock from './FragmentBlock.vue'
 import SceneMetaPopover from './SceneMetaPopover.vue'
 import AiWriteDialog from './AiWriteDialog.vue'
 import AiCheckReportDialog from './AiCheckReportDialog.vue'
+import { useAiCheck } from '@/composables/useAiCheck'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { useUiStore } from '@/stores/ui'
 
 const store = useWorkspaceStore()
 const ui = useUiStore()
@@ -20,47 +19,48 @@ const metaOpen = ref(false)
 const { checking, run: runAiCheck, report: checkReport, openReport } = useAiCheck()
 
 function checkScene() {
-  if (!scene.value) return
-  const label = `${scene.value.chapterTitle} · ${scene.value.title || '未命名场景'}`
-  void runAiCheck('scene', scene.value.id, label)
+    if (!scene.value) return
+    const label = `${scene.value.chapterTitle} · ${scene.value.title || '未命名场景'}`
+    void runAiCheck('scene', scene.value.id, label)
 }
 
 const povName = computed(() =>
-  scene.value?.pov ? store.entityName(scene.value.pov) : '',
-)
+    scene.value?.pov ? store.entityName(scene.value.pov) : '')
 
 const paperScrollEl = useTemplateRef<HTMLElement>('paperScroll')
 
 // 切换场景（左树点击、妙笔跳转等）后纸面回到顶部，不沿用上一个场景的滚动位置；
 // 同一场景的数据重载（妙笔/逐章成书随写随现）则保住当前位置，不让纸面跳顶
 watch(
-  scene,
-  (next, prev) => {
-    if (!next || next.id !== prev?.id) {
-      void nextTick(() => {
-        if (paperScrollEl.value) paperScrollEl.value.scrollTop = 0
-      })
-      return
-    }
-    const el = paperScrollEl.value
-    if (!el) return
-    const top = el.scrollTop
-    // nextTick 修 Vue 渲染层的位移；双 rAF 再修一次——CodeMirror 在 rAF 测量阶段
-    // （整文档替换后的滚动稳定）可能晚一帧把纸面 scrollTop 改写掉
-    const restore = () => {
-      const cur = paperScrollEl.value
-      if (cur && Math.abs(cur.scrollTop - top) > 1) cur.scrollTop = top
-    }
-    void nextTick(restore)
-    requestAnimationFrame(() => requestAnimationFrame(restore))
-  },
+    scene,
+    (next, prev) => {
+        if (!next || next.id !== prev?.id) {
+            void nextTick(() => {
+                if (paperScrollEl.value) paperScrollEl.value.scrollTop = 0
+            })
+
+            return
+        }
+        const el = paperScrollEl.value
+        if (!el) return
+        const top = el.scrollTop
+
+        // nextTick 修 Vue 渲染层的位移；双 rAF 再修一次——CodeMirror 在 rAF 测量阶段
+        // （整文档替换后的滚动稳定）可能晚一帧把纸面 scrollTop 改写掉
+        const restore = () => {
+            const cur = paperScrollEl.value
+            if (cur && Math.abs(cur.scrollTop - top) > 1) cur.scrollTop = top
+        }
+        void nextTick(restore)
+        requestAnimationFrame(() => requestAnimationFrame(restore))
+    },
 )
 
 async function updateTitle(value: string) {
-  if (!scene.value) return
-  const next = value.trim()
-  if (next === (scene.value.title ?? '')) return
-  await store.updateScene(scene.value.id, { title: next })
+    if (!scene.value) return
+    const next = value.trim()
+    if (next === (scene.value.title ?? '')) return
+    await store.updateScene(scene.value.id, { title: next })
 }
 
 // ── 场景摘要（纸面行内编辑，失焦保存） ──────────────────────
@@ -69,17 +69,17 @@ const summaryDraft = ref('')
 const summaryEl = ref<HTMLTextAreaElement | null>(null)
 
 function startSummaryEdit() {
-  summaryDraft.value = scene.value?.summary ?? ''
-  summaryEditing.value = true
-  void nextTick(() => summaryEl.value?.focus())
+    summaryDraft.value = scene.value?.summary ?? ''
+    summaryEditing.value = true
+    void nextTick(() => summaryEl.value?.focus())
 }
 
 async function saveSummary() {
-  if (!summaryEditing.value || !scene.value) return
-  summaryEditing.value = false
-  const next = summaryDraft.value.trim()
-  if (next === (scene.value.summary ?? '')) return
-  await store.updateScene(scene.value.id, { summary: next || null })
+    if (!summaryEditing.value || !scene.value) return
+    summaryEditing.value = false
+    const next = summaryDraft.value.trim()
+    if (next === (scene.value.summary ?? '')) return
+    await store.updateScene(scene.value.id, { summary: next || null })
 }
 </script>
 
@@ -138,9 +138,17 @@ async function saveSummary() {
             <span class="ai-report-badge num">{{ checkReport.result.items.length }}</span>
           </button>
 
-          <ElPopover v-model:visible="metaOpen" placement="bottom-end" :width="380" trigger="click">
+          <ElPopover
+            v-model:visible="metaOpen"
+            placement="bottom-end"
+            :width="380"
+            trigger="click"
+          >
             <template #reference>
-              <button class="ink-btn ink-btn--sm" title="场景设定">
+              <button
+                class="ink-btn ink-btn--sm"
+                title="场景设定"
+              >
                 <i class="fa-solid fa-sliders" />
                 场景设定
               </button>
@@ -159,18 +167,26 @@ async function saveSummary() {
         </div>
       </div>
 
-      <div ref="paperScroll" class="paper-scroll">
+      <div
+        ref="paperScroll"
+        class="paper-scroll"
+      >
         <div class="paper">
           <header class="paper-head">
-            <div class="paper-chapter seal-font">{{ scene.chapterTitle }}</div>
+            <div class="paper-chapter seal-font">
+              {{ scene.chapterTitle }}
+            </div>
             <input
               class="scene-title-input"
               :value="scene.title ?? ''"
               placeholder="场景标题…"
               maxlength="80"
               @change="updateTitle(($event.target as HTMLInputElement).value)"
-            />
-            <div v-if="povName || scene.mood" class="paper-meta">
+            >
+            <div
+              v-if="povName || scene.mood"
+              class="paper-meta"
+            >
               <span v-if="povName">
                 <i class="fa-solid fa-eye" /> {{ povName }}
               </span>
@@ -180,7 +196,10 @@ async function saveSummary() {
             </div>
 
             <!-- 场景摘要：写完顺手补一句，AI 写续与全书回顾会用到 -->
-            <div v-if="summaryEditing" class="paper-summary-edit">
+            <div
+              v-if="summaryEditing"
+              class="paper-summary-edit"
+            >
               <textarea
                 ref="summaryEl"
                 v-model="summaryDraft"
@@ -210,26 +229,48 @@ async function saveSummary() {
               :index="i"
               :total="scene.fragments.length"
             />
-            <div v-if="scene.fragments.length === 0 && !store.aiWriting" class="paper-empty">
+            <div
+              v-if="scene.fragments.length === 0 && !store.aiWriting"
+              class="paper-empty"
+            >
               <i class="fa-solid fa-feather" />
               <p>场景还是一张白纸</p>
-              <button class="ink-btn ink-btn--sm ink-btn--primary" @click="store.insertFragment(null)">
+              <button
+                class="ink-btn ink-btn--sm ink-btn--primary"
+                @click="store.insertFragment(null)"
+              >
                 落笔
               </button>
             </div>
 
             <!-- AI 流式落墨 -->
-            <div v-if="store.aiWriting" class="ai-ghost">
+            <div
+              v-if="store.aiWriting"
+              class="ai-ghost"
+            >
               <div class="ghost-head">
                 <i class="fa-solid fa-feather-pointed" />
                 妙笔正在落墨…
-                <button class="ghost-stop" @click="store.aiAbandonWait()">停止等待</button>
+                <button
+                  class="ghost-stop"
+                  @click="store.aiAbandonWait()"
+                >
+                  停止等待
+                </button>
               </div>
-              <p class="ghost-text">{{ store.aiStreamText || '正在酝酿文字…' }}</p>
+              <p class="ghost-text">
+                {{ store.aiStreamText || '正在酝酿文字…' }}
+              </p>
             </div>
 
-            <div v-else-if="scene.fragments.length > 0" class="frag-insert-row">
-              <button class="frag-insert" @click="store.insertFragment(null)">
+            <div
+              v-else-if="scene.fragments.length > 0"
+              class="frag-insert-row"
+            >
+              <button
+                class="frag-insert"
+                @click="store.insertFragment(null)"
+              >
                 <i class="fa-solid fa-plus" />
                 新段落
               </button>
@@ -288,9 +329,16 @@ async function saveSummary() {
       <AiCheckReportDialog />
     </template>
 
-    <div v-else class="editor-blank">
-      <div class="blank-seal seal-font">墨</div>
-      <p class="text-ink-muted">从左侧选择一个场景开始写作</p>
+    <div
+      v-else
+      class="editor-blank"
+    >
+      <div class="blank-seal seal-font">
+        墨
+      </div>
+      <p class="text-ink-muted">
+        从左侧选择一个场景开始写作
+      </p>
     </div>
   </section>
 </template>

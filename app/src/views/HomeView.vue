@@ -6,7 +6,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { ElMessage } from 'element-plus'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useUiStore } from '@/stores/ui'
-import { api, type ProjectPeekDto } from '@/api/backend'
+import { type ProjectPeekDto, api } from '@/api/backend'
 import ContinueCard from '@/components/start/ContinueCard.vue'
 import NewProjectDialog from '@/components/start/NewProjectDialog.vue'
 import appIcon from '@/assets/app-icon.png'
@@ -19,6 +19,7 @@ const ui = useUiStore()
 /** root → 轻量概览（null = 目录不可用；不在 map = 尚未加载） */
 const peeks = ref<Record<string, ProjectPeekDto | null>>({})
 const showNew = ref(false)
+
 /** 拖着单个文件夹悬停时显示落点提示 */
 const dragOver = ref(false)
 let unlistenDrop: (() => void) | null = null
@@ -26,98 +27,109 @@ let unlistenDrop: (() => void) | null = null
 const projects = computed(() => ui.recentProjects)
 const primary = computed(() => projects.value[0] ?? null)
 const primaryPeek = computed(() =>
-  primary.value ? peeks.value[primary.value.root] : undefined,
-)
+    primary.value ? peeks.value[primary.value.root] : undefined)
+
 /** 首页只挂最近 4 条，全量管理在「作品」页 */
 const recentList = computed(() => projects.value.slice(0, 4))
 
 // 今日字数跨项目求和；每日目标/连续天数语义属于单项目，取主项目
 const todaySum = computed(() => {
-  let manual = 0
-  let ai = 0
-  for (const p of Object.values(peeks.value)) {
-    if (!p) continue
-    manual += p.today.manual
-    ai += p.today.ai
-  }
-  return { manual, ai }
+    let manual = 0
+    let ai = 0
+    for (const p of Object.values(peeks.value)) {
+        if (!p) continue
+        manual += p.today.manual
+        ai += p.today.ai
+    }
+
+    return { manual, ai }
 })
 const todayGoal = computed(() => primaryPeek.value?.dailyGoal ?? 0)
 const streakDays = computed(() => primaryPeek.value?.streakDays ?? 0)
 const todayPct = computed(() => {
-  const total = todaySum.value.manual + todaySum.value.ai
-  return todayGoal.value ? Math.min(100, Math.round((total / todayGoal.value) * 100)) : 0
+    const total = todaySum.value.manual + todaySum.value.ai
+
+    return todayGoal.value ? Math.min(100, Math.round(total / todayGoal.value * 100)) : 0
 })
 
 const greeting = computed(() => {
-  const h = new Date().getHours()
-  if (h < 5) return '夜深了'
-  if (h < 11) return '早上好'
-  if (h < 14) return '中午好'
-  if (h < 18) return '下午好'
-  return '晚上好'
+    const h = new Date().getHours()
+    if (h < 5) return '夜深了'
+    if (h < 11) return '早上好'
+    if (h < 14) return '中午好'
+    if (h < 18) return '下午好'
+
+    return '晚上好'
 })
 
 const dateLine = computed(() => {
-  const d = new Date()
-  const wd = '日一二三四五六'[d.getDay()]
-  return `${d.getMonth() + 1}月${d.getDate()}日 · 星期${wd}`
+    const d = new Date()
+    const wd = '日一二三四五六'[d.getDay()]
+
+    return `${d.getMonth() + 1}月${d.getDate()}日 · 星期${wd}`
 })
 
 async function loadPeeks() {
-  const roots = ui.recentProjects.map((p) => p.root)
-  if (!roots.length) return
-  try {
-    const entries = await api.peekProjects(roots)
-    const map: Record<string, ProjectPeekDto | null> = {}
-    for (const en of entries) map[en.root] = en.peek
-    peeks.value = map
-  } catch {
+    const roots = ui.recentProjects.map(p => p.root)
+    if (!roots.length) return
+    try {
+        const entries = await api.peekProjects(roots)
+        const map: Record<string, ProjectPeekDto | null> = {}
+        for (const en of entries) map[en.root] = en.peek
+        peeks.value = map
+    }
+    catch {
+
     // 概览拉不到不弹错误打扰，卡片回退骨架/灰化态
-  }
+    }
 }
 
-onMounted(async () => {
-  loadPeeks()
-  // 整窗拖放打开作品（Tauri 原生事件，仅文件/文件夹拖放触发）：
-  // 换机器 / 重装后没有最近列表，把作品文件夹拖进来即可继续写
-  unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
-    const p = event.payload
-    if (p.type === 'enter') {
-      dragOver.value = p.paths.length === 1
-    } else if (p.type === 'over') {
-      // over 载荷不带 paths；enter 必先于 over，保持 enter 时算好的状态
-    } else if (p.type === 'leave') {
-      dragOver.value = false
-    } else if (p.type === 'drop') {
-      dragOver.value = false
-      if (store.loading) return
-      if (p.paths.length === 1) void openProject(p.paths[0])
-      else if (p.paths.length > 1) ElMessage.warning('一次只能打开一个作品文件夹')
-    }
-  })
+onMounted(async() => {
+    loadPeeks()
+
+    // 整窗拖放打开作品（Tauri 原生事件，仅文件/文件夹拖放触发）：
+    // 换机器 / 重装后没有最近列表，把作品文件夹拖进来即可继续写
+    unlistenDrop = await getCurrentWebview().onDragDropEvent(event => {
+        const p = event.payload
+        if (p.type === 'enter') {
+            dragOver.value = p.paths.length === 1
+        }
+        else if (p.type === 'over') {
+
+            // over 载荷不带 paths；enter 必先于 over，保持 enter 时算好的状态
+        }
+        else if (p.type === 'leave') {
+            dragOver.value = false
+        }
+        else if (p.type === 'drop') {
+            dragOver.value = false
+            if (store.loading) return
+            if (p.paths.length === 1) void openProject(p.paths[0])
+            else if (p.paths.length > 1) ElMessage.warning('一次只能打开一个作品文件夹')
+        }
+    })
 })
 
 onUnmounted(() => unlistenDrop?.())
 
 async function openProject(root: string) {
-  if (await store.openRoot(root)) router.push('/workbench')
+    if (await store.openRoot(root)) router.push('/workbench')
 }
 
 /** 选一个已有作品文件夹打开（project.toml 所在目录） */
 async function pickAndOpen() {
-  const dir = await openDialog({
-    directory: true,
-    title: '选择 StoryStudio 作品文件夹（含 project.toml）',
-  })
-  if (typeof dir === 'string') openProject(dir)
+    const dir = await openDialog({
+        directory: true,
+        title:     '选择 StoryStudio 作品文件夹（含 project.toml）',
+    })
+    if (typeof dir === 'string') openProject(dir)
 }
 
 async function openBookPanel(root: string) {
-  if (await store.openRoot(root)) {
-    ui.activePanel = 'book'
-    router.push('/workbench')
-  }
+    if (await store.openRoot(root)) {
+        ui.activePanel = 'book'
+        router.push('/workbench')
+    }
 }
 </script>
 
@@ -126,43 +138,78 @@ async function openBookPanel(root: string) {
     <div class="paper-texture" />
 
     <!-- 空态：第一次进来 -->
-    <div v-if="!projects.length" class="home-content home-welcome">
+    <div
+      v-if="!projects.length"
+      class="home-content home-welcome"
+    >
       <div class="welcome-hero">
-        <img class="hero-seal" :src="appIcon" alt="StoryStudio" />
-        <h1 class="hero-title">StoryStudio</h1>
-        <p class="hero-sub">设定为骨 · 伏笔为脉 · 一气呵成</p>
+        <img
+          class="hero-seal"
+          :src="appIcon"
+          alt="StoryStudio"
+        >
+        <h1 class="hero-title">
+          StoryStudio
+        </h1>
+        <p class="hero-sub">
+          设定为骨 · 伏笔为脉 · 一气呵成
+        </p>
       </div>
       <div class="welcome-actions">
-        <button class="ink-btn ink-btn--primary ink-btn--lg" @click="showNew = true">
+        <button
+          class="ink-btn ink-btn--primary ink-btn--lg"
+          @click="showNew = true"
+        >
           <i class="fa-solid fa-feather-pointed" />
           新建作品
         </button>
-        <button class="ink-btn ink-btn--lg" @click="pickAndOpen">
+        <button
+          class="ink-btn ink-btn--lg"
+          @click="pickAndOpen"
+        >
           <i class="fa-regular fa-folder-open" />
           打开已有作品
         </button>
-        <button class="ink-btn ink-btn--lg" @click="router.push('/create')">
+        <button
+          class="ink-btn ink-btn--lg"
+          @click="router.push('/create')"
+        >
           <i class="fa-solid fa-wand-magic-sparkles" />
           AI 开书
         </button>
       </div>
-      <p class="welcome-hint">把作品文件夹直接拖进窗口，也能打开</p>
-      <p class="home-foot text-ink-muted">作品以纯文本形式保存在你选择的文件夹里，随时可备份、可迁移</p>
+      <p class="welcome-hint">
+        把作品文件夹直接拖进窗口，也能打开
+      </p>
+      <p class="home-foot text-ink-muted">
+        作品以纯文本形式保存在你选择的文件夹里，随时可备份、可迁移
+      </p>
     </div>
 
     <!-- 仪表盘 -->
-    <div v-else class="home-content">
+    <div
+      v-else
+      class="home-content"
+    >
       <div class="home-head">
         <div>
-          <h2 class="home-greeting">{{ greeting }}</h2>
+          <h2 class="home-greeting">
+            {{ greeting }}
+          </h2>
           <span class="home-date num">{{ dateLine }}</span>
         </div>
         <div class="head-actions">
-          <button class="ink-btn" @click="showNew = true">
+          <button
+            class="ink-btn"
+            @click="showNew = true"
+          >
             <i class="fa-solid fa-plus" />
             新建作品
           </button>
-          <button class="ink-btn" @click="router.push('/create')">
+          <button
+            class="ink-btn"
+            @click="router.push('/create')"
+          >
             <i class="fa-solid fa-wand-magic-sparkles" />
             AI 建书
           </button>
@@ -184,17 +231,29 @@ async function openBookPanel(root: string) {
         <div class="today-stat">
           <span class="ts-value num">{{ formatWordCount(todaySum.manual + todaySum.ai) }}</span>
           <span class="ts-label">今日字数</span>
-          <span v-if="todaySum.ai > 0" class="ts-detail num">
+          <span
+            v-if="todaySum.ai > 0"
+            class="ts-detail num"
+          >
             手写 {{ formatWordCount(todaySum.manual) }} · AI {{ formatWordCount(todaySum.ai) }}
           </span>
         </div>
-        <div v-if="todayGoal > 0" class="today-stat">
-          <span class="ts-value num" :class="{ 'ts-done': todayPct >= 100 }">{{ todayPct }}%</span>
+        <div
+          v-if="todayGoal > 0"
+          class="today-stat"
+        >
+          <span
+            class="ts-value num"
+            :class="{ 'ts-done': todayPct >= 100 }"
+          >{{ todayPct }}%</span>
           <span class="ts-label">每日目标</span>
           <span class="ts-detail num">{{ formatWordCount(todayGoal) }} 字</span>
         </div>
         <div class="today-stat">
-          <span class="ts-value num" :class="{ 'ts-hot': streakDays > 0 }">{{ streakDays }}</span>
+          <span
+            class="ts-value num"
+            :class="{ 'ts-hot': streakDays > 0 }"
+          >{{ streakDays }}</span>
           <span class="ts-label">连续天数</span>
         </div>
       </div>
@@ -202,7 +261,10 @@ async function openBookPanel(root: string) {
       <!-- 最近作品：行式列表，全量在「作品」页 -->
       <div class="recent-head">
         <span class="recent-title">最近作品</span>
-        <button class="recent-more" @click="router.push('/works')">
+        <button
+          class="recent-more"
+          @click="router.push('/works')"
+        >
           全部作品
           <i class="fa-solid fa-angle-right" />
         </button>
@@ -218,11 +280,20 @@ async function openBookPanel(root: string) {
         >
           <i class="fa-solid fa-book" />
           <span class="rr-name">{{ p.name }}</span>
-          <span v-if="peeks[p.root]" class="rr-words num">
+          <span
+            v-if="peeks[p.root]"
+            class="rr-words num"
+          >
             {{ formatWordCount(peeks[p.root]!.wordCount) }} 字 · {{ peeks[p.root]!.chapterCount }} 章
           </span>
-          <span v-else-if="peeks[p.root] === null" class="rr-miss">目录已不存在</span>
-          <span v-else class="rr-words sk-inline" />
+          <span
+            v-else-if="peeks[p.root] === null"
+            class="rr-miss"
+          >目录已不存在</span>
+          <span
+            v-else
+            class="rr-words sk-inline"
+          />
           <span class="rr-time">{{ formatRelativeTime(p.openedAt) }}</span>
         </div>
       </div>
@@ -232,11 +303,17 @@ async function openBookPanel(root: string) {
       </p>
     </div>
 
-    <NewProjectDialog v-model="showNew" @created="openProject" />
+    <NewProjectDialog
+      v-model="showNew"
+      @created="openProject"
+    />
 
     <!-- 拖放落点提示：盖住全窗口，不拦截事件（落点仍由 webview 原生分发） -->
     <Transition name="drop-fade">
-      <div v-if="dragOver" class="drop-overlay">
+      <div
+        v-if="dragOver"
+        class="drop-overlay"
+      >
         <div class="drop-card">
           <i class="fa-regular fa-folder-open" />
           <span>松开 · 打开这个作品</span>

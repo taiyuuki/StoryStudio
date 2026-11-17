@@ -10,39 +10,39 @@ const props = defineProps<{ modelValue: BookMetaDto }>()
 const emit = defineEmits<{ 'update:modelValue': [meta: BookMetaDto] }>()
 
 // 「自动」是建书向导专用（交给 AI 判断），表单里不出现
-const genreChips = GENRES.filter((g) => g.name !== '自动')
+const genreChips = GENRES.filter(g => g.name !== '自动')
 const customGenre = ref('')
 
 function set<K extends keyof BookMetaDto>(key: K, value: BookMetaDto[K]) {
-  emit('update:modelValue', { ...props.modelValue, [key]: value })
+    emit('update:modelValue', { ...props.modelValue, [key]: value })
 }
 
 function genreActive(name: string) {
-  return !customGenre.value.trim() && props.modelValue.genre === name
+    return !customGenre.value.trim() && props.modelValue.genre === name
 }
 
 function pickGenre(name: string) {
-  customGenre.value = ''
-  set('genre', props.modelValue.genre === name ? null : name)
+    customGenre.value = ''
+    set('genre', props.modelValue.genre === name ? null : name)
 }
 
 function onCustomGenre(v: string) {
-  customGenre.value = v
-  set('genre', v.trim() || null)
+    customGenre.value = v
+    set('genre', v.trim() || null)
 }
 
 const scaleValue = computed({
-  get: () => (props.modelValue.targetWords == null ? '' : String(props.modelValue.targetWords)),
-  set: (v: string) => set('targetWords', v === '' ? null : Number(v)),
+    get: () => props.modelValue.targetWords == null ? '' : String(props.modelValue.targetWords),
+    set: (v: string) => set('targetWords', v === '' ? null : Number(v)),
 })
 
 const wordsValue = computed({
-  get: () => (props.modelValue.chapterWords == null ? '' : String(props.modelValue.chapterWords)),
-  set: (v: string) => set('chapterWords', v === '' ? null : Number(v)),
+    get: () => props.modelValue.chapterWords == null ? '' : String(props.modelValue.chapterWords),
+    set: (v: string) => set('chapterWords', v === '' ? null : Number(v)),
 })
 
 const scaleOptions = SCALES.map(([label, n]) => [String(n), label] as const)
-const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
+const wordOptions = WORD_OPTIONS.map(n => [String(n), n] as const)
 </script>
 
 <template>
@@ -58,7 +58,10 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
           :class="{ 'is-active': genreActive(g.name) }"
           @click="pickGenre(g.name)"
         >
-          <i class="fa-solid" :class="g.icon" />
+          <i
+            class="fa-solid"
+            :class="g.icon"
+          />
           {{ g.name }}
         </button>
       </div>
@@ -67,7 +70,7 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
         :value="customGenre"
         placeholder="或自定义题材（填入后优先生效）"
         @input="onCustomGenre(($event.target as HTMLInputElement).value)"
-      />
+      >
     </div>
 
     <div class="bm-field">
@@ -76,7 +79,7 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
         :value="modelValue.tagline ?? ''"
         placeholder="如：守灯人只剩最后一个徒弟（可选）"
         @input="set('tagline', ($event.target as HTMLInputElement).value || null)"
-      />
+      >
     </div>
 
     <div class="bm-field">
@@ -95,7 +98,7 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
         :value="modelValue.theme ?? ''"
         placeholder="如：执念与传承（可选）"
         @input="set('theme', ($event.target as HTMLInputElement).value || null)"
-      />
+      >
     </div>
 
     <div class="bm-field">
@@ -115,8 +118,16 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
           :value="modelValue.audience ?? ''"
           @change="set('audience', ($event.target as HTMLSelectElement).value || null)"
         >
-          <option value="">未设置</option>
-          <option v-for="a in AUDIENCES" :key="a" :value="a">{{ a }}</option>
+          <option value="">
+            未设置
+          </option>
+          <option
+            v-for="a in AUDIENCES"
+            :key="a"
+            :value="a"
+          >
+            {{ a }}
+          </option>
         </select>
       </div>
       <div class="bm-field">
@@ -125,8 +136,16 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
           :value="modelValue.pov ?? ''"
           @change="set('pov', ($event.target as HTMLSelectElement).value || null)"
         >
-          <option value="">未设置</option>
-          <option v-for="p in POVS" :key="p" :value="p">{{ p }}</option>
+          <option value="">
+            未设置
+          </option>
+          <option
+            v-for="p in POVS"
+            :key="p"
+            :value="p"
+          >
+            {{ p }}
+          </option>
         </select>
       </div>
       <div class="bm-field">
@@ -135,8 +154,16 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
           :value="modelValue.style ?? ''"
           @change="set('style', ($event.target as HTMLSelectElement).value || null)"
         >
-          <option value="">未设置</option>
-          <option v-for="s in STYLES" :key="s" :value="s">{{ s }}</option>
+          <option value="">
+            未设置
+          </option>
+          <option
+            v-for="s in STYLES"
+            :key="s"
+            :value="s"
+          >
+            {{ s }}
+          </option>
         </select>
       </div>
     </div>
@@ -145,15 +172,31 @@ const wordOptions = WORD_OPTIONS.map((n) => [String(n), n] as const)
       <div class="bm-field">
         <label>体量（目标字数）</label>
         <select v-model="scaleValue">
-          <option value="">未设置</option>
-          <option v-for="[v, l] in scaleOptions" :key="v" :value="v">{{ l }}</option>
+          <option value="">
+            未设置
+          </option>
+          <option
+            v-for="[v, l] in scaleOptions"
+            :key="v"
+            :value="v"
+          >
+            {{ l }}
+          </option>
         </select>
       </div>
       <div class="bm-field">
         <label>单章字数</label>
         <select v-model="wordsValue">
-          <option value="">未设置</option>
-          <option v-for="[v, n] in wordOptions" :key="v" :value="v">{{ n }} 字</option>
+          <option value="">
+            未设置
+          </option>
+          <option
+            v-for="[v, n] in wordOptions"
+            :key="v"
+            :value="v"
+          >
+            {{ n }} 字
+          </option>
         </select>
       </div>
     </div>

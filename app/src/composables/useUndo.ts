@@ -9,10 +9,11 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 export interface UndoEntry {
-  /** 递增序号，组件用它做 v-for/动画的 key（同类删除连发也要重新计时） */
-  id: number
-  label: string
-  restore: () => Promise<void>
+
+    /** 递增序号，组件用它做 v-for/动画的 key（同类删除连发也要重新计时） */
+    id:      number
+    label:   string
+    restore: () => Promise<void>
 }
 
 /** 撤销条存活时长（毫秒） */
@@ -24,45 +25,47 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let seq = 0
 
 function clearTimer() {
-  if (timer !== null) {
-    clearTimeout(timer)
-    timer = null
-  }
+    if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+    }
 }
 
 /** 提供一次撤销机会；新条目覆盖旧条目并重置倒计时 */
 function offerUndo(label: string, restore: () => Promise<void>) {
-  clearTimer()
-  current.value = { id: ++seq, label, restore }
-  timer = setTimeout(() => {
-    current.value = null
-    timer = null
-  }, UNDO_TTL_MS)
+    clearTimer()
+    current.value = { id: ++seq, label, restore }
+    timer = setTimeout(() => {
+        current.value = null
+        timer = null
+    }, UNDO_TTL_MS)
 }
 
 /** 关闭浮条（放弃本次撤销） */
 function dismissUndo() {
-  clearTimer()
-  current.value = null
+    clearTimer()
+    current.value = null
 }
 
 /** 执行撤销；执行期间禁点防连击，无论成败都收起浮条（失败如实报错） */
 async function runUndo() {
-  const entry = current.value
-  if (!entry || restoring.value) return
-  restoring.value = true
-  try {
-    await entry.restore()
-    dismissUndo()
-    ElMessage.success('已撤销删除')
-  } catch (err) {
-    dismissUndo()
-    ElMessage.error(`撤销失败：${err instanceof Error ? err.message : String(err)}`)
-  } finally {
-    restoring.value = false
-  }
+    const entry = current.value
+    if (!entry || restoring.value) return
+    restoring.value = true
+    try {
+        await entry.restore()
+        dismissUndo()
+        ElMessage.success('已撤销删除')
+    }
+    catch(err) {
+        dismissUndo()
+        ElMessage.error(`撤销失败：${err instanceof Error ? err.message : String(err)}`)
+    }
+    finally {
+        restoring.value = false
+    }
 }
 
 export function useUndo() {
-  return { current, restoring, offerUndo, dismissUndo, runUndo }
+    return { current, restoring, offerUndo, dismissUndo, runUndo }
 }

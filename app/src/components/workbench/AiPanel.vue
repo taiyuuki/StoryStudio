@@ -23,37 +23,41 @@ const historyOpen = ref(false)
 const listRef = useTemplateRef<HTMLElement>('list')
 
 async function scrollToBottom() {
-  await nextTick()
-  const el = listRef.value
-  if (el) el.scrollTop = el.scrollHeight
+    await nextTick()
+    const el = listRef.value
+    if (el) el.scrollTop = el.scrollHeight
 }
 
 // 流式内容增长（含面板停用期间积累的）自动贴底
 watch(
-  () => items.value[items.value.length - 1]?.text,
-  () => void scrollToBottom(),
+    () => items.value[items.value.length - 1]?.text,
+    () => void scrollToBottom(),
 )
 
 // ── @ 引用（章节 / 场景 / 片段） ──────────────────────────
 
 interface MentionItem {
-  kind: 'chapter' | 'scene' | 'fragment'
-  id: string
-  /** 菜单展示 */
-  label: string
-  /** 分组标签 */
-  group: string
-  /** 插入输入框的引用串（带 ID，妙笔可用工具直接定位正文） */
-  token: string
-  /** scene 项可钻取其片段 */
-  sceneId?: string
-  sceneTitle?: string
+    kind: 'chapter' | 'fragment' | 'scene'
+    id:   string
+
+    /** 菜单展示 */
+    label: string
+
+    /** 分组标签 */
+    group: string
+
+    /** 插入输入框的引用串（带 ID，妙笔可用工具直接定位正文） */
+    token: string
+
+    /** scene 项可钻取其片段 */
+    sceneId?:    string
+    sceneTitle?: string
 }
 
 const MENTION_KIND_ICON: Record<MentionItem['kind'], string> = {
-  chapter: 'fa-solid fa-book',
-  scene: 'fa-solid fa-clapperboard',
-  fragment: 'fa-solid fa-paragraph',
+    chapter:  'fa-solid fa-book',
+    scene:    'fa-solid fa-clapperboard',
+    fragment: 'fa-solid fa-paragraph',
 }
 
 const mentionOpen = ref(false)
@@ -68,327 +72,353 @@ const drillLoading = ref(false)
 const fragmentCache = new Map<string, { id: string; text: string }[]>()
 
 function fragmentHead(text: string): string {
-  return text.trim().slice(0, 16) || '（空段落）'
+    return text.trim().slice(0, 16) || '（空段落）'
 }
 
 const mentionItems = computed<MentionItem[]>(() => {
-  const q = mentionQuery.value.trim().toLowerCase()
-  const hit = (s: string) => !q || s.toLowerCase().includes(q)
-  const items: MentionItem[] = []
+    const q = mentionQuery.value.trim().toLowerCase()
+    const hit = (s: string) => !q || s.toLowerCase().includes(q)
+    const items: MentionItem[] = []
 
-  const cur = store.scene
-  if (cur) {
-    items.push(
-      {
-        kind: 'chapter',
-        id: cur.chapterId,
-        label: `本章 · ${cur.chapterTitle}`,
-        group: '当前',
-        token: `@本章「${cur.chapterTitle}」(${cur.chapterId})`,
-      },
-      {
-        kind: 'scene',
-        id: cur.id,
-        label: `本场景 · ${cur.title || '未命名'}`,
-        group: '当前',
-        token: `@本场景「${cur.title || '未命名'}」(${cur.id})`,
-      },
-    )
-    cur.fragments.forEach((f, i) => {
-      items.push({
-        kind: 'fragment',
-        id: f.id,
-        label: `片段 ${i + 1} · ${fragmentHead(f.text)}`,
-        group: '当前',
-        token: `@片段${f.id}`,
-      })
-    })
-  }
-
-  for (const [ci, ch] of (store.ws?.chapters ?? []).entries()) {
-    const chapterNo = ci + 1
-    if (hit(`第${chapterNo}章 ${ch.title} ${ch.id}`)) {
-      items.push({
-        kind: 'chapter',
-        id: ch.id,
-        label: `第 ${chapterNo} 章 · ${ch.title}`,
-        group: '全书章节',
-        token: `@第${chapterNo}章《${ch.title}》(${ch.id})`,
-      })
-    }
-    for (const sc of ch.scenes) {
-      if (hit(`${ch.title} ${sc.title ?? ''} ${sc.id}`)) {
-        items.push({
-          kind: 'scene',
-          id: sc.id,
-          label: `${ch.title} · ${sc.title || '未命名'}`,
-          group: '全书场景',
-          token: `@场景「${sc.title || '未命名'}」(${sc.id})`,
-          sceneId: sc.id,
-          sceneTitle: sc.title || '未命名',
+    const cur = store.scene
+    if (cur) {
+        items.push(
+            {
+                kind:  'chapter',
+                id:    cur.chapterId,
+                label: `本章 · ${cur.chapterTitle}`,
+                group: '当前',
+                token: `@本章「${cur.chapterTitle}」(${cur.chapterId})`,
+            },
+            {
+                kind:  'scene',
+                id:    cur.id,
+                label: `本场景 · ${cur.title || '未命名'}`,
+                group: '当前',
+                token: `@本场景「${cur.title || '未命名'}」(${cur.id})`,
+            },
+        )
+        cur.fragments.forEach((f, i) => {
+            items.push({
+                kind:  'fragment',
+                id:    f.id,
+                label: `片段 ${i + 1} · ${fragmentHead(f.text)}`,
+                group: '当前',
+                token: `@片段${f.id}`,
+            })
         })
-      }
     }
-  }
 
-  return items
+    for (const [ci, ch] of (store.ws?.chapters ?? []).entries()) {
+        const chapterNo = ci + 1
+        if (hit(`第${chapterNo}章 ${ch.title} ${ch.id}`)) {
+            items.push({
+                kind:  'chapter',
+                id:    ch.id,
+                label: `第 ${chapterNo} 章 · ${ch.title}`,
+                group: '全书章节',
+                token: `@第${chapterNo}章《${ch.title}》(${ch.id})`,
+            })
+        }
+        for (const sc of ch.scenes) {
+            if (hit(`${ch.title} ${sc.title ?? ''} ${sc.id}`)) {
+                items.push({
+                    kind:       'scene',
+                    id:         sc.id,
+                    label:      `${ch.title} · ${sc.title || '未命名'}`,
+                    group:      '全书场景',
+                    token:      `@场景「${sc.title || '未命名'}」(${sc.id})`,
+                    sceneId:    sc.id,
+                    sceneTitle: sc.title || '未命名',
+                })
+            }
+        }
+    }
+
+    return items
 })
 
 /** 钻取页的片段列表（沿用当前过滤词） */
 const drillItems = computed<MentionItem[]>(() => {
-  const q = mentionQuery.value.trim().toLowerCase()
-  return (drillFragments.value ?? [])
-    .map((f, i) => ({
-      kind: 'fragment' as const,
-      id: f.id,
-      label: `片段 ${i + 1} · ${fragmentHead(f.text)}`,
-      group: drillScene.value?.title ?? '',
-      token: `@片段${f.id}`,
-    }))
-    .filter((it) => !q || it.label.toLowerCase().includes(q) || it.id.toLowerCase().includes(q))
+    const q = mentionQuery.value.trim().toLowerCase()
+
+    return (drillFragments.value ?? [])
+        .map((f, i) => ({
+            kind:  'fragment' as const,
+            id:    f.id,
+            label: `片段 ${i + 1} · ${fragmentHead(f.text)}`,
+            group: drillScene.value?.title ?? '',
+            token: `@片段${f.id}`,
+        }))
+        .filter(it => !q || it.label.toLowerCase().includes(q) || it.id.toLowerCase().includes(q))
 })
 
-const visibleItems = computed(() => (drillScene.value ? drillItems.value : mentionItems.value))
+const visibleItems = computed(() => drillScene.value ? drillItems.value : mentionItems.value)
 
 watch(visibleItems, () => {
-  mentionIndex.value = 0
+    mentionIndex.value = 0
 })
 
 /** 输入变化时检测光标前是否有未闭合的 @（compositionend 也会走这里，IME 安全） */
 function detectMention() {
-  const el = inputEl.value
-  if (!el) return
-  const caret = el.selectionStart ?? 0
-  const before = miao.input.slice(0, caret)
-  const at = before.lastIndexOf('@')
-  if (at < 0) {
-    closeMention()
-    return
-  }
-  const query = before.slice(at + 1)
-  // 换行 / 过长视为已脱离引用上下文
-  if (/[\n\r]/.test(query) || [...query].length > 20) {
-    closeMention()
-    return
-  }
-  mentionQuery.value = query
-  if (!mentionOpen.value) {
-    mentionOpen.value = true
-    mentionIndex.value = 0
-  }
+    const el = inputEl.value
+    if (!el) return
+    const caret = el.selectionStart ?? 0
+    const before = miao.input.slice(0, caret)
+    const at = before.lastIndexOf('@')
+    if (at < 0) {
+        closeMention()
+
+        return
+    }
+    const query = before.slice(at + 1)
+
+    // 换行 / 过长视为已脱离引用上下文
+    if (/[\n\r]/.test(query) || [...query].length > 20) {
+        closeMention()
+
+        return
+    }
+    mentionQuery.value = query
+    if (!mentionOpen.value) {
+        mentionOpen.value = true
+        mentionIndex.value = 0
+    }
 }
 
 function closeMention() {
-  mentionOpen.value = false
-  drillScene.value = null
-  drillFragments.value = null
-  mentionQuery.value = ''
+    mentionOpen.value = false
+    drillScene.value = null
+    drillFragments.value = null
+    mentionQuery.value = ''
 }
 
 function insertMention(item: MentionItem) {
-  const el = inputEl.value
-  const token = `${item.token} `
-  if (!el) {
-    miao.input += token
+    const el = inputEl.value
+    const token = `${item.token} `
+    if (!el) {
+        miao.input += token
+        closeMention()
+
+        return
+    }
+    const caret = el.selectionStart ?? miao.input.length
+    const before = miao.input.slice(0, caret)
+    const at = before.lastIndexOf('@')
+    if (at >= 0) {
+        miao.input = before.slice(0, at) + token + miao.input.slice(caret)
+        void nextTick(() => {
+            el.focus()
+            const p = at + token.length
+            el.setSelectionRange(p, p)
+        })
+    }
+    else {
+        miao.input += token
+    }
     closeMention()
-    return
-  }
-  const caret = el.selectionStart ?? miao.input.length
-  const before = miao.input.slice(0, caret)
-  const at = before.lastIndexOf('@')
-  if (at >= 0) {
-    miao.input = before.slice(0, at) + token + miao.input.slice(caret)
-    void nextTick(() => {
-      el.focus()
-      const p = at + token.length
-      el.setSelectionRange(p, p)
-    })
-  } else {
-    miao.input += token
-  }
-  closeMention()
 }
 
 async function drillIntoFragments(sceneId: string, title: string) {
-  drillScene.value = { id: sceneId, title }
-  drillLoading.value = true
-  try {
-    let frags = fragmentCache.get(sceneId)
-    if (!frags) {
-      const detail = await api.getScene(store.root, sceneId)
-      frags = detail.fragments.map((f) => ({ id: f.id, text: f.text }))
-      fragmentCache.set(sceneId, frags)
+    drillScene.value = { id: sceneId, title }
+    drillLoading.value = true
+    try {
+        let frags = fragmentCache.get(sceneId)
+        if (!frags) {
+            const detail = await api.getScene(store.root, sceneId)
+            frags = detail.fragments.map(f => ({ id: f.id, text: f.text }))
+            fragmentCache.set(sceneId, frags)
+        }
+        drillFragments.value = frags
+        mentionIndex.value = 0
     }
-    drillFragments.value = frags
-    mentionIndex.value = 0
-  } catch (err) {
-    drillScene.value = null
-    ElMessage.error(`读取场景片段失败：${(err as Error).message}`)
-  } finally {
-    drillLoading.value = false
-  }
+    catch(err) {
+        drillScene.value = null
+        ElMessage.error(`读取场景片段失败：${(err as Error).message}`)
+    }
+    finally {
+        drillLoading.value = false
+    }
 }
 
 /** 键盘调度：引用菜单开着时接管 ↑↓ / Enter / Tab / Esc；否则 Enter 发送 */
 function onKeydown(e: KeyboardEvent) {
-  if (mentionOpen.value) {
-    const count = visibleItems.value.length
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (count) mentionIndex.value = (mentionIndex.value + 1) % count
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (count) mentionIndex.value = (mentionIndex.value - 1 + count) % count
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
-      const item = visibleItems.value[Math.min(mentionIndex.value, Math.max(count - 1, 0))]
-      if (item) {
-        e.preventDefault()
-        if (e.key === 'Tab' && item.kind === 'scene' && item.sceneId) {
-          void drillIntoFragments(item.sceneId, item.sceneTitle ?? '')
-        } else {
-          insertMention(item)
+    if (mentionOpen.value) {
+        const count = visibleItems.value.length
+        if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            if (count) mentionIndex.value = (mentionIndex.value + 1) % count
         }
-      }
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      if (drillScene.value) {
-        drillScene.value = null
-        drillFragments.value = null
-        mentionIndex.value = 0
-      } else {
-        closeMention()
-      }
+        else if (e.key === 'ArrowUp') {
+            e.preventDefault()
+            if (count) mentionIndex.value = (mentionIndex.value - 1 + count) % count
+        }
+        else if (e.key === 'Enter' || e.key === 'Tab') {
+            const item = visibleItems.value[Math.min(mentionIndex.value, Math.max(count - 1, 0))]
+            if (item) {
+                e.preventDefault()
+                if (e.key === 'Tab' && item.kind === 'scene' && item.sceneId) {
+                    void drillIntoFragments(item.sceneId, item.sceneTitle ?? '')
+                }
+                else {
+                    insertMention(item)
+                }
+            }
+        }
+        else if (e.key === 'Escape') {
+            e.preventDefault()
+            if (drillScene.value) {
+                drillScene.value = null
+                drillFragments.value = null
+                mentionIndex.value = 0
+            }
+            else {
+                closeMention()
+            }
+        }
+
+        return
     }
-    return
-  }
-  // isComposing：中文输入法组词中的 Enter 不发送
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-    e.preventDefault()
-    void send()
-  }
+
+    // isComposing：中文输入法组词中的 Enter 不发送
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault()
+        void send()
+    }
 }
 
 // 发送清空输入后引用菜单一并关闭
 watch(
-  () => miao.input,
-  (v) => {
-    if (!v) closeMention()
-  },
+    () => miao.input,
+    v => {
+        if (!v) closeMention()
+    },
 )
 
 // ── 工具名 → 用户可读标签（与 tools/agent.rs 注册的工具一一对应） ──
 const toolLabels: Record<string, string> = {
-  // 实体 / 设定
-  create_entity: '创建实体',
-  create_location: '创建地点',
-  create_item: '创建道具',
-  create_organization: '创建组织',
-  search_entities: '查找角色设定',
-  get_entity_detail: '查看角色档案',
-  update_entity: '更新设定档案',
-  delete_entity: '删除设定',
-  merge_entities: '合并设定',
-  profile_check: '核对档案一致性',
-  list_unresolved_refs: '查看未锚定指代',
-  resolve_unresolved_ref: '处置未锚定指代',
-  // 结构（章 / 场景）
-  get_structure: '查看全书结构',
-  create_chapter: '新建章节',
-  update_chapter: '调整章节',
-  delete_chapter: '删除章节',
-  create_scene: '新建场景',
-  update_scene: '调整场景',
-  delete_scene: '删除场景',
-  save_scene_summaries: '批量保存摘要',
-  repair_project: '修复数据',
-  // 正文（片段）
-  write_fragment_text: '撰写正文',
-  edit_fragment_text: '修改正文',
-  read_fragment_text: '读取正文',
-  append_fragment_text: '续写正文',
-  rewrite_fragment: '重写正文',
-  delete_fragment: '删除正文',
-  split_fragment: '拆分段落',
-  merge_fragments: '合并段落',
-  move_fragment: '调整段落顺序',
-  set_fragment_anchor: '锚定实体',
-  remove_fragment_anchor: '移除锚点',
-  anchor_fragments: '锚定出场',
-  // 事实 / 关系
-  add_assertion: '记录事实',
-  delete_assertion: '删除断言（废弃/彻底删除）',
-  query_assertions: '查询事实',
-  add_relation: '建立关系',
-  remove_relation: '移除关系',
-  // 叙事线索
-  create_thread: '新建线索',
-  get_threads: '查看叙事线索',
-  get_thread_detail: '查看线索详情',
-  update_thread: '更新线索',
-  advance_thread: '推进线索',
-  delete_thread: '删除线索',
-  set_thread_knowledge: '更新线索知情状态',
-  // 查询 / 上下文
-  get_story_recap: '回顾故事',
-  get_relations: '查看关系网',
-  get_character_state: '查看角色近况',
-  find_mentions: '查找出场位置',
-  search_text: '全文检索',
-  get_project_stats: '统计作品数据',
-  get_scene_context: '查看场景上下文',
-  // 大纲 / 章节脉络 / 世界观
-  get_outline: '查看大纲',
-  set_outline_item: '撰写大纲',
-  update_outline_item: '更新大纲',
-  delete_outline_item: '删除大纲条目',
-  design_chapters: '规划章节',
-  get_chapter_outline: '查看章节脉络',
-  update_chapter_outline: '更新章节脉络',
-  delete_chapter_outline: '删除章节脉络',
-  get_worldview: '查看世界观设定',
-  set_worldview_item: '撰写世界观',
-  update_worldview_item: '更新世界观',
-  delete_worldview_item: '删除世界观条目',
-  // 检测
-  ai_check: 'AI 味自检',
-  ai_check_pov: '视角越权检测',
-  refresh_evidence: '刷新证据基线',
-  update_relation: '更新关系区间',
-  split_scene: '拆分场景',
-  merge_scenes: '合并场景',
-  populate_scenes_from_beats: '按节拍生成场景',
-  list_fragment_versions: '查看版本历史',
-  restore_fragment_version: '回滚版本',
-  reveal_character_name: '揭露真名',
-  prepare_writing: '准备动笔',
-  read_scene_full_text: '读取场景全文',
-  set_timeline_eras: '设置纪元历法',
-  compile_check: '一致性检查',
-  // 其他
-  get_writing_guide: '查阅写作指南',
-  ask_user: '向你提问',
+
+    // 实体 / 设定
+    create_entity:              '创建实体',
+    create_location:            '创建地点',
+    create_item:                '创建道具',
+    create_organization:        '创建组织',
+    search_entities:            '查找角色设定',
+    get_entity_detail:          '查看角色档案',
+    update_entity:              '更新设定档案',
+    delete_entity:              '删除设定',
+    merge_entities:             '合并设定',
+    profile_check:              '核对档案一致性',
+    list_unresolved_refs:       '查看未锚定指代',
+    resolve_unresolved_ref:     '处置未锚定指代',
+
+    // 结构（章 / 场景）
+    get_structure:              '查看全书结构',
+    create_chapter:             '新建章节',
+    update_chapter:             '调整章节',
+    delete_chapter:             '删除章节',
+    create_scene:               '新建场景',
+    update_scene:               '调整场景',
+    delete_scene:               '删除场景',
+    save_scene_summaries:       '批量保存摘要',
+    repair_project:             '修复数据',
+
+    // 正文（片段）
+    write_fragment_text:        '撰写正文',
+    edit_fragment_text:         '修改正文',
+    read_fragment_text:         '读取正文',
+    append_fragment_text:       '续写正文',
+    rewrite_fragment:           '重写正文',
+    delete_fragment:            '删除正文',
+    split_fragment:             '拆分段落',
+    merge_fragments:            '合并段落',
+    move_fragment:              '调整段落顺序',
+    set_fragment_anchor:        '锚定实体',
+    remove_fragment_anchor:     '移除锚点',
+    anchor_fragments:           '锚定出场',
+
+    // 事实 / 关系
+    add_assertion:              '记录事实',
+    delete_assertion:           '删除断言（废弃/彻底删除）',
+    query_assertions:           '查询事实',
+    add_relation:               '建立关系',
+    remove_relation:            '移除关系',
+
+    // 叙事线索
+    create_thread:              '新建线索',
+    get_threads:                '查看叙事线索',
+    get_thread_detail:          '查看线索详情',
+    update_thread:              '更新线索',
+    advance_thread:             '推进线索',
+    delete_thread:              '删除线索',
+    set_thread_knowledge:       '更新线索知情状态',
+
+    // 查询 / 上下文
+    get_story_recap:            '回顾故事',
+    get_relations:              '查看关系网',
+    get_character_state:        '查看角色近况',
+    find_mentions:              '查找出场位置',
+    search_text:                '全文检索',
+    get_project_stats:          '统计作品数据',
+    get_scene_context:          '查看场景上下文',
+
+    // 大纲 / 章节脉络 / 世界观
+    get_outline:                '查看大纲',
+    set_outline_item:           '撰写大纲',
+    update_outline_item:        '更新大纲',
+    delete_outline_item:        '删除大纲条目',
+    design_chapters:            '规划章节',
+    get_chapter_outline:        '查看章节脉络',
+    update_chapter_outline:     '更新章节脉络',
+    delete_chapter_outline:     '删除章节脉络',
+    get_worldview:              '查看世界观设定',
+    set_worldview_item:         '撰写世界观',
+    update_worldview_item:      '更新世界观',
+    delete_worldview_item:      '删除世界观条目',
+
+    // 检测
+    ai_check:                   'AI 味自检',
+    ai_check_pov:               '视角越权检测',
+    refresh_evidence:           '刷新证据基线',
+    update_relation:            '更新关系区间',
+    split_scene:                '拆分场景',
+    merge_scenes:               '合并场景',
+    populate_scenes_from_beats: '按节拍生成场景',
+    list_fragment_versions:     '查看版本历史',
+    restore_fragment_version:   '回滚版本',
+    reveal_character_name:      '揭露真名',
+    prepare_writing:            '准备动笔',
+    read_scene_full_text:       '读取场景全文',
+    set_timeline_eras:          '设置纪元历法',
+    compile_check:              '一致性检查',
+
+    // 其他
+    get_writing_guide:          '查阅写作指南',
+    ask_user:                   '向你提问',
 }
 
 function toolLabel(name: string | null | undefined): string {
-  if (!name) return '正在操作'
-  return toolLabels[name] ?? name.replace(/_/g, ' ')
+    if (!name) return '正在操作'
+
+    return toolLabels[name] ?? name.replace(/_/g, ' ')
 }
 
 // ── 会话历史（视图部分；数据与流程在 store） ──────────────
 function fmtSessionTime(ts: number): string {
-  const d = new Date(ts)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getMonth() + 1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    const d = new Date(ts)
+    const pad = (n: number) => String(n).padStart(2, '0')
+
+    return `${d.getMonth() + 1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 async function resume(meta: ChatMetaDto) {
-  historyOpen.value = false
-  await miao.resume(meta)
+    historyOpen.value = false
+    await miao.resume(meta)
 }
 
 function newChat() {
-  historyOpen.value = false
-  miao.newChat()
+    historyOpen.value = false
+    miao.newChat()
 }
 
 onMounted(() => void loadSessions())
@@ -399,55 +429,105 @@ onActivated(() => void scrollToBottom())
 
 <template>
   <div class="miao-panel">
-    <div ref="list" class="miao-list">
-      <div v-if="items.length === 0" class="miao-hero">
-        <div class="hero-icon"><i class="fa-solid fa-feather-pointed" /></div>
+    <div
+      ref="list"
+      class="miao-list"
+    >
+      <div
+        v-if="items.length === 0"
+        class="miao-hero"
+      >
+        <div class="hero-icon">
+          <i class="fa-solid fa-feather-pointed" />
+        </div>
         <h3>妙笔</h3>
-        <p>你的 AI 创作搭档，了解这本书的全部设定。<br />让它续写、查设定、埋伏笔，或只是聊聊剧情。</p>
+        <p>你的 AI 创作搭档，了解这本书的全部设定。<br>让它续写、查设定、埋伏笔，或只是聊聊剧情。</p>
         <div class="hero-tries">
-          <button @click="input = '帮我梳理一下目前的故事线和伏笔'">梳理伏笔</button>
-          <button @click="input = '以当前视角续写一段，注意保持文风'">续写一段</button>
-          <button @click="input = '给下个场景出三个方向'">出主意</button>
+          <button @click="input = '帮我梳理一下目前的故事线和伏笔'">
+            梳理伏笔
+          </button>
+          <button @click="input = '以当前视角续写一段，注意保持文风'">
+            续写一段
+          </button>
+          <button @click="input = '给下个场景出三个方向'">
+            出主意
+          </button>
         </div>
 
         <!-- 历史话题 -->
-        <div v-if="sessions.length > 0" class="hero-history">
-          <div class="hh-title">继续之前的话题</div>
-          <button v-for="s in sessions.slice(0, 5)" :key="s.id" class="hh-item" @click="resume(s)">
+        <div
+          v-if="sessions.length > 0"
+          class="hero-history"
+        >
+          <div class="hh-title">
+            继续之前的话题
+          </div>
+          <button
+            v-for="s in sessions.slice(0, 5)"
+            :key="s.id"
+            class="hh-item"
+            @click="resume(s)"
+          >
             <span class="hh-name">{{ s.title }}</span>
             <span class="hh-time num">{{ fmtSessionTime(s.updatedAt) }}</span>
           </button>
         </div>
       </div>
 
-      <template v-for="it in items" :key="it.key">
+      <template
+        v-for="it in items"
+        :key="it.key"
+      >
         <!-- 用户 -->
-        <div v-if="it.type === 'user'" class="msg-user">
-          <div class="bubble">{{ it.text }}</div>
+        <div
+          v-if="it.type === 'user'"
+          class="msg-user"
+        >
+          <div class="bubble">
+            {{ it.text }}
+          </div>
         </div>
 
         <!-- AI 回复 -->
-        <div v-else-if="it.type === 'ai'" class="msg-ai">
-          <div class="ai-avatar"><i class="fa-solid fa-feather-pointed" /></div>
+        <div
+          v-else-if="it.type === 'ai'"
+          class="msg-ai"
+        >
+          <div class="ai-avatar">
+            <i class="fa-solid fa-feather-pointed" />
+          </div>
           <div class="ai-body">
-            <MarkdownView :text="it.text" :caret="it.streaming" />
+            <MarkdownView
+              :text="it.text"
+              :caret="it.streaming"
+            />
           </div>
         </div>
 
         <!-- 思考中 -->
-        <div v-else-if="it.type === 'thinking'" class="msg-thinking">
+        <div
+          v-else-if="it.type === 'thinking'"
+          class="msg-thinking"
+        >
           <span class="dots"><i /><i /><i /></span>
           {{ it.text }}
         </div>
 
         <!-- 思考过程（折叠） -->
-        <details v-else-if="it.type === 'reasoning'" class="msg-reasoning">
+        <details
+          v-else-if="it.type === 'reasoning'"
+          class="msg-reasoning"
+        >
           <summary><i class="fa-regular fa-lightbulb" /> 想了想</summary>
           <p>{{ it.text }}</p>
         </details>
 
         <!-- 工具活动 -->
-        <details v-else-if="it.type === 'tool'" class="msg-tool" :open="it.toolOpen">
+        <details
+          v-else-if="it.type === 'tool'"
+          class="msg-tool"
+          :open="it.toolOpen"
+        >
           <summary @click.prevent="it.toolOpen = !it.toolOpen">
             <i
               class="fa-solid"
@@ -467,33 +547,67 @@ onActivated(() => void scrollToBottom())
               "
             />
             <span class="tool-name">{{ toolLabel(it.tool) }}</span>
-            <i class="fa-solid chev" :class="it.toolOpen ? 'fa-angle-up' : 'fa-angle-down'" />
+            <i
+              class="fa-solid chev"
+              :class="it.toolOpen ? 'fa-angle-up' : 'fa-angle-down'"
+            />
           </summary>
-          <pre v-if="it.toolOpen" class="tool-detail">{{ it.toolResult ?? '进行中…' }}</pre>
+          <pre
+            v-if="it.toolOpen"
+            class="tool-detail"
+          >{{ it.toolResult ?? '进行中…' }}</pre>
         </details>
 
         <!-- 提问卡 -->
-        <div v-else-if="it.type === 'ask'" class="msg-ask" :class="{ 'is-answered': it.answered }">
-          <div class="ask-q"><i class="fa-regular fa-circle-question" /> {{ it.text }}</div>
-          <div v-if="!it.answered && it.options?.length" class="ask-opts">
-            <button v-for="opt in it.options" :key="opt" :disabled="running && !answerMode" @click="pickOption(opt)">
+        <div
+          v-else-if="it.type === 'ask'"
+          class="msg-ask"
+          :class="{ 'is-answered': it.answered }"
+        >
+          <div class="ask-q">
+            <i class="fa-regular fa-circle-question" /> {{ it.text }}
+          </div>
+          <div
+            v-if="!it.answered && it.options?.length"
+            class="ask-opts"
+          >
+            <button
+              v-for="opt in it.options"
+              :key="opt"
+              :disabled="running && !answerMode"
+              @click="pickOption(opt)"
+            >
               {{ opt }}
             </button>
           </div>
-          <div v-if="!it.answered" class="ask-custom">
+          <div
+            v-if="!it.answered"
+            class="ask-custom"
+          >
             {{ it.options?.length ? '以上不合意时，可在下方输入框自定义回答' : '在下方输入框输入你的回答' }}
           </div>
-          <div v-else-if="it.answered" class="ask-done">已回答</div>
+          <div
+            v-else-if="it.answered"
+            class="ask-done"
+          >
+            已回答
+          </div>
         </div>
 
         <!-- 错误 -->
-        <div v-else-if="it.type === 'error'" class="msg-error">
+        <div
+          v-else-if="it.type === 'error'"
+          class="msg-error"
+        >
           <i class="fa-solid fa-circle-exclamation" />
           <span>{{ it.text }}</span>
         </div>
 
         <!-- 瞬态状态 -->
-        <div v-else class="msg-status">
+        <div
+          v-else
+          class="msg-status"
+        >
           <i class="fa-solid fa-circle-notch fa-spin" />
           {{ it.text }}
         </div>
@@ -502,15 +616,26 @@ onActivated(() => void scrollToBottom())
 
     <!-- 历史列表浮层 -->
     <Transition name="hist">
-      <div v-if="historyOpen" class="miao-history">
+      <div
+        v-if="historyOpen"
+        class="miao-history"
+      >
         <div class="mh-head">
           <span>历史话题（{{ sessions.length }}）</span>
-          <button class="ink-icon-btn" @click="historyOpen = false">
+          <button
+            class="ink-icon-btn"
+            @click="historyOpen = false"
+          >
             <i class="fa-solid fa-xmark" />
           </button>
         </div>
         <div class="mh-list">
-          <div v-if="sessions.length === 0" class="mh-empty">还没有历史话题</div>
+          <div
+            v-if="sessions.length === 0"
+            class="mh-empty"
+          >
+            还没有历史话题
+          </div>
           <div
             v-for="s in sessions"
             :key="s.id"
@@ -519,10 +644,18 @@ onActivated(() => void scrollToBottom())
             @click="resume(s)"
           >
             <div class="mh-main">
-              <div class="mh-name">{{ s.title }}</div>
-              <div class="mh-time num">{{ fmtSessionTime(s.updatedAt) }}</div>
+              <div class="mh-name">
+                {{ s.title }}
+              </div>
+              <div class="mh-time num">
+                {{ fmtSessionTime(s.updatedAt) }}
+              </div>
             </div>
-            <button class="mh-del" title="删除" @click.stop="removeSession(s)">
+            <button
+              class="mh-del"
+              title="删除"
+              @click.stop="removeSession(s)"
+            >
               <i class="fa-regular fa-trash-can" />
             </button>
           </div>
@@ -533,27 +666,42 @@ onActivated(() => void scrollToBottom())
     <div class="miao-input">
       <!-- @ 引用浮层（章节 / 场景 / 片段） -->
       <Transition name="hist">
-        <div v-if="mentionOpen" class="mention-pop">
+        <div
+          v-if="mentionOpen"
+          class="mention-pop"
+        >
           <div class="mention-head">
             <template v-if="drillScene">
               <button
                 class="mention-back"
                 title="返回"
-                @mousedown.prevent="((drillScene = null), (drillFragments = null), (mentionIndex = 0))"
+                @mousedown.prevent="drillScene = null, drillFragments = null, mentionIndex = 0"
               >
                 <i class="fa-solid fa-angle-left" />
               </button>
               <span class="mention-title">{{ drillScene.title }} · 片段</span>
             </template>
-            <span v-else class="mention-title">
+            <span
+              v-else
+              class="mention-title"
+            >
               @ 引用章节 / 场景 / 片段 — 输入即过滤，↑↓ 选择，Enter 插入；场景行按 Tab 列出其片段
             </span>
-            <button class="ink-icon-btn mention-close" title="关闭" @mousedown.prevent="closeMention">
+            <button
+              class="ink-icon-btn mention-close"
+              title="关闭"
+              @mousedown.prevent="closeMention"
+            >
               <i class="fa-solid fa-xmark" />
             </button>
           </div>
           <div class="mention-list">
-            <div v-if="drillLoading" class="mention-empty">片段加载中…</div>
+            <div
+              v-if="drillLoading"
+              class="mention-empty"
+            >
+              片段加载中…
+            </div>
             <template v-else>
               <button
                 v-for="(it, i) in visibleItems"
@@ -573,15 +721,26 @@ onActivated(() => void scrollToBottom())
                 >
                   片段 <i class="fa-solid fa-angle-right" />
                 </span>
-                <span v-else-if="it.group" class="mi-group">{{ it.group }}</span>
+                <span
+                  v-else-if="it.group"
+                  class="mi-group"
+                >{{ it.group }}</span>
               </button>
-              <div v-if="!visibleItems.length" class="mention-empty">没有匹配项</div>
+              <div
+                v-if="!visibleItems.length"
+                class="mention-empty"
+              >
+                没有匹配项
+              </div>
             </template>
           </div>
         </div>
       </Transition>
 
-      <div v-if="answerMode" class="input-hint">
+      <div
+        v-if="answerMode"
+        class="input-hint"
+      >
         <i class="fa-regular fa-circle-question" />
         妙笔在等你回答，回复后它会继续
       </div>
@@ -597,24 +756,37 @@ onActivated(() => void scrollToBottom())
           @blur="closeMention"
           @keydown="onKeydown"
         />
-        <button v-if="running && !answerMode" class="ink-icon-btn miao-stop" title="停止" @click="stop">
+        <button
+          v-if="running && !answerMode"
+          class="ink-icon-btn miao-stop"
+          title="停止"
+          @click="stop"
+        >
           <i class="fa-solid fa-stop" />
         </button>
         <button
           v-else
           class="ink-btn ink-btn--primary ink-btn--sm miao-send"
-          :disabled="(running && !answerMode) || !input.trim()"
+          :disabled="running && !answerMode || !input.trim()"
           @click="send"
         >
           <i class="fa-solid fa-paper-plane" />
         </button>
       </div>
       <div class="input-foot">
-        <button class="foot-btn" title="历史话题" @click="((historyOpen = !historyOpen), void loadSessions())">
+        <button
+          class="foot-btn"
+          title="历史话题"
+          @click="historyOpen = !historyOpen, void loadSessions()"
+        >
           <i class="fa-solid fa-clock-rotate-left" />
           历史
         </button>
-        <button v-if="items.length > 0" class="foot-btn" @click="newChat">
+        <button
+          v-if="items.length > 0"
+          class="foot-btn"
+          @click="newChat"
+        >
           <i class="fa-regular fa-plus" />
           新话题
         </button>

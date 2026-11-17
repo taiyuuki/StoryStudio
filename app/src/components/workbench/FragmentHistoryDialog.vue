@@ -4,9 +4,7 @@ import { ElMessageBox } from 'element-plus'
 import type { FragmentDiffLineDto, FragmentVersionDto } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
 
-const props = defineProps<{
-  fragmentId: string
-}>()
+const props = defineProps<{ fragmentId: string }>()
 
 const model = defineModel<boolean>({ default: false })
 
@@ -20,6 +18,7 @@ const restoring = ref(false)
 // —— 版本对比：基准 A → 对比 B（可为「当前内容」）——
 const compareA = ref<FragmentVersionDto | null>(null)
 const compareB = ref<FragmentVersionDto | null>(null)
+
 /** B 端是否为当前磁盘内容（此时 compareB 为 null 但对比已成立） */
 const compareBCurrent = ref(false)
 const diffLines = ref<FragmentDiffLineDto[]>([])
@@ -27,101 +26,109 @@ const diffLoading = ref(false)
 
 const diffActive = ref(false)
 
-watch(model, async (open) => {
-  if (!open || !props.fragmentId) return
-  loading.value = true
-  selected.value = null
-  preview.value = ''
-  clearCompare()
-  try {
-    versions.value = await store.loadVersions(props.fragmentId)
-  } finally {
-    loading.value = false
-  }
+watch(model, async open => {
+    if (!open || !props.fragmentId) return
+    loading.value = true
+    selected.value = null
+    preview.value = ''
+    clearCompare()
+    try {
+        versions.value = await store.loadVersions(props.fragmentId)
+    }
+    finally {
+        loading.value = false
+    }
 })
 
 async function pick(v: FragmentVersionDto) {
-  selected.value = v
-  diffActive.value = false
-  preview.value = await store.readVersion(props.fragmentId, v.timestamp)
+    selected.value = v
+    diffActive.value = false
+    preview.value = await store.readVersion(props.fragmentId, v.timestamp)
 }
 
 /** 点对比图标：第一次选基准 A，第二次选对比 B；再点 A 取消 */
 async function toggleCompare(v: FragmentVersionDto) {
-  if (compareA.value?.timestamp === v.timestamp && !compareB.value && !compareBCurrent.value) {
-    clearCompare()
-    return
-  }
-  if (!compareA.value || compareB.value || compareBCurrent.value) {
-    // 开启新一轮对比
-    clearCompare()
-    compareA.value = v
-    return
-  }
-  compareB.value = v
-  await runDiff()
+    if (compareA.value?.timestamp === v.timestamp && !compareB.value && !compareBCurrent.value) {
+        clearCompare()
+
+        return
+    }
+    if (!compareA.value || compareB.value || compareBCurrent.value) {
+
+        // 开启新一轮对比
+        clearCompare()
+        compareA.value = v
+
+        return
+    }
+    compareB.value = v
+    await runDiff()
 }
 
 /** 基准版与当前磁盘内容对比 */
 async function compareWithCurrent() {
-  if (!compareA.value) return
-  compareBCurrent.value = true
-  await runDiff()
+    if (!compareA.value) return
+    compareBCurrent.value = true
+    await runDiff()
 }
 
 async function runDiff() {
-  if (!compareA.value) return
-  diffLoading.value = true
-  diffActive.value = true
-  try {
-    const bTs = compareBCurrent.value ? null : compareB.value?.timestamp ?? null
-    diffLines.value = await store.diffVersion(props.fragmentId, compareA.value.timestamp, bTs)
-  } finally {
-    diffLoading.value = false
-  }
+    if (!compareA.value) return
+    diffLoading.value = true
+    diffActive.value = true
+    try {
+        const bTs = compareBCurrent.value ? null : compareB.value?.timestamp ?? null
+        diffLines.value = await store.diffVersion(props.fragmentId, compareA.value.timestamp, bTs)
+    }
+    finally {
+        diffLoading.value = false
+    }
 }
 
 function clearCompare() {
-  compareA.value = null
-  compareB.value = null
-  compareBCurrent.value = false
-  diffLines.value = []
-  diffActive.value = false
+    compareA.value = null
+    compareB.value = null
+    compareBCurrent.value = false
+    diffLines.value = []
+    diffActive.value = false
 }
 
 function compareLabel(): string {
-  const a = compareA.value ? formatTime(compareA.value.timestamp) : ''
-  const b = compareBCurrent.value
-    ? '当前内容'
-    : compareB.value
-      ? formatTime(compareB.value.timestamp)
-      : ''
-  return `${a} → ${b}`
+    const a = compareA.value ? formatTime(compareA.value.timestamp) : ''
+    const b = compareBCurrent.value
+        ? '当前内容'
+        : compareB.value
+            ? formatTime(compareB.value.timestamp)
+            : ''
+
+    return `${a} → ${b}`
 }
 
 function formatTime(ts: number): string {
-  return new Date(ts).toLocaleString('zh-CN', { hour12: false })
+    return new Date(ts).toLocaleString('zh-CN', { hour12: false })
 }
 
 async function restore() {
-  if (!selected.value) return
-  try {
-    await ElMessageBox.confirm(
-      '恢复前会先把现在的内容存进历史，换错了随时能再换回来。要恢复到这一版吗？',
-      '恢复版本',
-      { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  restoring.value = true
-  try {
-    if (await store.restoreVersion(props.fragmentId, selected.value.timestamp)) {
-      model.value = false
+    if (!selected.value) return
+    try {
+        await ElMessageBox.confirm(
+            '恢复前会先把现在的内容存进历史，换错了随时能再换回来。要恢复到这一版吗？',
+            '恢复版本',
+            { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' },
+        )
     }
-  } finally {
-    restoring.value = false
-  }
+    catch {
+        return
+    }
+    restoring.value = true
+    try {
+        if (await store.restoreVersion(props.fragmentId, selected.value.timestamp)) {
+            model.value = false
+        }
+    }
+    finally {
+        restoring.value = false
+    }
 }
 </script>
 
@@ -134,11 +141,19 @@ async function restore() {
     append-to-body
     class="history-dialog"
   >
-    <div v-loading="loading" class="history-body">
-      <div v-if="versions.length === 0 && !loading" class="history-empty">
+    <div
+      v-loading="loading"
+      class="history-body"
+    >
+      <div
+        v-if="versions.length === 0 && !loading"
+        class="history-empty"
+      >
         <i class="fa-regular fa-clock" />
         <p>暂无历史版本</p>
-        <p class="hint">写作时会自动留底：停笔一会儿，或一次改动比较大，就会存下一版</p>
+        <p class="hint">
+          写作时会自动留底：停笔一会儿，或一次改动比较大，就会存下一版
+        </p>
       </div>
 
       <template v-else>
@@ -166,7 +181,10 @@ async function restore() {
         </ul>
         <div class="version-preview">
           <template v-if="diffActive">
-            <div v-loading="diffLoading" class="diff-wrap">
+            <div
+              v-loading="diffLoading"
+              class="diff-wrap"
+            >
               <div class="diff-head">
                 <span class="diff-title"><i class="fa-solid fa-code-compare" /> {{ compareLabel() }}</span>
                 <span class="diff-stats">
@@ -175,40 +193,70 @@ async function restore() {
                     <span class="del">−{{ diffLines.filter(l => l.kind === 'removed').length }}</span>
                   </template>
                 </span>
-                <button class="diff-clear" @click="clearCompare">退出对比</button>
+                <button
+                  class="diff-clear"
+                  @click="clearCompare"
+                >
+                  退出对比
+                </button>
               </div>
               <div class="diff-body">
-                <template v-for="(line, i) in diffLines" :key="i">
-                  <div v-if="line.kind === 'skipped'" class="d-line d-skip">
+                <template
+                  v-for="(line, i) in diffLines"
+                  :key="i"
+                >
+                  <div
+                    v-if="line.kind === 'skipped'"
+                    class="d-line d-skip"
+                  >
                     ⋯ 未改动 {{ line.count }} 行 ⋯
                   </div>
-                  <div v-else :class="['d-line', `d-${line.kind}`]">
+                  <div
+                    v-else
+                    :class="['d-line', `d-${line.kind}`]"
+                  >
                     <span class="d-ln">{{ line.oldLn ?? '' }}</span>
                     <span class="d-ln">{{ line.newLn ?? '' }}</span>
                     <span class="d-sign">{{ line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : '' }}</span>
                     <span class="d-text">{{ line.text || ' ' }}</span>
                   </div>
                 </template>
-                <p v-if="!diffLoading && diffLines.every(l => l.kind === 'same' || l.kind === 'skipped')" class="diff-same">
+                <p
+                  v-if="!diffLoading && diffLines.every(l => l.kind === 'same' || l.kind === 'skipped')"
+                  class="diff-same"
+                >
                   两版内容一致
                 </p>
               </div>
             </div>
           </template>
           <pre v-else-if="preview">{{ preview }}</pre>
-          <p v-else class="hint">选择左侧版本查看内容；点 ⇄ 选两版对比差异</p>
+          <p
+            v-else
+            class="hint"
+          >
+            选择左侧版本查看内容；点 ⇄ 选两版对比差异
+          </p>
         </div>
       </template>
     </div>
 
     <template #footer>
       <template v-if="compareA && !compareB && !compareBCurrent">
-        <button class="ink-btn ink-btn--sm" @click="compareWithCurrent">
+        <button
+          class="ink-btn ink-btn--sm"
+          @click="compareWithCurrent"
+        >
           <i class="fa-solid fa-file-lines" />
           与当前内容对比
         </button>
       </template>
-      <button class="ink-btn ink-btn--sm" @click="model = false">关闭</button>
+      <button
+        class="ink-btn ink-btn--sm"
+        @click="model = false"
+      >
+        关闭
+      </button>
       <button
         class="ink-btn ink-btn--sm ink-btn--primary"
         :disabled="!selected || restoring"

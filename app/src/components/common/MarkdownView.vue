@@ -6,9 +6,10 @@ import { renderMarkdown } from '@/composables/markdown'
 // 妙笔 agent 回复的 markdown 渲染容器。
 // 流式期间每帧全文重渲染（markdown-it 处理几千字在毫秒级，无需节流）。
 const props = defineProps<{
-  text: string
-  /** 流式中的闪烁光标，追加在文本末尾 */
-  caret?: boolean
+    text: string
+
+    /** 流式中的闪烁光标，追加在文本末尾 */
+    caret?: boolean
 }>()
 
 const CARET_HTML = '<span class="md-caret"></span>'
@@ -16,41 +17,49 @@ const CARET_HTML = '<span class="md-caret"></span>'
 // markdown 输出是块级结构，光标直接拼在末尾会另起一行；
 // 借 DOMParser 下钻到最后一个元素的叶子处再插入，使其紧跟末行文字
 function withCaret(html: string): string {
-  try {
-    const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html')
-    const root = doc.body.firstElementChild
-    let el = root
-    while (el?.lastElementChild) el = el.lastElementChild
-    if (!root || !el || el === root) return html + CARET_HTML
-    el.insertAdjacentHTML('beforeend', CARET_HTML)
-    return root.innerHTML
-  } catch {
-    return html + CARET_HTML
-  }
+    try {
+        const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html')
+        const root = doc.body.firstElementChild
+        let el = root
+        while (el?.lastElementChild) el = el.lastElementChild
+        if (!root || !el || el === root) return html + CARET_HTML
+        el.insertAdjacentHTML('beforeend', CARET_HTML)
+
+        return root.innerHTML
+    }
+    catch {
+        return html + CARET_HTML
+    }
 }
 
 const html = computed(() => {
-  const body = renderMarkdown(props.text)
-  return props.caret ? withCaret(body) : body
+    const body = renderMarkdown(props.text)
+
+    return props.caret ? withCaret(body) : body
 })
 
 // Tauri webview 里放任 <a> 默认跳转会顶掉整个应用，统一改走系统浏览器
 async function onClick(e: MouseEvent) {
-  const anchor = (e.target as HTMLElement).closest('a')
-  if (!(anchor instanceof HTMLAnchorElement)) return
-  const href = anchor.getAttribute('href') ?? ''
-  if (!/^https?:\/\//i.test(href)) return
-  e.preventDefault()
-  try {
-    await openUrl(href)
-  } catch {
-    window.open(href, '_blank')
-  }
+    const anchor = (e.target as HTMLElement).closest('a')
+    if (!(anchor instanceof HTMLAnchorElement)) return
+    const href = anchor.getAttribute('href') ?? ''
+    if (!/^https?:\/\//i.test(href)) return
+    e.preventDefault()
+    try {
+        await openUrl(href)
+    }
+    catch {
+        window.open(href, '_blank')
+    }
 }
 </script>
 
 <template>
-  <div class="md-body" v-html="html" @click="onClick" />
+  <div
+    class="md-body"
+    @click="onClick"
+    v-html="html"
+  />
 </template>
 
 <style scoped lang="scss">

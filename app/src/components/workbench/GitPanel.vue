@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { onActivated, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import GitDiffDialog, { type GitDiffTarget } from './GitDiffDialog.vue'
 import { api } from '@/api/backend'
 import type { GitCommitDto, GitStatusDto } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
-import GitDiffDialog, { type GitDiffTarget } from './GitDiffDialog.vue'
 
 // 版本档案 — 项目目录的 git 快照 / 历史 / 一键恢复。
 // AI 批量改稿（妙笔批改、逐章成书）前后自动存档，任何存档可整体回滚，
@@ -19,89 +19,101 @@ const loading = ref(false)
 const message = ref('')
 const committing = ref(false)
 const restoringId = ref<string | null>(null)
+
 /** 改动对比目标（null = 对话框关闭） */
 const diffTarget = ref<GitDiffTarget | null>(null)
 
 async function refresh() {
-  if (!store.root) return
-  loading.value = true
-  try {
-    status.value = await api.gitStatus(store.root)
-    commits.value = status.value.initialized ? await api.gitLog(store.root, 50) : []
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    loading.value = false
-  }
+    if (!store.root) return
+    loading.value = true
+    try {
+        status.value = await api.gitStatus(store.root)
+        commits.value = status.value.initialized ? await api.gitLog(store.root, 50) : []
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
+    finally {
+        loading.value = false
+    }
 }
 
 async function initRepo() {
-  if (!store.root) return
-  try {
-    status.value = await api.gitInit(store.root)
-    ElMessage.success('版本档案已启用')
-    await refresh()
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  }
+    if (!store.root) return
+    try {
+        status.value = await api.gitInit(store.root)
+        ElMessage.success('版本档案已启用')
+        await refresh()
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
 }
 
 async function commitNow() {
-  if (!store.root || committing.value) return
-  committing.value = true
-  try {
-    const r = await api.gitCommit(store.root, message.value.trim() || undefined)
-    if (r.committed) {
-      ElMessage.success(r.detail)
-      message.value = ''
-    } else {
-      ElMessage.info(r.detail)
+    if (!store.root || committing.value) return
+    committing.value = true
+    try {
+        const r = await api.gitCommit(store.root, message.value.trim() || undefined)
+        if (r.committed) {
+            ElMessage.success(r.detail)
+            message.value = ''
+        }
+        else {
+            ElMessage.info(r.detail)
+        }
+        await refresh()
     }
-    await refresh()
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    committing.value = false
-  }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
+    finally {
+        committing.value = false
+    }
 }
 
 async function restore(c: GitCommitDto) {
-  if (!store.root || restoringId.value) return
-  try {
-    await ElMessageBox.confirm(
-      `把整本书恢复到「${c.message}」这个存档？当前未存档的改动会先自动备份，历史不会丢失，恢复错了还能再恢复回来。`,
-      '恢复存档',
-      { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  restoringId.value = c.id
-  try {
-    const r = await api.gitRestore(store.root, c.id)
-    ElMessage.success(r.committed ? r.detail : r.detail)
-    // 磁盘已变：整个工作台按当前状态重载（结构/设定/当前场景）
-    await store.openRoot(store.root)
-    await refresh()
-  } catch (err) {
-    ElMessage.error(`恢复失败：${(err as Error).message}`)
-  } finally {
-    restoringId.value = null
-  }
+    if (!store.root || restoringId.value) return
+    try {
+        await ElMessageBox.confirm(
+            `把整本书恢复到「${c.message}」这个存档？当前未存档的改动会先自动备份，历史不会丢失，恢复错了还能再恢复回来。`,
+            '恢复存档',
+            { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' },
+        )
+    }
+    catch {
+        return
+    }
+    restoringId.value = c.id
+    try {
+        const r = await api.gitRestore(store.root, c.id)
+        ElMessage.success(r.committed ? r.detail : r.detail)
+
+        // 磁盘已变：整个工作台按当前状态重载（结构/设定/当前场景）
+        await store.openRoot(store.root)
+        await refresh()
+    }
+    catch(err) {
+        ElMessage.error(`恢复失败：${(err as Error).message}`)
+    }
+    finally {
+        restoringId.value = null
+    }
 }
 
 function fmtTime(ts: number): string {
-  const d = new Date(ts * 1000)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getMonth() + 1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    const d = new Date(ts * 1000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+
+    return `${d.getMonth() + 1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 /** 查看改动：from = null → 该存档相对上一存档；openWorktree → HEAD 对比未存档改动 */
 function openDiff(to: GitCommitDto, from: GitCommitDto | null) {
-  const label = (c: GitCommitDto) => `${c.id} · ${c.message.slice(0, 16)}`
-  diffTarget.value = from
-    ? { fromId: from.id, fromLabel: label(from), toId: to.id, toLabel: label(to) }
-    : { fromId: to.id, fromLabel: label(to), toId: null, toLabel: '未存档改动' }
+    const label = (c: GitCommitDto) => `${c.id} · ${c.message.slice(0, 16)}`
+    diffTarget.value = from
+        ? { fromId: from.id, fromLabel: label(from), toId: to.id, toLabel: label(to) }
+        : { fromId: to.id, fromLabel: label(to), toId: null, toLabel: '未存档改动' }
 }
 
 onMounted(() => void refresh())
@@ -111,26 +123,40 @@ onActivated(() => void refresh())
 <template>
   <div class="git-panel">
     <!-- git 未安装 -->
-    <div v-if="status && !status.available" class="git-hint">
+    <div
+      v-if="status && !status.available"
+      class="git-hint"
+    >
       <i class="fa-solid fa-circle-info" />
       <p>系统未安装 git，版本档案不可用。安装 git 后重启应用即可启用。</p>
     </div>
 
     <!-- 嵌套仓库 -->
-    <div v-else-if="status && status.nested" class="git-hint is-warn">
+    <div
+      v-else-if="status && status.nested"
+      class="git-hint is-warn"
+    >
       <i class="fa-solid fa-code-branch" />
       <p>这个项目位于另一个 git 仓库里。为避免影响原仓库，StoryStudio 不在此启用版本档案。</p>
     </div>
 
     <!-- 未初始化 -->
-    <div v-else-if="status && !status.initialized" class="git-init">
-      <div class="gi-icon"><i class="fa-solid fa-code-branch" /></div>
+    <div
+      v-else-if="status && !status.initialized"
+      class="git-init"
+    >
+      <div class="gi-icon">
+        <i class="fa-solid fa-code-branch" />
+      </div>
       <h3>版本档案</h3>
       <p class="text-ink-muted">
         为这本书启用 git 快照：AI 批量改稿前后自动存档，任何时点可整体恢复——
         正文、设定、章节脉络一起回滚，改坏了也不怕。
       </p>
-      <button class="ink-btn ink-btn--primary" @click="initRepo">
+      <button
+        class="ink-btn ink-btn--primary"
+        @click="initRepo"
+      >
         <i class="fa-solid fa-code-branch" />
         启用版本档案
       </button>
@@ -139,12 +165,19 @@ onActivated(() => void refresh())
     <!-- 已就绪 -->
     <template v-else-if="status">
       <div class="git-toolbar">
-        <span class="git-state" :class="{ 'is-dirty': status.dirty }">
+        <span
+          class="git-state"
+          :class="{ 'is-dirty': status.dirty }"
+        >
           <i :class="status.dirty ? 'fa-solid fa-circle-dot' : 'fa-solid fa-circle-check'" />
           {{ status.dirty ? '有未存档变更' : '已全部存档' }}
         </span>
         <span class="git-flex" />
-        <button class="ink-icon-btn" title="刷新" @click="refresh">
+        <button
+          class="ink-icon-btn"
+          title="刷新"
+          @click="refresh"
+        >
           <i :class="loading ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-rotate'" />
         </button>
       </div>
@@ -156,15 +189,24 @@ onActivated(() => void refresh())
           placeholder="存档说明（可留空）"
           maxlength="60"
           @keydown.enter.prevent="commitNow"
-        />
-        <button class="ink-btn ink-btn--sm ink-btn--primary" :disabled="committing" @click="commitNow">
+        >
+        <button
+          class="ink-btn ink-btn--sm ink-btn--primary"
+          :disabled="committing"
+          @click="commitNow"
+        >
           <i :class="committing ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-floppy-disk'" />
           存档
         </button>
       </div>
 
       <div class="git-list">
-        <div v-if="!commits.length && !loading" class="git-empty">还没有存档，点上面「存档」建立第一个。</div>
+        <div
+          v-if="!commits.length && !loading"
+          class="git-empty"
+        >
+          还没有存档，点上面「存档」建立第一个。
+        </div>
         <div
           v-for="(c, i) in commits"
           :key="c.id"
@@ -172,11 +214,16 @@ onActivated(() => void refresh())
           :class="{ 'is-head': i === 0 }"
         >
           <div class="gi-main">
-            <div class="gi-msg">{{ c.message }}</div>
+            <div class="gi-msg">
+              {{ c.message }}
+            </div>
             <div class="gi-meta">
               <span class="num">{{ c.id }}</span>
               <span class="num">{{ fmtTime(c.timestamp) }}</span>
-              <span v-if="i === 0" class="gi-now">当前</span>
+              <span
+                v-if="i === 0"
+                class="gi-now"
+              >当前</span>
             </div>
           </div>
           <div class="gi-actions">

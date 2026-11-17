@@ -7,13 +7,13 @@ const store = useWorkspaceStore()
 
 const instruction = ref('')
 
-watch(model, (open) => {
-  if (open) instruction.value = ''
+watch(model, open => {
+    if (open) instruction.value = ''
 })
 
 async function run() {
-  model.value = false
-  await store.aiWriteScene(instruction.value.trim() || null)
+    model.value = false
+    await store.aiWriteScene(instruction.value.trim() || null)
 }
 </script>
 
@@ -37,7 +37,13 @@ async function run() {
       />
     </div>
     <template #footer>
-      <button class="ink-btn" :disabled="store.aiWriting" @click="model = false">取消</button>
+      <button
+        class="ink-btn"
+        :disabled="store.aiWriting"
+        @click="model = false"
+      >
+        取消
+      </button>
       <button
         class="ink-btn ink-btn--primary"
         style="margin-left: 10px"

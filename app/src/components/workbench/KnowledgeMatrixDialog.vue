@@ -10,42 +10,45 @@ const model = defineModel<boolean>({ default: false })
 const matrix = ref<KnowledgeMatrixDto | null>(null)
 const loading = ref(false)
 
-watch(model, async (open) => {
-  if (!open || !store.root) return
-  loading.value = true
-  matrix.value = null
-  try {
-    matrix.value = await api.threadKnowledgeMatrix(store.root)
-  } finally {
-    loading.value = false
-  }
+watch(model, async open => {
+    if (!open || !store.root) return
+    loading.value = true
+    matrix.value = null
+    try {
+        matrix.value = await api.threadKnowledgeMatrix(store.root)
+    }
+    finally {
+        loading.value = false
+    }
 })
 
 const stateMeta: Record<string, { label: string; cls: string }> = {
-  known: { label: '知晓', cls: 'c-known' },
-  suspected: { label: '起疑', cls: 'c-suspected' },
-  unknown: { label: '未知', cls: 'c-unknown' },
+    known:     { label: '知晓', cls: 'c-known' },
+    suspected: { label: '起疑', cls: 'c-suspected' },
+    unknown:   { label: '未知', cls: 'c-unknown' },
 }
 
 function cellTitle(thread: MatrixThreadDto, cell: MatrixCellDto): string {
-  const meta = stateMeta[cell.state]
-  if (!meta) return `${thread.title}：无记录`
-  const where = cell.sceneLabel ? `（${cell.sceneLabel}）` : ''
-  return `${thread.title}：${meta.label}${where}`
+    const meta = stateMeta[cell.state]
+    if (!meta) return `${thread.title}：无记录`
+    const where = cell.sceneLabel ? `（${cell.sceneLabel}）` : ''
+
+    return `${thread.title}：${meta.label}${where}`
 }
 
 const statusLabel: Record<string, string> = {
-  planned: '构想',
-  planted: '已埋',
-  revealed: '已揭',
-  resolved: '已回收',
-  abandoned: '弃用',
+    planned:   '构想',
+    planted:   '已埋',
+    revealed:  '已揭',
+    resolved:  '已回收',
+    abandoned: '弃用',
 }
 
 function observerIcon(kind: string): string {
-  if (kind === 'reader') return 'fa-solid fa-book-open'
-  if (kind === 'organization') return 'fa-solid fa-building-user'
-  return 'fa-solid fa-user'
+    if (kind === 'reader') return 'fa-solid fa-book-open'
+    if (kind === 'organization') return 'fa-solid fa-building-user'
+
+    return 'fa-solid fa-user'
 }
 </script>
 
@@ -58,11 +61,19 @@ function observerIcon(kind: string): string {
     append-to-body
     class="matrix-dialog"
   >
-    <div v-loading="loading" class="matrix-body">
-      <div v-if="matrix && matrix.threads.length === 0 && !loading" class="matrix-empty">
+    <div
+      v-loading="loading"
+      class="matrix-body"
+    >
+      <div
+        v-if="matrix && matrix.threads.length === 0 && !loading"
+        class="matrix-empty"
+      >
         <i class="fa-solid fa-table-cells" />
         <p>尚无线索记录</p>
-        <p class="hint">创建线索并登记各观察者的认知时间线后，这里会摊开成一张信息差全景表</p>
+        <p class="hint">
+          创建线索并登记各观察者的认知时间线后，这里会摊开成一张信息差全景表
+        </p>
       </div>
 
       <template v-else-if="matrix">
@@ -77,22 +88,38 @@ function observerIcon(kind: string): string {
           <table class="matrix-table">
             <thead>
               <tr>
-                <th class="col-observer">观察者 ＼ 线索</th>
-                <th v-for="t in matrix.threads" :key="t.id" class="col-thread">
+                <th class="col-observer">
+                  观察者 ＼ 线索
+                </th>
+                <th
+                  v-for="t in matrix.threads"
+                  :key="t.id"
+                  class="col-thread"
+                >
                   <span class="t-title">{{ t.title }}</span>
-                  <span class="t-meta" :class="`st-${t.status}`">
+                  <span
+                    class="t-meta"
+                    :class="`st-${t.status}`"
+                  >
                     {{ statusLabel[t.status] ?? t.status }}{{ t.priority === 'main' ? ' · 主线' : '' }}
                   </span>
                 </th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(obs, r) in matrix.observers" :key="r" :class="{ 'row-reader': obs.kind === 'reader' }">
+              <tr
+                v-for="(obs, r) in matrix.observers"
+                :key="r"
+                :class="{ 'row-reader': obs.kind === 'reader' }"
+              >
                 <td class="col-observer">
                   <i :class="observerIcon(obs.kind)" />
                   {{ obs.label }}
                 </td>
-                <td v-for="(cell, c) in matrix.cells[r]" :key="c">
+                <td
+                  v-for="(cell, c) in matrix.cells[r]"
+                  :key="c"
+                >
                   <span
                     v-if="cell.state && stateMeta[cell.state]"
                     class="cell"
@@ -101,7 +128,10 @@ function observerIcon(kind: string): string {
                   >
                     {{ stateMeta[cell.state].label }}
                   </span>
-                  <span v-else class="cell cell-none">·</span>
+                  <span
+                    v-else
+                    class="cell cell-none"
+                  >·</span>
                 </td>
               </tr>
             </tbody>
@@ -111,7 +141,12 @@ function observerIcon(kind: string): string {
     </div>
 
     <template #footer>
-      <button class="ink-btn ink-btn--sm" @click="model = false">关闭</button>
+      <button
+        class="ink-btn ink-btn--sm"
+        @click="model = false"
+      >
+        关闭
+      </button>
     </template>
   </ElDialog>
 </template>

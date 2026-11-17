@@ -4,37 +4,56 @@ import type { LastScene, RecentProject } from '@/stores/ui'
 import { formatRelativeTime, formatWordCount } from '@/utils/format'
 
 defineProps<{
-  recent: RecentProject
-  /** undefined = 尚未加载；null = 目录不可用 */
-  peek: ProjectPeekDto | null | undefined
-  lastScene: LastScene | null
+    recent: RecentProject
+
+    /** undefined = 尚未加载；null = 目录不可用 */
+    peek:      ProjectPeekDto | null | undefined
+    lastScene: LastScene | null
 }>()
 
 const emit = defineEmits<{
-  continue: []
-  book: []
-  remove: []
+    continue: []
+    book:     []
+    remove:   []
 }>()
 
 function pct(peek: ProjectPeekDto): number {
-  if (!peek.targetWords) return 0
-  return Math.min(100, Math.round((peek.wordCount / peek.targetWords) * 100))
+    if (!peek.targetWords) return 0
+
+    return Math.min(100, Math.round(peek.wordCount / peek.targetWords * 100))
 }
 </script>
 
 <template>
   <!-- 目录已不可用（peek 显式为 null）：灰化 + 只提供移除 -->
-  <div v-if="peek === null" class="fusion-card continue-card is-missing">
-    <div class="cc-spine"><i class="fa-regular fa-folder-open" /></div>
-    <div class="cc-main">
-      <div class="cc-title">{{ recent.name }}</div>
-      <div class="cc-miss-note">目录已不存在或已损坏（{{ recent.root }}）</div>
+  <div
+    v-if="peek === null"
+    class="fusion-card continue-card is-missing"
+  >
+    <div class="cc-spine">
+      <i class="fa-regular fa-folder-open" />
     </div>
-    <button class="ink-btn ink-btn--danger" @click="emit('remove')">从列表移除</button>
+    <div class="cc-main">
+      <div class="cc-title">
+        {{ recent.name }}
+      </div>
+      <div class="cc-miss-note">
+        目录已不存在或已损坏（{{ recent.root }}）
+      </div>
+    </div>
+    <button
+      class="ink-btn ink-btn--danger"
+      @click="emit('remove')"
+    >
+      从列表移除
+    </button>
   </div>
 
   <!-- 加载中 / 尚未返回：骨架 -->
-  <div v-else-if="!peek" class="fusion-card continue-card">
+  <div
+    v-else-if="!peek"
+    class="fusion-card continue-card"
+  >
     <div class="cc-spine sk sk-spine" />
     <div class="cc-main">
       <div class="sk sk-title" />
@@ -44,7 +63,11 @@ function pct(peek: ProjectPeekDto): number {
   </div>
 
   <!-- 正常：书脊式大卡 -->
-  <div v-else class="fusion-card continue-card" :class="{ 'is-fresh': !lastScene }">
+  <div
+    v-else
+    class="fusion-card continue-card"
+    :class="{ 'is-fresh': !lastScene }"
+  >
     <div class="cc-spine">
       <i class="fa-solid fa-book" />
       <span class="cc-spine-mark seal-font">卷</span>
@@ -53,17 +76,29 @@ function pct(peek: ProjectPeekDto): number {
     <div class="cc-main">
       <div class="cc-head">
         <div class="cc-title-row">
-          <h3 class="cc-title">{{ peek.name }}</h3>
-          <span v-if="lastScene" class="cc-due text-ink-muted">
+          <h3 class="cc-title">
+            {{ peek.name }}
+          </h3>
+          <span
+            v-if="lastScene"
+            class="cc-due text-ink-muted"
+          >
             上次 {{ formatRelativeTime(lastScene.ts) }}
           </span>
         </div>
         <div class="cc-actions">
-          <button class="ink-btn ink-btn--lg" title="打开逐章成书面板" @click="emit('book')">
+          <button
+            class="ink-btn ink-btn--lg"
+            title="打开逐章成书面板"
+            @click="emit('book')"
+          >
             <i class="fa-solid fa-layer-group" />
             逐章成书
           </button>
-          <button class="ink-btn ink-btn--primary ink-btn--lg" @click="emit('continue')">
+          <button
+            class="ink-btn ink-btn--primary ink-btn--lg"
+            @click="emit('continue')"
+          >
             <i class="fa-solid fa-pen-nib" />
             继续写作
           </button>
@@ -74,14 +109,23 @@ function pct(peek: ProjectPeekDto): number {
       <div class="cc-progress">
         <div class="cc-progress-line">
           <span class="cc-words num">{{ formatWordCount(peek.wordCount) }} 字</span>
-          <span v-if="peek.targetWords" class="cc-target num">
+          <span
+            v-if="peek.targetWords"
+            class="cc-target num"
+          >
             / {{ formatWordCount(peek.targetWords) }} 字 · {{ pct(peek) }}%
           </span>
           <span class="cc-dot">·</span>
           <span class="cc-counts num">{{ peek.chapterCount }} 章 · {{ peek.sceneCount }} 场</span>
         </div>
-        <div v-if="peek.targetWords" class="cc-bar">
-          <div class="cc-bar-fill" :style="{ width: `${pct(peek)}%` }" />
+        <div
+          v-if="peek.targetWords"
+          class="cc-bar"
+        >
+          <div
+            class="cc-bar-fill"
+            :style="{ width: `${pct(peek)}%` }"
+          />
         </div>
       </div>
 
@@ -90,7 +134,9 @@ function pct(peek: ProjectPeekDto): number {
         <template v-if="lastScene">
           上次写到：<span class="cc-last-pos">{{ lastScene.chapterTitle }} · {{ lastScene.sceneTitle }}</span>
         </template>
-        <template v-else>尚未落笔，从第一章开始</template>
+        <template v-else>
+          尚未落笔，从第一章开始
+        </template>
       </div>
     </div>
   </div>

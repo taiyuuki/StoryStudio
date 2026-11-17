@@ -1,32 +1,32 @@
 <script setup lang="ts">
 import { nextTick, ref, useTemplateRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import OutlineBatchDialog from './OutlineBatchDialog.vue'
 import { useBookStore } from '@/stores/book'
 import { useUiStore } from '@/stores/ui'
-import OutlineBatchDialog from './OutlineBatchDialog.vue'
 
 // 运行态 / 进度 / 预览都住在 store 里（不随面板销毁而丢）：
 // AI 正在成书时切走面板甚至关闭右栏再打开，一切从 store 原样恢复
 const book = useBookStore()
 const ui = useUiStore()
 const {
-  phase,
-  chapters,
-  targetWords,
-  maxChapters,
-  running,
-  thinking,
-  current,
-  beats,
-  preview,
-  written,
-  check,
-  paused,
-  summary,
-  error,
-  pendingCount,
-  hasChapters,
-  canStart,
+    phase,
+    chapters,
+    targetWords,
+    maxChapters,
+    running,
+    thinking,
+    current,
+    beats,
+    preview,
+    written,
+    check,
+    paused,
+    summary,
+    error,
+    pendingCount,
+    hasChapters,
+    canStart,
 } = storeToRefs(book)
 const { runAction, stopRun, reload } = book
 
@@ -35,75 +35,113 @@ const outlineOpen = ref(false)
 // 停用 / 关闭期间积累的预览流，面板在时自动贴底
 const previewEl = useTemplateRef<HTMLElement>('previewEl')
 watch(preview, () => {
-  void nextTick(() => {
-    const el = previewEl.value
-    if (el) el.scrollTop = el.scrollHeight
-  })
+    void nextTick(() => {
+        const el = previewEl.value
+        if (el) el.scrollTop = el.scrollHeight
+    })
 })
 
 function onOutlineSaved() {
-  void reload()
+    void reload()
 }
 
 // ── 展示 ──────────────────────────────────────────────────
 const STATUS_TEXT: Record<string, string> = {
-  planned: '待写',
-  writing: '写作中',
-  completed: '已完成',
+    planned:   '待写',
+    writing:   '写作中',
+    completed: '已完成',
 }
 
 const ISSUE_ICON: Record<string, string> = {
-  word_count: 'fa-solid fa-align-left',
-  truncated: 'fa-solid fa-scissors',
-  dup_paragraph: 'fa-solid fa-clone',
-  compile_error: 'fa-solid fa-triangle-exclamation',
-  compile_warning: 'fa-solid fa-circle-exclamation',
+    word_count:      'fa-solid fa-align-left',
+    truncated:       'fa-solid fa-scissors',
+    dup_paragraph:   'fa-solid fa-clone',
+    compile_error:   'fa-solid fa-triangle-exclamation',
+    compile_warning: 'fa-solid fa-circle-exclamation',
 }
 </script>
 
 <template>
   <div class="book-panel">
     <!-- 出错 -->
-    <div v-if="error" class="bk-error">
+    <div
+      v-if="error"
+      class="bk-error"
+    >
       <i class="fa-solid fa-circle-exclamation" />
       <span>{{ error }}</span>
     </div>
 
     <!-- 本次结果 -->
-    <div v-if="summary && !running" class="bk-summary">
+    <div
+      v-if="summary && !running"
+      class="bk-summary"
+    >
       <i class="fa-regular fa-circle-check" />
       <span>{{ summary }}</span>
     </div>
 
     <!-- 运行中 -->
-    <div v-if="running" class="bk-live">
+    <div
+      v-if="running"
+      class="bk-live"
+    >
       <div class="bk-live-head">
         <template v-if="current">
           <span class="bk-ch-title">第 {{ current.index }} 章《{{ current.title }}》</span>
           <span class="num">{{ written }} 字</span>
         </template>
-        <span v-else class="text-ink-muted">准备中…</span>
-        <button class="ink-btn ink-btn--sm bk-stop" @click="stopRun">
+        <span
+          v-else
+          class="text-ink-muted"
+        >准备中…</span>
+        <button
+          class="ink-btn ink-btn--sm bk-stop"
+          @click="stopRun"
+        >
           <i class="fa-solid fa-stop" />
           停止
         </button>
       </div>
 
-      <div v-if="thinking" class="bk-thinking">
+      <div
+        v-if="thinking"
+        class="bk-thinking"
+      >
         <span class="dots"><i /><i /><i /></span>
         正在构思本章…
       </div>
 
-      <div v-if="beats.length" class="bk-beats">
-        <div class="bk-sub">本章节拍</div>
+      <div
+        v-if="beats.length"
+        class="bk-beats"
+      >
+        <div class="bk-sub">
+          本章节拍
+        </div>
         <ol>
-          <li v-for="(b, i) in beats" :key="i">{{ b }}</li>
+          <li
+            v-for="(b, i) in beats"
+            :key="i"
+          >
+            {{ b }}
+          </li>
         </ol>
       </div>
 
-      <div v-if="preview" ref="previewEl" class="bk-preview">{{ preview }}</div>
+      <div
+        v-if="preview"
+        ref="previewEl"
+        class="bk-preview"
+      >
+        {{ preview }}
+      </div>
 
-      <div v-if="check" class="bk-check" :class="{ 'is-pass': check.passed }">
+      <div
+        v-if="check"
+        class="bk-check"
+        :class="{ 'is-pass': check.passed }"
+      >
         <template v-if="check.passed">
           <i class="fa-regular fa-circle-check" />
           质检通过
@@ -112,7 +150,10 @@ const ISSUE_ICON: Record<string, string> = {
           <i class="fa-solid fa-circle-exclamation" />
           <span>质检发现 {{ check.issues.length }} 项问题</span>
           <ul>
-            <li v-for="(iss, i) in check.issues" :key="i">
+            <li
+              v-for="(iss, i) in check.issues"
+              :key="i"
+            >
               <i :class="ISSUE_ICON[iss.code] ?? 'fa-solid fa-circle-info'" />
               {{ iss.message }}
             </li>
@@ -122,27 +163,43 @@ const ISSUE_ICON: Record<string, string> = {
     </div>
 
     <!-- 暂停待审 -->
-    <div v-if="paused && !running" class="bk-paused">
+    <div
+      v-if="paused && !running"
+      class="bk-paused"
+    >
       <div class="bk-paused-head">
         <i class="fa-regular fa-hand" />
         第 {{ paused.index }} 章《{{ paused.title }}》需要你看一眼
       </div>
       <ul class="bk-issues">
-        <li v-for="(iss, i) in paused.issues" :key="i" :class="{ 'is-hard': iss.hard }">
+        <li
+          v-for="(iss, i) in paused.issues"
+          :key="i"
+          :class="{ 'is-hard': iss.hard }"
+        >
           <i :class="ISSUE_ICON[iss.code] ?? 'fa-solid fa-circle-info'" />
           {{ iss.message }}
         </li>
       </ul>
       <div class="bk-paused-actions">
-        <button class="ink-btn ink-btn--primary ink-btn--sm" @click="runAction('rewrite')">
+        <button
+          class="ink-btn ink-btn--primary ink-btn--sm"
+          @click="runAction('rewrite')"
+        >
           <i class="fa-solid fa-rotate-right" />
           重写本章
         </button>
-        <button class="ink-btn ink-btn--sm" @click="runAction('approve')">
+        <button
+          class="ink-btn ink-btn--sm"
+          @click="runAction('approve')"
+        >
           <i class="fa-solid fa-check" />
           接受，继续写
         </button>
-        <button class="ink-btn ink-btn--sm" @click="runAction('skip')">
+        <button
+          class="ink-btn ink-btn--sm"
+          @click="runAction('skip')"
+        >
           <i class="fa-solid fa-forward" />
           跳过本章
         </button>
@@ -150,15 +207,27 @@ const ISSUE_ICON: Record<string, string> = {
     </div>
 
     <!-- 设置 + 启动 -->
-    <div v-if="canStart" class="bk-setup">
-      <div v-if="phase === 'done' && pendingCount === 0" class="bk-done-banner">
+    <div
+      v-if="canStart"
+      class="bk-setup"
+    >
+      <div
+        v-if="phase === 'done' && pendingCount === 0"
+        class="bk-done-banner"
+      >
         <i class="fa-regular fa-circle-check" />
         全部章节已完成
       </div>
       <div class="bk-fields">
         <label class="bk-field">
           <span>每章目标字数</span>
-          <input v-model.number="targetWords" type="number" min="500" step="100" :disabled="running" />
+          <input
+            v-model.number="targetWords"
+            type="number"
+            min="500"
+            step="100"
+            :disabled="running"
+          >
         </label>
         <label
           class="bk-field"
@@ -172,10 +241,13 @@ const ISSUE_ICON: Record<string, string> = {
             step="1"
             placeholder="不限"
             :disabled="running"
-          />
+          >
         </label>
       </div>
-      <button class="ink-btn ink-btn--primary bk-start" @click="runAction('run')">
+      <button
+        class="ink-btn ink-btn--primary bk-start"
+        @click="runAction('run')"
+      >
         <i class="fa-solid fa-play" />
         {{ pendingCount === chapters.length ? '开始成书' : '继续成书' }}
       </button>
@@ -206,7 +278,10 @@ const ISSUE_ICON: Record<string, string> = {
           续排
         </button>
       </div>
-      <ul v-if="hasChapters" class="bk-ch-list">
+      <ul
+        v-if="hasChapters"
+        class="bk-ch-list"
+      >
         <li
           v-for="ch in chapters"
           :key="ch.index"
@@ -217,26 +292,42 @@ const ISSUE_ICON: Record<string, string> = {
         >
           <span class="bk-ch-idx num">{{ ch.index }}</span>
           <span class="bk-ch-name">{{ ch.title }}</span>
-          <span class="bk-ch-status" :data-s="ch.status">
+          <span
+            class="bk-ch-status"
+            :data-s="ch.status"
+          >
             {{ STATUS_TEXT[ch.status] ?? ch.status }}
           </span>
         </li>
       </ul>
-      <div v-else class="bk-empty">
+      <div
+        v-else
+        class="bk-empty"
+      >
         <i class="fa-regular fa-map" />
         <p>这本书还没有章节脉络。</p>
-        <button class="ink-btn ink-btn--sm ink-btn--primary" @click="outlineOpen = true">
+        <button
+          class="ink-btn ink-btn--sm ink-btn--primary"
+          @click="outlineOpen = true"
+        >
           <i class="fa-solid fa-wand-magic-sparkles" />
           让 AI 排一批
         </button>
       </div>
-      <div v-if="hasChapters && pendingCount === 0 && !running" class="bk-all-done-note">
+      <div
+        v-if="hasChapters && pendingCount === 0 && !running"
+        class="bk-all-done-note"
+      >
         <i class="fa-solid fa-circle-info" />
         待写章节用完了——写长篇不必一次排完，随时可以续排下一批。
       </div>
     </div>
 
-    <OutlineBatchDialog v-model="outlineOpen" :existing-count="chapters.length" @saved="onOutlineSaved" />
+    <OutlineBatchDialog
+      v-model="outlineOpen"
+      :existing-count="chapters.length"
+      @saved="onOutlineSaved"
+    />
   </div>
 </template>
 

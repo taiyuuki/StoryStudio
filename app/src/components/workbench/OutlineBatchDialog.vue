@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { api, type OutlineBatchDraftDto } from '@/api/backend'
-import { useWorkspaceStore } from '@/stores/workspace'
 import OutlineForm from '../start/aiBook/OutlineForm.vue'
+import { type OutlineBatchDraftDto, api } from '@/api/backend'
+import { useWorkspaceStore } from '@/stores/workspace'
 
-const props = defineProps<{
-  /** 已排章节数（编号显示用） */
-  existingCount: number
+defineProps<{
+
+    /** 已排章节数（编号显示用） */
+    existingCount: number
 }>()
 
 const model = defineModel<boolean>({ default: false })
@@ -21,48 +22,51 @@ const saving = ref(false)
 const error = ref('')
 
 const characterNames = computed(() =>
-  (store.ws?.entities ?? []).filter((e) => e.kind === 'character').map((e) => e.displayName),
-)
+    (store.ws?.entities ?? []).filter(e => e.kind === 'character').map(e => e.displayName))
 
-watch(model, (open) => {
-  if (open) {
-    draft.value = null
-    error.value = ''
-    count.value = 12
-  }
+watch(model, open => {
+    if (open) {
+        draft.value = null
+        error.value = ''
+        count.value = 12
+    }
 })
 
 async function generate() {
-  if (!store.root) return
-  generating.value = true
-  error.value = ''
-  try {
-    draft.value = await api.aiBookOutlineBatch(store.root, count.value)
-  } catch (err) {
-    error.value = (err as Error).message
-  } finally {
-    generating.value = false
-  }
+    if (!store.root) return
+    generating.value = true
+    error.value = ''
+    try {
+        draft.value = await api.aiBookOutlineBatch(store.root, count.value)
+    }
+    catch(err) {
+        error.value = (err as Error).message
+    }
+    finally {
+        generating.value = false
+    }
 }
 
 async function save() {
-  if (!store.root || !draft.value) return
-  saving.value = true
-  error.value = ''
-  try {
-    const saved = await api.saveBookOutlineBatch(store.root, draft.value)
-    ElMessage.success(`已追加 ${saved} 章脉络`)
-    model.value = false
-    emit('saved', saved)
-  } catch (err) {
-    error.value = (err as Error).message
-  } finally {
-    saving.value = false
-  }
+    if (!store.root || !draft.value) return
+    saving.value = true
+    error.value = ''
+    try {
+        const saved = await api.saveBookOutlineBatch(store.root, draft.value)
+        ElMessage.success(`已追加 ${saved} 章脉络`)
+        model.value = false
+        emit('saved', saved)
+    }
+    catch(err) {
+        error.value = (err as Error).message
+    }
+    finally {
+        saving.value = false
+    }
 }
 
 function cancelGenerating() {
-  void api.aiBookCancel()
+    void api.aiBookCancel()
 }
 </script>
 
@@ -78,7 +82,10 @@ function cancelGenerating() {
   >
     <div class="obd">
       <!-- 生成参数 -->
-      <div v-if="!draft && !generating" class="obd-form">
+      <div
+        v-if="!draft && !generating"
+        class="obd-form"
+      >
         <p class="obd-tip">
           接着第 {{ existingCount }} 章往后排。AI 会看主线、最近的章节脉络和已写完章节的梗概来续，
           所以写到哪儿排到哪儿正合适。已有 {{ existingCount }} 章。
@@ -86,21 +93,41 @@ function cancelGenerating() {
         <div class="wz-row">
           <div class="wz-field">
             <label>这一批排几章</label>
-            <input v-model.number="count" type="number" min="1" max="40" />
+            <input
+              v-model.number="count"
+              type="number"
+              min="1"
+              max="40"
+            >
           </div>
         </div>
-        <button class="ink-btn ink-btn--primary" :disabled="generating" @click="generate">
+        <button
+          class="ink-btn ink-btn--primary"
+          :disabled="generating"
+          @click="generate"
+        >
           <i class="fa-solid fa-wand-magic-sparkles" />
           开始排
         </button>
-        <div v-if="error" class="obd-error">{{ error }}</div>
+        <div
+          v-if="error"
+          class="obd-error"
+        >
+          {{ error }}
+        </div>
       </div>
 
       <!-- 生成中 -->
-      <div v-else-if="generating" class="obd-progress">
+      <div
+        v-else-if="generating"
+        class="obd-progress"
+      >
         <i class="fa-solid fa-circle-notch fa-spin" />
         <p>正在读前文、排后续章节…</p>
-        <button class="ink-btn ink-btn--sm" @click="cancelGenerating">
+        <button
+          class="ink-btn ink-btn--sm"
+          @click="cancelGenerating"
+        >
           <i class="fa-solid fa-stop" />
           停止
         </button>
@@ -108,19 +135,44 @@ function cancelGenerating() {
 
       <!-- 编辑 -->
       <template v-else-if="draft">
-        <p class="obd-tip">增删改随意，保存后追加到章节脉络末尾（不影响已写的章节）。</p>
+        <p class="obd-tip">
+          增删改随意，保存后追加到章节脉络末尾（不影响已写的章节）。
+        </p>
         <div class="obd-editor">
-          <OutlineForm v-model="draft" :character-names="characterNames" :existing-count="existingCount" />
+          <OutlineForm
+            v-model="draft"
+            :character-names="characterNames"
+            :existing-count="existingCount"
+          />
         </div>
         <div class="obd-actions">
-          <button class="ink-btn ink-btn--sm" @click="draft = null"><i class="fa-solid fa-arrow-left" /> 返回重排</button>
-          <button class="ink-btn ink-btn--sm" @click="generate"><i class="fa-solid fa-rotate" /> 重新排</button>
-          <button class="ink-btn ink-btn--primary ink-btn--sm" :disabled="saving || draft.chapters.length === 0" @click="save">
+          <button
+            class="ink-btn ink-btn--sm"
+            @click="draft = null"
+          >
+            <i class="fa-solid fa-arrow-left" /> 返回重排
+          </button>
+          <button
+            class="ink-btn ink-btn--sm"
+            @click="generate"
+          >
+            <i class="fa-solid fa-rotate" /> 重新排
+          </button>
+          <button
+            class="ink-btn ink-btn--primary ink-btn--sm"
+            :disabled="saving || draft.chapters.length === 0"
+            @click="save"
+          >
             <i class="fa-solid fa-check" />
             追加 {{ draft.chapters.length }} 章
           </button>
         </div>
-        <div v-if="error" class="obd-error">{{ error }}</div>
+        <div
+          v-if="error"
+          class="obd-error"
+        >
+          {{ error }}
+        </div>
       </template>
     </div>
   </ElDialog>

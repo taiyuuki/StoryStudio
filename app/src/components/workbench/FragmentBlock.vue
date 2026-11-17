@@ -1,18 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import FragmentHistoryDialog from './FragmentHistoryDialog.vue'
 import type { FragmentDto } from '@/api/backend'
 import { api } from '@/api/backend'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useCodeMirror, EditorView } from '@/composables/useCodeMirror'
+import { EditorView, useCodeMirror } from '@/composables/useCodeMirror'
 import { useAiCheck } from '@/composables/useAiCheck'
 import { revealQuote, useFragmentReveal } from '@/composables/useFragmentReveal'
-import FragmentHistoryDialog from './FragmentHistoryDialog.vue'
 
 const props = defineProps<{
-  fragment: FragmentDto
-  index: number
-  total: number
+    fragment: FragmentDto
+    index:    number
+    total:    number
 }>()
 
 const store = useWorkspaceStore()
@@ -22,94 +22,95 @@ const ui = useUiStore()
 const doc = ref(props.fragment.text)
 
 const { container, view, create } = useCodeMirror({
-  doc,
-  onChange: (text) => {
-    doc.value = text
-    scheduleSave(text)
-  },
-  placeholder: '落笔…',
-  aiComplete: {
-    // 幽灵补全：输入停顿后预测下文，Tab 采纳 / Esc 关闭
-    enabled: () => ui.aiGhost,
-    fetch: (before, after, onDelta) =>
-      api
-        .aiCompleteFragment(store.root, props.fragment.id, before, after, onDelta)
-        .then((r) => r.text),
-    onCancel: () => void api.aiCompleteCancel(),
-  },
+    doc,
+    onChange: text => {
+        doc.value = text
+        scheduleSave(text)
+    },
+    placeholder: '落笔…',
+    aiComplete:  {
+
+        // 幽灵补全：输入停顿后预测下文，Tab 采纳 / Esc 关闭
+        enabled: () => ui.aiGhost,
+        fetch:   (before, after, onDelta) =>
+            api
+                .aiCompleteFragment(store.root, props.fragment.id, before, after, onDelta)
+                .then(r => r.text),
+        onCancel: () => void api.aiCompleteCancel(),
+    },
 })
 
 // 审校报告/锚定待审的精确定位：命中本段时滚动到引文处并高亮
 const { pending: revealPending } = useFragmentReveal()
-watch(revealPending, (req) => {
-  if (!req || req.fragmentId !== props.fragment.id) return
-  const v = view.value
-  if (!v) return
-  if (!revealQuote(v, req.quote, req.occurrence)) {
-    // 引文已改写匹配不上：退回段首定位
-    v.dispatch({ selection: { anchor: 0 }, effects: EditorView.scrollIntoView(0, { y: 'center' }) })
-  }
+watch(revealPending, req => {
+    if (!req || req.fragmentId !== props.fragment.id) return
+    const v = view.value
+    if (!v) return
+    if (!revealQuote(v, req.quote, req.occurrence)) {
+
+        // 引文已改写匹配不上：退回段首定位
+        v.dispatch({ selection: { anchor: 0 }, effects: EditorView.scrollIntoView(0, { y: 'center' }) })
+    }
 })
 
 onMounted(() => {
-  if (container.value) create(container.value)
+    if (container.value) create(container.value)
 })
 
 // 外部数据变化（切场景回来 / AI 生成后 / 版本恢复后）→ 同步进编辑器
 watch(
-  () => props.fragment.text,
-  (next) => {
-    if (next !== doc.value) doc.value = next
-  },
+    () => props.fragment.text,
+    next => {
+        if (next !== doc.value) doc.value = next
+    },
 )
 
 // ── 自动保存（防抖 800ms）──────────────────────────────
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleSave(text: string) {
-  store.fragmentSave[props.fragment.id] = 'dirty'
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => void store.saveFragment(props.fragment.id, text), 800)
+    store.fragmentSave[props.fragment.id] = 'dirty'
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => void store.saveFragment(props.fragment.id, text), 800)
 }
 
 const saveState = computed(() => store.fragmentSave[props.fragment.id] ?? 'saved')
 const saveLabel = computed(() => {
-  switch (saveState.value) {
-    case 'dirty':
-      return '未保存'
-    case 'saving':
-      return '保存中'
-    case 'error':
-      return '保存失败，点击重试'
-    default:
-      return '已保存'
-  }
+    switch (saveState.value) {
+        case 'dirty':
+            return '未保存'
+        case 'saving':
+            return '保存中'
+        case 'error':
+            return '保存失败，点击重试'
+        default:
+            return '已保存'
+    }
 })
 
 const anchors = computed(() =>
-  (props.fragment.anchors ?? []).map((a) => ({
-    entity: a.entity,
-    name: store.entityName(a.entity),
-    role: a.role,
-  })),
-)
+    (props.fragment.anchors ?? []).map(a => ({
+        entity: a.entity,
+        name:   store.entityName(a.entity),
+        role:   a.role,
+    })))
 
 // ── 锚点手动编辑（对齐 AI 的 set/remove_fragment_anchor 工具）──
 
 const ROLE_OPTIONS = [
-  { value: 'appears', label: '出场' },
-  { value: 'mentioned', label: '提及' },
-  { value: 'referenced', label: '指代' },
+    { value: 'appears', label: '出场' },
+    { value: 'mentioned', label: '提及' },
+    { value: 'referenced', label: '指代' },
 ] as const
 
 const KIND_LABELS: Record<string, string> = {
-  character: '角色',
-  location: '地点',
-  item: '道具',
-  organization: '组织',
+    character:    '角色',
+    location:     '地点',
+    item:         '道具',
+    organization: '组织',
 }
 
 function roleLabel(role: string): string {
-  return ROLE_OPTIONS.find((o) => o.value === role)?.label ?? role
+    return ROLE_OPTIONS.find(o => o.value === role)?.label ?? role
 }
 
 /** 展开中的编辑/添加表单：编辑时为实体 ID，添加时 adding 为真 */
@@ -120,77 +121,82 @@ const addRole = ref<string>('appears')
 const anchorBusy = ref(false)
 
 const editingAnchor = computed(() =>
-  (props.fragment.anchors ?? []).find((a) => a.entity === editingEntity.value),
-)
+    (props.fragment.anchors ?? []).find(a => a.entity === editingEntity.value))
 
 /** 可锚实体 = 全部实体 − 已锚定的（避免重复添加，role 更新走编辑行） */
 const addableEntities = computed(() => {
-  const anchored = new Set((props.fragment.anchors ?? []).map((a) => a.entity))
-  return (store.ws?.entities ?? []).filter((e) => !anchored.has(e.id))
+    const anchored = new Set((props.fragment.anchors ?? []).map(a => a.entity))
+
+    return (store.ws?.entities ?? []).filter(e => !anchored.has(e.id))
 })
 
 function openEdit(entity: string) {
-  editingEntity.value = entity
-  adding.value = false
+    editingEntity.value = entity
+    adding.value = false
 }
 
 function startAdd() {
-  adding.value = true
-  editingEntity.value = null
-  addEntityId.value = ''
-  addRole.value = 'appears'
+    adding.value = true
+    editingEntity.value = null
+    addEntityId.value = ''
+    addRole.value = 'appears'
 }
 
 function closeAnchorForm() {
-  editingEntity.value = null
-  adding.value = false
+    editingEntity.value = null
+    adding.value = false
 }
 
 async function setAnchorRole(entity: string, role: string) {
-  if (anchorBusy.value) return
-  anchorBusy.value = true
-  try {
-    await store.setFragmentAnchor(props.fragment.id, entity, role)
-  } finally {
-    anchorBusy.value = false
-  }
+    if (anchorBusy.value) return
+    anchorBusy.value = true
+    try {
+        await store.setFragmentAnchor(props.fragment.id, entity, role)
+    }
+    finally {
+        anchorBusy.value = false
+    }
 }
 
 async function addAnchor() {
-  if (!addEntityId.value || anchorBusy.value) return
-  anchorBusy.value = true
-  try {
-    await store.setFragmentAnchor(props.fragment.id, addEntityId.value, addRole.value)
-    // 表单保持展开，便于连续锚定多个实体
-    addEntityId.value = ''
-  } finally {
-    anchorBusy.value = false
-  }
+    if (!addEntityId.value || anchorBusy.value) return
+    anchorBusy.value = true
+    try {
+        await store.setFragmentAnchor(props.fragment.id, addEntityId.value, addRole.value)
+
+        // 表单保持展开，便于连续锚定多个实体
+        addEntityId.value = ''
+    }
+    finally {
+        anchorBusy.value = false
+    }
 }
 
 async function removeAnchor(entity: string) {
-  if (anchorBusy.value) return
-  anchorBusy.value = true
-  try {
-    await store.removeFragmentAnchor(props.fragment.id, entity)
-    closeAnchorForm()
-  } finally {
-    anchorBusy.value = false
-  }
+    if (anchorBusy.value) return
+    anchorBusy.value = true
+    try {
+        await store.removeFragmentAnchor(props.fragment.id, entity)
+        closeAnchorForm()
+    }
+    finally {
+        anchorBusy.value = false
+    }
 }
 
 // AI 锚定本段：先冲刷未落盘编辑（理解锚定读磁盘内容），再按新正文补锚
 const aiAnchoring = ref(false)
 
 async function anchorFragment() {
-  if (aiAnchoring.value) return
-  aiAnchoring.value = true
-  try {
-    await store.saveFragment(props.fragment.id, doc.value)
-    await store.aiAnchorFragment(props.fragment.id)
-  } finally {
-    aiAnchoring.value = false
-  }
+    if (aiAnchoring.value) return
+    aiAnchoring.value = true
+    try {
+        await store.saveFragment(props.fragment.id, doc.value)
+        await store.aiAnchorFragment(props.fragment.id)
+    }
+    finally {
+        aiAnchoring.value = false
+    }
 }
 
 const historyOpen = ref(false)
@@ -199,57 +205,98 @@ const historyOpen = ref(false)
 const { run: runAiCheck } = useAiCheck()
 
 async function checkFragment() {
-  await store.saveFragment(props.fragment.id, doc.value)
-  const head = doc.value.trim().slice(0, 10)
-  void runAiCheck('fragment', props.fragment.id, `片段 ${head ? `「${head}…」` : props.fragment.id}`)
+    await store.saveFragment(props.fragment.id, doc.value)
+    const head = doc.value.trim().slice(0, 10)
+    void runAiCheck('fragment', props.fragment.id, `片段 ${head ? `「${head}…」` : props.fragment.id}`)
 }
 
 async function insertAfter() {
-  await store.insertFragment(props.fragment.id)
+    await store.insertFragment(props.fragment.id)
 }
 
 async function moveUp() {
-  await store.moveFragment(props.fragment.id, -1)
+    await store.moveFragment(props.fragment.id, -1)
 }
 
 async function moveDown() {
-  await store.moveFragment(props.fragment.id, 1)
+    await store.moveFragment(props.fragment.id, 1)
 }
 </script>
 
 <template>
   <!-- id 供审校报告「跳到该片段」定位滚动 -->
-  <article :id="`frag-${fragment.id}`" class="frag-block" :class="{ 'is-dirty': saveState === 'dirty' }">
-    <div class="frag-gutter" :class="{ 'is-visible': false }">
+  <article
+    :id="`frag-${fragment.id}`"
+    class="frag-block"
+    :class="{ 'is-dirty': saveState === 'dirty' }"
+  >
+    <div
+      class="frag-gutter"
+      :class="{ 'is-visible': false }"
+    >
       <span class="frag-no num">{{ String(index + 1).padStart(2, '0') }}</span>
       <div class="gutter-actions">
-        <button :disabled="index === 0" title="上移" @click="moveUp">
+        <button
+          :disabled="index === 0"
+          title="上移"
+          @click="moveUp"
+        >
           <i class="fa-solid fa-arrow-up" />
         </button>
-        <button :disabled="index === total - 1" title="下移" @click="moveDown">
+        <button
+          :disabled="index === total - 1"
+          title="下移"
+          @click="moveDown"
+        >
           <i class="fa-solid fa-arrow-down" />
         </button>
-        <button title="在此后插入段落" @click="insertAfter">
+        <button
+          title="在此后插入段落"
+          @click="insertAfter"
+        >
           <i class="fa-solid fa-plus" />
         </button>
-        <button title="历史版本" @click="historyOpen = true">
+        <button
+          title="历史版本"
+          @click="historyOpen = true"
+        >
           <i class="fa-solid fa-clock-rotate-left" />
         </button>
-        <button title="AI 锚定本段（按当前正文自动补锚，保留手动锚点）" :disabled="aiAnchoring" @click="anchorFragment">
-          <i class="fa-solid fa-anchor" :class="{ 'fa-spin': aiAnchoring }" />
+        <button
+          title="AI 锚定本段（按当前正文自动补锚，保留手动锚点）"
+          :disabled="aiAnchoring"
+          @click="anchorFragment"
+        >
+          <i
+            class="fa-solid fa-anchor"
+            :class="{ 'fa-spin': aiAnchoring }"
+          />
         </button>
-        <button title="AI 审校本段（结果送妙笔改进）" @click="checkFragment">
+        <button
+          title="AI 审校本段（结果送妙笔改进）"
+          @click="checkFragment"
+        >
           <i class="fa-solid fa-magnifying-glass" />
         </button>
-        <button class="danger" title="删除段落" @click="store.removeFragment(fragment.id)">
+        <button
+          class="danger"
+          title="删除段落"
+          @click="store.removeFragment(fragment.id)"
+        >
           <i class="fa-regular fa-trash-can" />
         </button>
       </div>
     </div>
 
-    <div ref="container" class="frag-editor" />
+    <div
+      ref="container"
+      class="frag-editor"
+    />
 
-    <div v-if="anchors.length" class="frag-anchors">
+    <div
+      v-if="anchors.length"
+      class="frag-anchors"
+    >
       <button
         v-for="a in anchors"
         :key="a.entity"
@@ -265,7 +312,10 @@ async function moveDown() {
     </div>
 
     <!-- 锚点编辑 / 添加（改稿后手动对齐出场记录） -->
-    <div v-if="editingAnchor || adding" class="anchor-form">
+    <div
+      v-if="editingAnchor || adding"
+      class="anchor-form"
+    >
       <template v-if="editingAnchor">
         <span class="anchor-form-title">
           <i class="fa-solid fa-link" />
@@ -289,7 +339,12 @@ async function moveDown() {
         >
           <i class="fa-regular fa-trash-can" /> 移除锚点
         </button>
-        <button class="ink-btn ink-btn--sm" @click="closeAnchorForm">收起</button>
+        <button
+          class="ink-btn ink-btn--sm"
+          @click="closeAnchorForm"
+        >
+          收起
+        </button>
       </template>
       <template v-else>
         <ElSelect
@@ -323,12 +378,21 @@ async function moveDown() {
         >
           锚定
         </button>
-        <button class="ink-btn ink-btn--sm" @click="closeAnchorForm">收起</button>
+        <button
+          class="ink-btn ink-btn--sm"
+          @click="closeAnchorForm"
+        >
+          收起
+        </button>
       </template>
     </div>
 
     <div class="frag-foot">
-      <button class="frag-anchor-add" title="手动锚定实体出场" @click="startAdd">
+      <button
+        class="frag-anchor-add"
+        title="手动锚定实体出场"
+        @click="startAdd"
+      >
         <i class="fa-solid fa-plus" /> 锚点
       </button>
       <span
@@ -352,7 +416,10 @@ async function moveDown() {
       <span class="num frag-words">{{ fragment.wordCount.toLocaleString() }} 字</span>
     </div>
 
-    <FragmentHistoryDialog v-model="historyOpen" :fragment-id="fragment.id" />
+    <FragmentHistoryDialog
+      v-model="historyOpen"
+      :fragment-id="fragment.id"
+    />
   </article>
 </template>
 

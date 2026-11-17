@@ -2,114 +2,120 @@
 import { computed, reactive, ref } from 'vue'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { ElMessage } from 'element-plus'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { api } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { revealItemInDir } from '@tauri-apps/plugin-opener'
 
 const store = useWorkspaceStore()
 
 type ExportFmt = 'markdown' | 'txt'
 
 const formats: { value: ExportFmt; label: string; icon: string }[] = [
-  { value: 'markdown', label: 'Markdown', icon: 'fa-brands fa-markdown' },
-  { value: 'txt', label: '纯文本', icon: 'fa-solid fa-file-lines' },
+    { value: 'markdown', label: 'Markdown', icon: 'fa-brands fa-markdown' },
+    { value: 'txt', label: '纯文本', icon: 'fa-solid fa-file-lines' },
 ]
 
 const fmt = ref<ExportFmt>('markdown')
 const isTxt = computed(() => fmt.value === 'txt')
 
 const opts = reactive({
-  includeAppendix: false,
-  sceneTitles: false,
-  chapterNumbering: false,
-  paragraphIndent: true,
+    includeAppendix:  false,
+    sceneTitles:      false,
+    chapterNumbering: false,
+    paragraphIndent:  true,
 })
 
 const busy = ref(false)
 const lastExported = ref('')
 
 async function exportWhole() {
-  if (!store.root) return
-  busy.value = true
-  try {
-    const output = isTxt.value
-      ? await api.exportTxt(
-          store.root,
-          opts.includeAppendix,
-          opts.sceneTitles,
-          opts.chapterNumbering,
-          opts.paragraphIndent,
-        )
-      : await api.exportMarkdown(
-          store.root,
-          opts.includeAppendix,
-          opts.sceneTitles,
-          opts.chapterNumbering,
-        )
-    const path = await save({
-      title: isTxt.value ? '导出整本 TXT' : '导出整本 Markdown',
-      defaultPath: output.filename,
-      filters: isTxt.value
-        ? [{ name: '纯文本', extensions: ['txt'] }]
-        : [{ name: 'Markdown', extensions: ['md'] }],
-    })
-    if (!path) return
-    await api.writeTextFile(path, output.content)
-    lastExported.value = path
-    ElMessage.success('整本导出完成')
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    busy.value = false
-  }
+    if (!store.root) return
+    busy.value = true
+    try {
+        const output = isTxt.value
+            ? await api.exportTxt(
+                store.root,
+                opts.includeAppendix,
+                opts.sceneTitles,
+                opts.chapterNumbering,
+                opts.paragraphIndent,
+            )
+            : await api.exportMarkdown(
+                store.root,
+                opts.includeAppendix,
+                opts.sceneTitles,
+                opts.chapterNumbering,
+            )
+        const path = await save({
+            title:       isTxt.value ? '导出整本 TXT' : '导出整本 Markdown',
+            defaultPath: output.filename,
+            filters:     isTxt.value
+                ? [{ name: '纯文本', extensions: ['txt'] }]
+                : [{ name: 'Markdown', extensions: ['md'] }],
+        })
+        if (!path) return
+        await api.writeTextFile(path, output.content)
+        lastExported.value = path
+        ElMessage.success('整本导出完成')
+    }
+    catch(err) {
+        ElMessage.error((err as Error).message)
+    }
+    finally {
+        busy.value = false
+    }
 }
 
 async function exportByChapter() {
-  if (!store.root) return
-  busy.value = true
-  try {
-    const files = isTxt.value
-      ? await api.exportChaptersTxt(
-          store.root,
-          opts.includeAppendix,
-          opts.sceneTitles,
-          opts.chapterNumbering,
-          opts.paragraphIndent,
-        )
-      : await api.exportChapters(
-          store.root,
-          opts.includeAppendix,
-          opts.sceneTitles,
-          opts.chapterNumbering,
-        )
-    if (files.length === 0) {
-      ElMessage.warning('还没有可导出的内容')
-      return
+    if (!store.root) return
+    busy.value = true
+    try {
+        const files = isTxt.value
+            ? await api.exportChaptersTxt(
+                store.root,
+                opts.includeAppendix,
+                opts.sceneTitles,
+                opts.chapterNumbering,
+                opts.paragraphIndent,
+            )
+            : await api.exportChapters(
+                store.root,
+                opts.includeAppendix,
+                opts.sceneTitles,
+                opts.chapterNumbering,
+            )
+        if (files.length === 0) {
+            ElMessage.warning('还没有可导出的内容')
+
+            return
+        }
+        const dir = await open({
+            directory: true,
+            title:     `选择保存位置（将导出 ${files.length} 个章节文件）`,
+        })
+        if (typeof dir !== 'string' || !dir) return
+        for (const f of files) {
+            await api.writeTextFile(`${dir}/${f.filename}`, f.content)
+        }
+        lastExported.value = `${dir}/${files[files.length - 1].filename}`
+        ElMessage.success(`已导出 ${files.length} 个章节文件`)
     }
-    const dir = await open({
-      directory: true,
-      title: `选择保存位置（将导出 ${files.length} 个章节文件）`,
-    })
-    if (typeof dir !== 'string' || !dir) return
-    for (const f of files) {
-      await api.writeTextFile(`${dir}/${f.filename}`, f.content)
+    catch(err) {
+        ElMessage.error((err as Error).message)
     }
-    lastExported.value = `${dir}/${files[files.length - 1].filename}`
-    ElMessage.success(`已导出 ${files.length} 个章节文件`)
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    busy.value = false
-  }
+    finally {
+        busy.value = false
+    }
 }
 
 async function revealLast() {
-  if (!lastExported.value) return
-  try {
-    await revealItemInDir(lastExported.value)
-  } catch {
-    ElMessage.warning('无法打开文件位置')
-  }
+    if (!lastExported.value) return
+    try {
+        await revealItemInDir(lastExported.value)
+    }
+    catch {
+        ElMessage.warning('无法打开文件位置')
+    }
 }
 </script>
 
@@ -135,29 +141,48 @@ async function revealLast() {
 
     <div class="ep-option">
       <div>
-        <div class="eo-label">角色一览</div>
-        <div class="eo-sub">在文末附上所有角色的设定速览</div>
+        <div class="eo-label">
+          角色一览
+        </div>
+        <div class="eo-sub">
+          在文末附上所有角色的设定速览
+        </div>
       </div>
       <ElSwitch v-model="opts.includeAppendix" />
     </div>
     <div class="ep-option">
       <div>
-        <div class="eo-label">场景标题</div>
-        <div class="eo-sub">开启时显示每场戏的标题，关闭时用分割线分隔</div>
+        <div class="eo-label">
+          场景标题
+        </div>
+        <div class="eo-sub">
+          开启时显示每场戏的标题，关闭时用分割线分隔
+        </div>
       </div>
       <ElSwitch v-model="opts.sceneTitles" />
     </div>
     <div class="ep-option">
       <div>
-        <div class="eo-label">章节编号</div>
-        <div class="eo-sub">自动加上「第N章」前缀</div>
+        <div class="eo-label">
+          章节编号
+        </div>
+        <div class="eo-sub">
+          自动加上「第N章」前缀
+        </div>
       </div>
       <ElSwitch v-model="opts.chapterNumbering" />
     </div>
-    <div v-if="isTxt" class="ep-option">
+    <div
+      v-if="isTxt"
+      class="ep-option"
+    >
       <div>
-        <div class="eo-label">段首缩进</div>
-        <div class="eo-sub">每段开头加两个全角空格，符合投稿排版习惯</div>
+        <div class="eo-label">
+          段首缩进
+        </div>
+        <div class="eo-sub">
+          每段开头加两个全角空格，符合投稿排版习惯
+        </div>
       </div>
       <ElSwitch v-model="opts.paragraphIndent" />
     </div>
@@ -172,13 +197,22 @@ async function revealLast() {
         <i :class="busy ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-book'" />
         导出整本
       </button>
-      <button class="ink-btn" style="width: 100%" :disabled="busy" @click="exportByChapter">
+      <button
+        class="ink-btn"
+        style="width: 100%"
+        :disabled="busy"
+        @click="exportByChapter"
+      >
         <i class="fa-solid fa-layer-group" />
         按章导出
       </button>
     </div>
 
-    <div v-if="lastExported" class="ep-last" @click="revealLast">
+    <div
+      v-if="lastExported"
+      class="ep-last"
+      @click="revealLast"
+    >
       <i class="fa-solid fa-folder-open" />
       <span>{{ lastExported }}</span>
     </div>
