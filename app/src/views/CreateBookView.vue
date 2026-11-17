@@ -213,7 +213,7 @@ async function confirmConcept(reroll: boolean) {
     if (!root.value) {
       root.value = await api.createBookProject(dir, concept.value, buildOptions())
     }
-    worldDraft.value = await api.aiBookWorld(concept.value, buildOptions())
+    worldDraft.value = await api.aiBookWorld(root.value, concept.value, buildOptions())
     worldReport.value = null
     step.value = 2
   } catch (err) {
@@ -253,11 +253,15 @@ async function regenWorld() {
     ElMessage.warning('先回到「构思」一步确认概念')
     return
   }
+  if (!root.value) {
+    ElMessage.warning('项目还没建立，先回到「构思」一步确认概念')
+    return
+  }
   generating.value = true
   busyPhase.value = 'world'
   error.value = ''
   try {
-    worldDraft.value = await api.aiBookWorld(concept.value, buildOptions())
+    worldDraft.value = await api.aiBookWorld(root.value, concept.value, buildOptions())
   } catch (err) {
     error.value = (err as Error).message
   } finally {

@@ -1657,15 +1657,16 @@ pub fn create_book_project(
     lib::create_book_project(Path::new(&parent_dir), &concept, &options).map_err(e)
 }
 
-/// 第 3 步：生成设定草稿（世界观/角色/关系/线索；纯 LLM 无落盘）
+/// 第 3 步：生成设定草稿（世界观/角色/关系/线索；草稿不落盘，调用记账到项目账本）
 #[tauri::command]
 pub async fn ai_book_world(
+    root: String,
     concept: lib::BookConcept,
     options: lib::BookCreationOptions,
 ) -> R<lib::WorldDraft> {
     let task = tauri::async_runtime::spawn_blocking(move || {
         let provider = active_provider(lib::purpose::DESIGN)?;
-        lib::ai_book_world(&concept, &options, provider).map_err(e)
+        lib::ai_book_world(Path::new(&root), &concept, &options, provider).map_err(e)
     });
     one_call_timeout(task).await
 }

@@ -1455,9 +1455,9 @@ export const api = {
   createBookProject(parentDir: string, concept: BookConceptDto, options: BookCreationOptionsDto) {
     return call<string>('create_book_project', { parentDir, concept, options })
   },
-  /** 第 3 步：生成设定草稿（可编辑，保存前不落盘） */
-  aiBookWorld(concept: BookConceptDto, options: BookCreationOptionsDto) {
-    return call<WorldDraftDto>('ai_book_world', { concept, options })
+  /** 第 3 步：生成设定草稿（可编辑，保存前不落盘；调用记入项目 AI 账本） */
+  aiBookWorld(root: string, concept: BookConceptDto, options: BookCreationOptionsDto) {
+    return call<WorldDraftDto>('ai_book_world', { root, concept, options })
   },
   /** 第 3 步确认：保存设定 */
   saveBookWorld(root: string, draft: WorldDraftDto) {

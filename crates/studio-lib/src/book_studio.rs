@@ -8,7 +8,8 @@
 //! 1. 构思：`ai_book_concepts` → 3 个候选方向（尚无项目，不记 AI 账本）
 //! 2. 开书：`create_book_project`（用户编辑后的概念 + 参数 → 建项目、
 //!    写 outline.toml，参数随项目持久化）
-//! 3. 设定：`ai_book_world` → 世界观/角色/关系/线索草稿；`save_book_world` 落盘
+//! 3. 设定：`ai_book_world` → 世界观/角色/关系/线索草稿（调用记入项目账本）；
+//!    `save_book_world` 落盘
 //! 4. 大纲：`ai_book_outline_batch` → 一批章节脉络草稿（长篇按批排纲，
 //!    不一次排完）；`save_book_outline_batch` 追加 chapters.toml。
 //!    写作过程中可反复调用续排（上下文含已完成章节梗概）。
@@ -433,8 +434,10 @@ pub fn create_book_project(
 // 第 3 步：设定（草稿 / 保存）
 // ============================================================================
 
-/// 生成设定草稿（纯函数，不落盘）。用**用户编辑后**的概念做上下文。
+/// 生成设定草稿（草稿不落盘；调用记入项目 AI 账本）。
+/// 用**用户编辑后**的概念做上下文。
 pub fn ai_book_world(
+    root: &Path,
     concept: &BookConcept,
     options: &BookCreationOptions,
     provider: Arc<dyn story_ai_runtime::AiProvider>,
@@ -442,7 +445,14 @@ pub fn ai_book_world(
     let o = options.normalized();
     let n_chars = o.character_count.unwrap_or(WORLD_CHARACTER_COUNT);
     with_cancel(|cancel| {
-        let json = llm_json(provider, cancel, None, world_prompt(concept, &o, n_chars))?;
+        // 项目在上一轮已建好（root 必有）——此前的设定生成不记账，
+        // 向导里 token 消耗第二大的调用从账本里消失
+        let json = llm_json(
+            provider,
+            cancel,
+            Some((root, "AI 建书·设定")),
+            world_prompt(concept, &o, n_chars),
+        )?;
         Ok(parse_world_draft(&json, n_chars))
     })
 }
@@ -829,7 +839,7 @@ pub fn ai_book_outline_batch(
         let json = llm_json(
             provider,
             cancel,
-            Some(root),
+            Some((root, "AI 建书·大纲")),
             outline_prompt(&context, count),
         )?;
         Ok(parse_outline_draft(&json, count as usize))
@@ -1482,7 +1492,8 @@ pub fn save_book_outline_batch(
 fn llm_json(
     provider: Arc<dyn story_ai_runtime::AiProvider>,
     cancel: &CancelToken,
-    ledger_root: Option<&Path>,
+    // 记账目标（项目根, 场景标签）；None = 不记账（构思阶段尚无项目）
+    ledger: Option<(&Path, &str)>,
     prompt: String,
 ) -> Result<serde_json::Value, StudioError> {
     let request = GenerateRequest {
@@ -1501,11 +1512,11 @@ fn llm_json(
 
     let started = std::time::Instant::now();
     let result = stream_generate_with_cancel(provider.clone(), &request, cancel, Arc::new(|_| {}));
-    if let Some(root) = ledger_root {
+    if let Some((root, scene)) = ledger {
         match &result {
             Ok(resp) => crate::ai_ledger::record(
                 root,
-                "AI 建书·大纲",
+                scene,
                 provider.id(),
                 provider.model(),
                 resp.usage.total() as u64,
@@ -1515,7 +1526,7 @@ fn llm_json(
             ),
             Err(ref e) => crate::ai_ledger::record(
                 root,
-                "AI 建书·大纲",
+                scene,
                 provider.id(),
                 provider.model(),
                 0,
@@ -1819,9 +1830,20 @@ mod tests {
         let root = create_book_project(parent.path(), &concept, &options()).unwrap();
 
         // 草稿解析：角色限 3 个、无效关系丢弃、空条目清理
-        let draft =
-            ai_book_world(&concept, &options(), scripted(vec![WORLD_JSON.to_string()])).unwrap();
+        let draft = ai_book_world(
+            Path::new(&root),
+            &concept,
+            &options(),
+            scripted(vec![WORLD_JSON.to_string()]),
+        )
+        .unwrap();
         assert_eq!(draft.characters.len(), 3);
+        // 设定调用记入项目账本（修复前只有大纲阶段记账）
+        let ledger = crate::ai_ledger::load(Path::new(&root));
+        assert!(ledger
+            .entries
+            .iter()
+            .any(|r| r.scene == "AI 建书·设定" && r.ok));
         assert_eq!(draft.characters[0].aliases, vec!["小澈"]);
         // 解析只清理空字段；端点校验发生在保存时（见下方 report 断言）
         assert_eq!(draft.relations.len(), 2);
@@ -1869,7 +1891,13 @@ mod tests {
         let root = Path::new(&root);
 
         // 先落设定（角色供续排上下文引用）
-        let world = ai_book_world(&concept, &options(), scripted(vec![WORLD_JSON.into()])).unwrap();
+        let world = ai_book_world(
+            root,
+            &concept,
+            &options(),
+            scripted(vec![WORLD_JSON.into()]),
+        )
+        .unwrap();
         save_book_world(root, &world).unwrap();
 
         // 第一批：3 章 + 1 卷
