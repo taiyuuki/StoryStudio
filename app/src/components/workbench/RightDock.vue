@@ -119,20 +119,6 @@ function startResize(e: PointerEvent) {
       @pointerdown="startResize"
       @dblclick="ui.dockWidth = DOCK_WIDTH_DEFAULT"
     />
-    <div class="dock-rail">
-      <button
-        v-for="[key, p] in panels"
-        :key="key"
-        class="rail-btn"
-        :class="{ 'is-active': ui.activePanel === key, 'is-busy': busyPanels[key] }"
-        :title="p.label"
-        @click="ui.togglePanel(key as any)"
-      >
-        <i :class="p.icon" />
-        <span v-if="p.badge" class="rail-badge num">{{ p.badge > 99 ? '99+' : p.badge }}</span>
-      </button>
-    </div>
-
     <Transition name="dock-panel">
       <div v-if="activeComp && activeMeta" class="dock-panel">
         <div class="dock-head">
@@ -150,6 +136,21 @@ function startResize(e: PointerEvent) {
         </div>
       </div>
     </Transition>
+
+    <!-- 图标轨道贴窗口右缘，面板在轨道左侧展开 -->
+    <div class="dock-rail">
+      <button
+        v-for="[key, p] in panels"
+        :key="key"
+        class="rail-btn"
+        :class="{ 'is-active': ui.activePanel === key, 'is-busy': busyPanels[key] }"
+        :title="p.label"
+        @click="ui.togglePanel(key as any)"
+      >
+        <i :class="p.icon" />
+        <span v-if="p.badge" class="rail-badge num">{{ p.badge > 99 ? '99+' : p.badge }}</span>
+      </button>
+    </div>
   </aside>
 </template>
 
@@ -158,7 +159,6 @@ function startResize(e: PointerEvent) {
   position: relative;
   display: flex;
   min-height: 0;
-  border-left: 1px solid var(--divider);
   background: var(--surface-1);
   backdrop-filter: blur(12px);
 }
@@ -204,7 +204,7 @@ function startResize(e: PointerEvent) {
   padding: 12px 0;
   width: 48px;
   flex-shrink: 0;
-  border-right: 1px solid var(--divider);
+  border-left: 1px solid var(--divider);
 }
 
 .rail-btn {
@@ -268,6 +268,7 @@ function startResize(e: PointerEvent) {
   flex-direction: column;
   width: v-bind('ui.dockWidth + "px"');
   min-height: 0;
+  border-left: 1px solid var(--divider);
 }
 
 .dock-head {
@@ -304,10 +305,11 @@ function startResize(e: PointerEvent) {
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+// 面板从右侧轨道后面滑入/滑出（transform 不挤动轨道）
 .dock-panel-enter-from,
 .dock-panel-leave-to {
   opacity: 0;
-  margin-right: -20px;
+  transform: translateX(20px);
 }
 </style>
 
