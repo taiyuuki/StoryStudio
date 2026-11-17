@@ -71,11 +71,12 @@ jobs:
           releaseName: StoryStudio ${{ github.ref_name }}
           # latest.json 由 updater-json job 统一组装（各平台各自上传会互相覆盖）
           includeUpdaterJson: false
+          # 这份 body 会原样进 latest.json 的 notes，应用内更新弹窗直接展示——
+          # 保持精简，只留 Release 页下载指引与签名放行说明，不放更新日志
           releaseBody: |
-            桌面安装包（macOS .dmg / Windows .msi 与 .exe / Linux .deb 与 .rpm 等）
-            与 story-studio CLI 二进制见下方 Assets。
-            已安装旧版的可在应用内「设置 → 关于」检测更新直接升级。
-            应用未做 OS 级代码签名，macOS 首次打开与 Windows SmartScreen 需手动放行。
+            桌面安装包与 story-studio CLI 见 Assets；已装旧版可在应用内「设置 → 关于」直接升级。
+
+            无 OS 级代码签名，macOS 首次打开与 Windows SmartScreen 需手动放行。
           args: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
 
   # 多平台矩阵各自只产出本平台 updater 产物，latest.json 统一在此组装

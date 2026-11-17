@@ -80,11 +80,7 @@ function close() {
         </button>
         <div class="upd-actions">
           <button class="ink-btn" :disabled="downloading" @click="close">以后再说</button>
-          <button
-            class="ink-btn ink-btn--primary ink-btn--lg"
-            :disabled="downloading"
-            @click="runUpdate"
-          >
+          <button class="ink-btn ink-btn--primary" :disabled="downloading" @click="runUpdate">
             <i :class="downloading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-circle-arrow-down'" />
             {{ downloading ? '下载中…' : '更新并重启' }}
           </button>

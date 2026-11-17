@@ -18,6 +18,10 @@ import { useUpdateCheck } from '@/composables/useUpdateCheck'
 const router = useRouter()
 const workspace = useWorkspaceStore()
 
+/** 应用内更新仅限正式构建：dev 裸二进制里跑 updater 会把 target/debug
+ *  目录当作安装目标整个替换掉（updater 取可执行文件父目录），必须拦 */
+const updaterAvailable = import.meta.env.PROD
+
 // ── 配置状态 ────────────────────────────────────────────
 const config = ref<AiConfigDto>({ profiles: [], activeProfile: null, purposeProfiles: null, agentMaxToolTurns: null })
 const loaded = ref(false)
@@ -1187,6 +1191,7 @@ function goBack() {
               </div>
               <div class="sv-about-actions">
                 <button
+                  v-if="updaterAvailable"
                   class="ink-btn"
                   :disabled="updateCheck.checking.value"
                   @click="updateCheck.checkForUpdate(true)"

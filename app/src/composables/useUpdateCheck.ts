@@ -1,13 +1,16 @@
 // 检测更新 — 启动时静默检查（App.vue 挂 PROD 门），发现新版本弹窗；
-// 设置页「关于」分栏可手动检查。版本比较由 updater 插件完成
+// 设置页「关于」分栏可手动检查（同样仅 PROD）。版本比较由 updater 插件完成
 // （latest.json 的 version 对比当前版本），无需自研 semver。
 //
 // 自动检查失败静默（网络问题不打扰，loadPeeks 同风格）；手动检查提示结果。
 // 下载安装完成后询问重启（Windows 上安装器会先退出应用，询问可能不出现）。
+// 重启走 Rust 侧 restart_app：macOS 用 open -n 经 LaunchServices 拉起
+// （Tauri 自带 relaunch 直接 spawn 二进制，更新替换 bundle 后常起不来，
+// 见 tauri-apps/tauri#11392）。
 import { ref, shallowRef } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { invoke } from '@tauri-apps/api/core'
 import { check, type Update } from '@tauri-apps/plugin-updater'
-import { relaunch } from '@tauri-apps/plugin-process'
 import { useUiStore } from '@/stores/ui'
 
 /** 模块级单例：全应用共享同一次检查结果，弹窗单一挂载点渲染（App.vue） */
@@ -70,7 +73,7 @@ async function runUpdate() {
         confirmButtonText: '立即重启',
         cancelButtonText: '稍后重启',
       })
-      await relaunch()
+      await invoke('restart_app')
     } catch {
       // 稍后重启：安装包已就位，下次启动即为新版本
     }

@@ -218,6 +218,8 @@ pub fn run() {
             commands::watch_start,
             commands::watch_stop,
             commands::watch_status,
+            // 应用生命周期
+            commands::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("StoryStudio 启动失败");

@@ -4,13 +4,13 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 const mockCheck = vi.hoisted(() => vi.fn())
-const mockRelaunch = vi.hoisted(() => vi.fn())
+const mockInvoke = vi.hoisted(() => vi.fn())
 const mockConfirm = vi.hoisted(() => vi.fn())
 const mockSuccess = vi.hoisted(() => vi.fn())
 const mockError = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: mockCheck }))
-vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: mockRelaunch }))
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }))
 vi.mock('element-plus', () => ({
   ElMessage: { success: mockSuccess, error: mockError },
   ElMessageBox: { confirm: mockConfirm },
@@ -51,7 +51,7 @@ function fakeUpdate(version: string) {
 
 beforeEach(() => {
   mockCheck.mockReset()
-  mockRelaunch.mockReset()
+  mockInvoke.mockReset()
   mockConfirm.mockReset()
   mockSuccess.mockReset()
   mockError.mockReset()
@@ -117,11 +117,12 @@ describe('runUpdate', () => {
 
     // Progress 事件累计：Started total=100 + Progress chunk=40
     expect(uc.progress.value).toBeNull() // 完成后清空
-    expect(mockRelaunch).toHaveBeenCalledTimes(1)
+    // 重启走 Rust 侧 restart_app（macOS 经 LaunchServices，见 commands.rs）
+    expect(mockInvoke).toHaveBeenCalledWith('restart_app')
     expect(uc.downloading.value).toBe(false)
   })
 
-  it('用户选择稍后重启：不调 relaunch', async () => {
+  it('用户选择稍后重启：不重启', async () => {
     const uc = useUpdateCheck()
     mockCheck.mockResolvedValue(fakeUpdate('0.2.0'))
     await uc.checkForUpdate(true)
@@ -129,7 +130,7 @@ describe('runUpdate', () => {
 
     await uc.runUpdate()
 
-    expect(mockRelaunch).not.toHaveBeenCalled()
+    expect(mockInvoke).not.toHaveBeenCalled()
   })
 })
 

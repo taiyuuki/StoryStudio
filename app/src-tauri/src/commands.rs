@@ -2137,6 +2137,40 @@ pub fn watch_status() -> R<watch::WatchStatusDto> {
 }
 
 // ============================================================================
+// 应用生命周期
+// ============================================================================
+
+/// 重启应用（更新安装后由前端调用）。
+///
+/// macOS 上 Tauri 自带的重启是绕过 LaunchServices 直接 spawn 二进制，
+/// 更新刚替换完 .app bundle 后经常起不来，且失败只写日志完全静默
+/// （tauri-apps/tauri#11392、#13923）。这里改为 `open -n <bundle>` 走
+/// LaunchServices 拉起新实例，图标 / 激活状态 / Finder 注册都正常；
+/// 裸二进制（tauri dev）与其他平台回退到 Tauri 默认重启。
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = app_bundle_path() {
+        let _ = std::process::Command::new("open")
+            .args(["-n", "-a"])
+            .arg(&bundle)
+            .status();
+        app.exit(0);
+        return;
+    }
+    app.restart();
+}
+
+/// 从当前可执行文件上溯定位 .app bundle 根；裸二进制返回 None（仅 macOS）
+#[cfg(target_os = "macos")]
+fn app_bundle_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(std::path::Path::to_path_buf)
+}
+
+// ============================================================================
 // 内部辅助
 // ============================================================================
 
