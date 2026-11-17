@@ -7,6 +7,7 @@ import SceneEditor from '@/components/workbench/SceneEditor.vue'
 import RightDock from '@/components/workbench/RightDock.vue'
 import SearchDialog from '@/components/workbench/SearchDialog.vue'
 import ChapterReadView from '@/components/workbench/ChapterReadView.vue'
+import UndoToast from '@/components/common/UndoToast.vue'
 
 const store = useWorkspaceStore()
 const router = useRouter()
@@ -34,6 +35,8 @@ onMounted(() => {
     <SearchDialog />
     <!-- 整章阅读（编辑器工具栏入口），全屏覆盖层 -->
     <ChapterReadView />
+    <!-- 删除撤销条（各面板删除入口共用，见 composables/useUndo.ts） -->
+    <UndoToast />
   </div>
   <div v-else class="ink-bg-container wb-loading">
     <i class="fa-solid fa-circle-notch fa-spin" />

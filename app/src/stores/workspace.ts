@@ -19,6 +19,7 @@ import type {
   WorkspaceDto,
 } from '@/api/backend'
 import { api, onFsChanged, onWatchState } from '@/api/backend'
+import { useUndo } from '@/composables/useUndo'
 import { useUiStore } from './ui'
 // 循环依赖安全：useBookStore 只在本 store 的事件回调里延迟调用，
 // book store 初始化也只在函数体内解引用本 store——两个 setup 都不会
@@ -27,8 +28,16 @@ import { useBookStore } from './book'
 
 export type SaveState = 'dirty' | 'saving' | 'saved' | 'error'
 
+/** 内置观察者的展示名（实体观察者走 entityName 回落实体名） */
+const BUILTIN_OBSERVERS: Record<string, string> = {
+  reader: '读者',
+  author: '作者',
+  omniscient: '全知视角',
+}
+
 export const useWorkspaceStore = defineStore('workspace', () => {
   const ui = useUiStore()
+  const { offerUndo } = useUndo()
 
   // ── 状态 ────────────────────────────────────────────────
   const root = ref('')
@@ -325,11 +334,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function removeFragmentAnchor(fragmentId: string, entityId: string): Promise<void> {
     if (!root.value) return
+    const rootPath = root.value
+    // 撤销快照：锚点角色（撤销按 entity+role 原样补回）
+    const role =
+      scene.value?.fragments.find((x) => x.id === fragmentId)?.anchors.find((a) => a.entity === entityId)?.role ?? ''
     try {
-      const anchors = await api.removeFragmentAnchor(root.value, fragmentId, entityId)
+      const anchors = await api.removeFragmentAnchor(rootPath, fragmentId, entityId)
       const f = scene.value?.fragments.find((x) => x.id === fragmentId)
       if (f) f.anchors = anchors
       scheduleCompile()
+      if (role) {
+        offerUndo(`出场锚点（${entityName.value(entityId)}）`, async () => {
+          const restored = await api.setFragmentAnchor(rootPath, fragmentId, entityId, role)
+          const fr = scene.value?.fragments.find((x) => x.id === fragmentId)
+          if (fr) fr.anchors = restored
+          scheduleCompile()
+        })
+      }
     } catch (err) {
       ElMessage.error((err as Error).message)
     }
@@ -591,11 +612,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function removeRelation(relationId: string): Promise<void> {
     if (!root.value) return
+    const r = ws.value?.relations.find((x) => x.id === relationId)
+    if (!r) return
+    const rootPath = root.value
+    // 撤销快照：addRelation 重建（新 ID；时变窗口不随撤销还原）
+    const { from, to, relation } = r
     try {
-      await api.removeRelation(root.value, relationId)
+      await api.removeRelation(rootPath, relationId)
       if (ws.value) {
-        ws.value.relations = ws.value.relations.filter((r) => r.id !== relationId)
+        ws.value.relations = ws.value.relations.filter((x) => x.id !== relationId)
       }
+      offerUndo(`关系「${relation}」`, async () => {
+        const restored = await api.addRelation(rootPath, from, to, relation)
+        if (ws.value) ws.value.relations.push(restored)
+      })
     } catch (err) {
       ElMessage.error((err as Error).message)
     }
@@ -663,9 +693,55 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function deleteThread(threadId: string): Promise<void> {
     if (!root.value) return
+    const t = ws.value?.threads.find((x) => x.id === threadId)
+    if (!t) return
     try {
-      await api.deleteThread(root.value, threadId)
-      if (ws.value) ws.value.threads = ws.value.threads.filter((t) => t.id !== threadId)
+      await ElMessageBox.confirm(
+        `删除「${t.title}」后，其推进历史（埋下/揭示/回收）将一并丢失；8 秒内可撤销，撤销会恢复基本信息与认知记录，但不还原推进状态。确定删除？`,
+        '删除线索',
+        { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+    const rootPath = root.value
+    // 撤销快照：闭包只持纯数据副本（createThread 重建后是新 ID，推进状态不可还原）
+    const snap = {
+      title: t.title,
+      description: t.description,
+      goal: t.goal,
+      priority: t.priority,
+      scope: t.scope,
+      dueVolume: t.dueVolume,
+      knowledge: t.knowledge.map((k) => ({
+        observer: k.observerEntity ?? k.observerKind,
+        timeline: k.stateTimeline.map((e) => ({ scene: e.scene, state: e.state })),
+      })),
+    }
+    try {
+      await api.deleteThread(rootPath, threadId)
+      if (ws.value) ws.value.threads = ws.value.threads.filter((x) => x.id !== threadId)
+      offerUndo(`线索「${snap.title}」`, async () => {
+        const created = await api.createThread(
+          rootPath,
+          snap.title,
+          snap.description ?? '',
+          snap.priority,
+          snap.dueVolume,
+        )
+        if (snap.goal || snap.scope) {
+          await api.updateThread(rootPath, created.id, {
+            ...(snap.goal ? { goal: snap.goal } : {}),
+            ...(snap.scope ? { scope: snap.scope } : {}),
+          })
+        }
+        for (const k of snap.knowledge) {
+          for (const e of k.timeline) {
+            await api.setThreadKnowledge(rootPath, created.id, k.observer, e.state, e.scene)
+          }
+        }
+        await refresh()
+      })
     } catch (err) {
       ElMessage.error((err as Error).message)
     }
@@ -718,9 +794,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     sceneId?: string,
   ): Promise<void> {
     if (!root.value) return
+    const rootPath = root.value
+    // 撤销快照：该观察者将被删掉的时间线点（删整条记录 = 全部）
+    const k = ws.value?.threads
+      .find((t) => t.id === threadId)
+      ?.knowledge.find((x) => (x.observerEntity ?? x.observerKind) === observer)
+    const timeline = (k?.stateTimeline ?? [])
+      .filter((e) => !sceneId || e.scene === sceneId)
+      .map((e) => ({ scene: e.scene, state: e.state }))
     try {
-      await api.removeThreadKnowledge(root.value, threadId, observer, sceneId)
+      await api.removeThreadKnowledge(rootPath, threadId, observer, sceneId)
       await refresh()
+      if (timeline.length) {
+        const label = k?.observerEntity
+          ? entityName.value(k.observerEntity)
+          : (BUILTIN_OBSERVERS[observer] ?? observer)
+        offerUndo(`「${label}」的认知记录`, async () => {
+          for (const e of timeline) {
+            await api.setThreadKnowledge(rootPath, threadId, observer, e.state, e.scene)
+          }
+          await refresh()
+        })
+      }
     } catch (err) {
       ElMessage.error((err as Error).message)
     }

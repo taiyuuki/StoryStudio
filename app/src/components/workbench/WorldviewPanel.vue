@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { api } from '@/api/backend'
 import type { ConceptDto, SystemDto, WorldviewDto } from '@/api/backend'
+import { useUndo } from '@/composables/useUndo'
 
 const store = useWorkspaceStore()
+const { offerUndo } = useUndo()
 
 const loading = ref(true)
 const saving = ref(false)
@@ -110,10 +112,28 @@ function saveConcept(i: number) {
   void persist()
 }
 
-function deleteConcept(i: number) {
+async function deleteConcept(i: number) {
+  const item = wv.concepts[i]
+  if (!item) return
+  try {
+    await ElMessageBox.confirm(`删除概念「${item.name}」？8 秒内可撤销。`, '删除概念', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  const root = store.root
+  const snapshot = { ...item }
   wv.concepts.splice(i, 1)
   conceptEditing.value = -1
   void persist()
+  offerUndo(`概念「${item.name}」`, async () => {
+    if (store.root !== root) throw new Error('项目已切换，无法撤销')
+    wv.concepts.splice(Math.min(i, wv.concepts.length), 0, snapshot)
+    await persist()
+  })
 }
 
 // —— 体系操作 ——
@@ -162,10 +182,28 @@ function saveSystem(i: number) {
   void persist()
 }
 
-function deleteSystem(i: number) {
+async function deleteSystem(i: number) {
+  const item = wv.systems[i]
+  if (!item) return
+  try {
+    await ElMessageBox.confirm(`删除体系「${item.name}」？8 秒内可撤销。`, '删除体系', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  const root = store.root
+  const snapshot = { ...item }
   wv.systems.splice(i, 1)
   systemEditing.value = -1
   void persist()
+  offerUndo(`体系「${item.name}」`, async () => {
+    if (store.root !== root) throw new Error('项目已切换，无法撤销')
+    wv.systems.splice(Math.min(i, wv.systems.length), 0, snapshot)
+    await persist()
+  })
 }
 
 // —— 纪元操作 ——
@@ -183,8 +221,16 @@ function addEras() {
 }
 
 function removeEra(i: number) {
+  const era = wv.eras[i]
+  if (era === undefined) return
+  const root = store.root
   wv.eras.splice(i, 1)
   void persist()
+  offerUndo(`纪元「${era}」`, async () => {
+    if (store.root !== root) throw new Error('项目已切换，无法撤销')
+    wv.eras.splice(Math.min(i, wv.eras.length), 0, era)
+    await persist()
+  })
 }
 
 function moveEra(i: number, dir: -1 | 1) {

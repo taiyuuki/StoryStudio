@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { AssertionDto, EvidenceRefDto, KnowledgeDto } from '@/api/backend'
 import { api } from '@/api/backend'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useUndo } from '@/composables/useUndo'
 
 const store = useWorkspaceStore()
+const { offerUndo } = useUndo()
 
 const knowledge = ref<KnowledgeDto | null>(null)
 const loading = ref(false)
@@ -235,10 +237,45 @@ async function setStatus(a: AssertionDto, status: string) {
 
 async function remove(a: AssertionDto) {
   if (!store.root) return
+  const label = `断言「${store.entityName(a.subject)}：${a.object}」`
   try {
-    await api.deleteAssertion(store.root, a.id)
+    await ElMessageBox.confirm(`删除${label}？8 秒内可撤销。`, '删除断言', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  const root = store.root
+  // 撤销快照：addAssertion 重建（新 ID），状态与逐条证据在重建后补齐
+  const snap = {
+    subject: a.subject,
+    predicate: a.predicate,
+    object: a.object,
+    status: a.status,
+    evidence: a.evidence.map((e) => e.fragment),
+  }
+  try {
+    await api.deleteAssertion(root, a.id)
     await reload()
     void store.scheduleCompile()
+    offerUndo(label, async () => {
+      const r = await api.addAssertion(
+        root,
+        snap.subject,
+        snap.predicate,
+        snap.object,
+        snap.evidence[0],
+      )
+      if (snap.status !== 'active') await api.setAssertionStatus(root, r.id, snap.status)
+      // 追加证据：updateAssertion 不传证据则保留现有，传则登记并追加
+      for (const f of snap.evidence.slice(1)) {
+        await api.updateAssertion(root, r.id, snap.subject, snap.predicate, snap.object, f)
+      }
+      await reload()
+      void store.scheduleCompile()
+    })
   } catch (err) {
     ElMessage.error((err as Error).message)
   }
@@ -247,10 +284,19 @@ async function remove(a: AssertionDto) {
 /** 摘除断言上的一条证据引用（无主证据条目由后端级联清理） */
 async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
   if (!store.root) return
+  const root = store.root
+  const label = `「${a.object}」的证据（${ev.label}）`
+  // 撤销快照：断言三元组与证据片段（updateAssertion 传片段 ID 会重新登记该证据）
+  const snap = { id: a.id, subject: a.subject, predicate: a.predicate, object: a.object, fragment: ev.fragment }
   try {
-    await api.removeAssertionEvidence(store.root, a.id, ev.fragment)
+    await api.removeAssertionEvidence(root, snap.id, snap.fragment)
     await reload()
     void store.scheduleCompile()
+    offerUndo(label, async () => {
+      await api.updateAssertion(root, snap.id, snap.subject, snap.predicate, snap.object, snap.fragment)
+      await reload()
+      void store.scheduleCompile()
+    })
   } catch (err) {
     ElMessage.error((err as Error).message)
   }

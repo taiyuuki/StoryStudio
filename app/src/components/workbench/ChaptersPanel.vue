@@ -7,8 +7,10 @@ import type {
   ChapterOutlineItemDto,
   VolumeGroupDto,
 } from '@/api/backend'
+import { useUndo } from '@/composables/useUndo'
 
 const store = useWorkspaceStore()
+const { offerUndo } = useUndo()
 
 const loading = ref(true)
 const saving = ref(false)
@@ -207,12 +209,23 @@ function moveVolume(order: number, dir: -1 | 1) {
 function deleteVolume(order: number) {
   const i = volIndex(order)
   if (i < 0) return
+  const vol = outline.volumes[i]
+  const root = store.root
+  // 撤销快照：卷数据 + 被归入未分卷的章节引用（原地改回 volumeOrder）
+  const volume = { ...vol }
+  const moved = outline.chapters.filter((c) => c.volumeOrder === order)
   outline.volumes.splice(i, 1)
   for (const c of outline.chapters) {
     if (c.volumeOrder === order) c.volumeOrder = 0
   }
   volEditing.value = -1
   void persist()
+  offerUndo(`卷「${volume.name}」`, async () => {
+    if (store.root !== root) throw new Error('项目已切换，无法撤销')
+    outline.volumes.splice(Math.min(i, outline.volumes.length), 0, volume)
+    for (const c of moved) c.volumeOrder = order
+    await persist()
+  })
 }
 
 // ── 章节操作 ────────────────────────────────────────────────

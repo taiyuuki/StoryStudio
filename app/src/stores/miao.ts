@@ -9,7 +9,9 @@
 // 按钮态、时间线与会话绑定都从 store 原样恢复。
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type AgentEventDto, type ChatMetaDto } from '@/api/backend'
+import { useUndo } from '@/composables/useUndo'
 import { useWorkspaceStore } from './workspace'
 
 export interface TimelineItem {
@@ -41,6 +43,7 @@ const FRAGMENT_TOOLS = new Set([
 
 export const useMiaoStore = defineStore('miao', () => {
   const store = useWorkspaceStore()
+  const { offerUndo } = useUndo()
 
   // ── 时间线与运行态 ──────────────────────────────────────
   const items = ref<TimelineItem[]>([])
@@ -217,9 +220,30 @@ export const useMiaoStore = defineStore('miao', () => {
   }
 
   async function removeSession(meta: ChatMetaDto) {
-    await api.chatDelete(store.root!, meta.id)
-    if (meta.id === sessionId.value) resetConversation()
-    await loadSessions()
+    if (!store.root) return
+    try {
+      await ElMessageBox.confirm(`删除会话「${meta.title}」？8 秒内可撤销。`, '删除会话', {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+      })
+    } catch {
+      return
+    }
+    const root = store.root
+    try {
+      // 先取全文留底，撤销时原样写回
+      const chat = await api.chatLoad(root, meta.id)
+      await api.chatDelete(root, meta.id)
+      if (meta.id === sessionId.value) resetConversation()
+      await loadSessions()
+      offerUndo(`会话「${meta.title}」`, async () => {
+        await api.chatSave(root, chat)
+        await loadSessions()
+      })
+    } catch (err) {
+      ElMessage.error((err as Error).message)
+    }
   }
 
   function newChat() {
