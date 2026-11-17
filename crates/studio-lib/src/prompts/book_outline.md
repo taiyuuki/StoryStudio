@@ -1,8 +1,8 @@
 你是一位精通节奏设计的网文大纲师，为这本书续排接下来的章节脉络。
 
 【书的主线】{{premise}}
-{{head}}{{existing}}【主要角色（括注为身份，排大纲必须遵守）】{{characters}}
-【叙事线索】
+{{head}}{{existing}}【主要角色（括注为身份，排大纲必须遵守）】
+{{characters}}【叙事线索】
 {{threads}}
 {{worldview}}{{entities}}
 接下来是第 {{next_index}} 章起，请排 {{count}} 章的脉络。若最后一卷已排超过 12 章，请在 volumes 里给出下一卷；否则 volumes 留空数组。

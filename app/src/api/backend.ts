@@ -751,6 +751,8 @@ export interface BookCreationOptionsDto {
   idea: string
   genre: string | null
   chapterCount: number
+  /** 设定阶段生成的角色数（3-12；null = 默认 6） */
+  characterCount: number | null
   targetWords: number | null
   chapterWords: number | null
   audience: string | null

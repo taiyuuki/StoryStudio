@@ -495,9 +495,32 @@ impl Tool for PrepareWritingTool {
             out.push('\n');
         }
 
-        // —— 6. 题材提示（指针，不内嵌全文指导）——
+        // —— 6. 全书设定基准 + 题材提示（指针，不内嵌全文指导）——
+        // 简介/主线里的硬事实（时间/数量/身份）此前只在冷启动 get_outline 里
+        // 出现过一次，长会话中早已滑出上下文——动笔工具每次都要带上
         if let Ok(content) = std::fs::read_to_string(paths.outline_toml()) {
             if let Ok(outline) = story_project_format::OutlineFile::from_toml_str(&content) {
+                let blurb = outline
+                    .story
+                    .blurb
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let premise = outline
+                    .story
+                    .premise
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                if blurb.is_some() || premise.is_some() {
+                    out.push_str("\n全书设定基准:\n");
+                    if let Some(b) = blurb {
+                        out.push_str(&format!("  简介: {}\n", truncate_line(b, 150)));
+                    }
+                    if let Some(p) = premise {
+                        out.push_str(&format!("  主线: {}\n", truncate_line(p, 200)));
+                    }
+                }
                 if let Some(genre) = outline
                     .story
                     .genre

@@ -30,6 +30,7 @@ const pov = ref('')
 const style = ref('')
 const scaleIdx = ref(1)
 const chapterCount = ref(12)
+const characterCount = ref(6)
 const chapterWords = ref(3000)
 
 const parentDir = ref('')
@@ -62,6 +63,7 @@ function buildOptions(): BookCreationOptionsDto {
     idea: idea.value.trim(),
     genre: custom || (genre.value === '自动' ? null : genre.value),
     chapterCount: chapterCount.value,
+    characterCount: characterCount.value || null,
     targetWords: SCALES[scaleIdx.value]?.[1] ?? null,
     chapterWords: chapterWords.value || null,
     audience: audience.value || null,
@@ -455,6 +457,13 @@ function goBack() {
                   </select>
                 </div>
               </div>
+              <div class="wz-row">
+                <div class="wz-field">
+                  <label>主要角色数</label>
+                  <input v-model.number="characterCount" type="number" min="3" max="12" />
+                </div>
+              </div>
+              <p class="ab-sec-hint">设定阶段建几个主要角色（3-12）；灵感里写了人数（如「七位师姐」）就照实填</p>
               <div class="wz-field">
                 <label>单章字数</label>
                 <div class="word-chips">

@@ -38,6 +38,8 @@ pub const MAX_BATCH_CHAPTERS: u32 = 40;
 const THREAD_DESC_CHARS: usize = 60;
 /// 世界观概念摘要的截断长度（字符）
 const CONCEPT_SUMMARY_CHARS: usize = 80;
+/// 排纲上下文里角色背景的截断长度（字符）——背景承载时间线等硬设定
+const CHAR_BACKGROUND_CHARS: usize = 60;
 /// 力量体系规则的截断长度（字符）
 const SYSTEM_RULES_CHARS: usize = 100;
 
@@ -55,6 +57,9 @@ pub struct BookCreationOptions {
     pub genre: Option<String>,
     /// 首批章节数（3..=40，0 = 默认 12）
     pub chapter_count: u32,
+    /// 设定阶段生成的角色数（3..=12；None = 默认 6）。
+    /// 主线常含人数承诺（如「七位师姐」），写死 6 会与之结构性冲突
+    pub character_count: Option<u32>,
     /// 总字数目标
     pub target_words: Option<u64>,
     /// 单章字数
@@ -82,6 +87,7 @@ impl BookCreationOptions {
         } else {
             o.chapter_count.clamp(3, MAX_BATCH_CHAPTERS)
         };
+        o.character_count = o.character_count.filter(|c| (3..=12).contains(c));
         o.chapter_words = o.chapter_words.filter(|w| (1000..=10000).contains(w));
         o
     }
@@ -434,7 +440,7 @@ pub fn ai_book_world(
     provider: Arc<dyn story_ai_runtime::AiProvider>,
 ) -> Result<WorldDraft, StudioError> {
     let o = options.normalized();
-    let n_chars = WORLD_CHARACTER_COUNT;
+    let n_chars = o.character_count.unwrap_or(WORLD_CHARACTER_COUNT);
     with_cancel(|cancel| {
         let json = llm_json(provider, cancel, None, world_prompt(concept, &o, n_chars))?;
         Ok(parse_world_draft(&json, n_chars))
@@ -463,12 +469,19 @@ fn world_prompt(concept: &BookConcept, o: &BookCreationOptions, n_chars: u32) ->
     } else {
         format!("【故事舞台】{}\n", concept.setting.trim())
     };
+    // 简介只存在于概念六字段里，缺失时静默省略
+    let blurb_line = if concept.blurb.trim().is_empty() {
+        String::new()
+    } else {
+        format!("【简介（读者已见）】{}\n", concept.blurb.trim())
+    };
     crate::prompts::render(
         crate::prompts::BOOK_WORLD,
         &[
             ("title", concept.title.as_str()),
             ("genre_line", &genre_line),
             ("extras", &extras),
+            ("blurb_line", &blurb_line),
             ("premise", concept.premise.as_str()),
             ("theme", concept.theme.as_str()),
             ("setting_line", &setting_line),
@@ -827,6 +840,8 @@ pub fn ai_book_outline_batch(
 #[derive(Debug, Clone)]
 pub(crate) struct OutlineContext {
     pub premise: String,
+    /// 读者简介（已公开的硬设定承诺；空 = 未填写）
+    pub blurb: String,
     pub genre: Option<String>,
     pub pov: Option<String>,
     pub style: Option<String>,
@@ -841,8 +856,9 @@ pub(crate) struct OutlineContext {
     pub worldview_concepts: Vec<(String, String)>,
     /// 力量体系（名称, 等级链, 规则）
     pub systems: Vec<(String, String, String)>,
-    /// 角色档案（名字, 职业摘要）——大纲必须与身份一致，防止张冠李戴
-    pub characters: Vec<(String, String)>,
+    /// 角色档案（名字, 职业摘要, 背景摘要）——大纲必须与身份和既定背景一致，
+    /// 防止张冠李戴；背景承载时间线等硬设定（如「穿越当天掌门坐化」）
+    pub characters: Vec<(String, String, String)>,
     /// 地点实体（名称, 类型, 上级名）——大纲必须严格沿用这些名称
     pub locations: Vec<(String, String, String)>,
     /// 势力实体（名称, 类型）
@@ -866,8 +882,8 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
     )
     .map_err(|e| StudioError::Config(format!("outline.toml 解析失败: {e}")))?;
 
-    // 主要角色（带职业摘要）/ 地点 / 势力：大纲与正文只能沿用这些已建档名称与身份
-    let mut characters: Vec<(String, String)> = read_entities(&paths.characters_dir())
+    // 主要角色（带职业与背景摘要）/ 地点 / 势力：大纲与正文只能沿用这些已建档名称与身份
+    let mut characters: Vec<(String, String, String)> = read_entities(&paths.characters_dir())
         .into_iter()
         .map(|e| {
             let occupation = e
@@ -875,7 +891,16 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
                 .as_ref()
                 .and_then(|p| p.occupation.clone())
                 .unwrap_or_default();
-            (e.display_name, truncate_chars(&occupation, 20))
+            let background = e
+                .profile
+                .as_ref()
+                .and_then(|p| p.background.clone())
+                .unwrap_or_default();
+            (
+                e.display_name,
+                truncate_chars(&occupation, 20),
+                truncate_chars(&background, CHAR_BACKGROUND_CHARS),
+            )
         })
         .collect();
     characters.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1020,6 +1045,7 @@ fn outline_context(root: &Path) -> Result<OutlineContext, StudioError> {
 
     Ok(OutlineContext {
         premise: outline.story.premise.clone().unwrap_or_default(),
+        blurb: outline.story.blurb.clone().unwrap_or_default(),
         genre: outline.story.genre.clone(),
         pov: outline.story.pov.clone(),
         style: outline.story.style.clone(),
@@ -1066,6 +1092,11 @@ fn read_entities(dir: &Path) -> Vec<story_project_format::EntityFile> {
 
 fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
     let mut head = String::new();
+    // 简介里的硬事实（时间/数量/身份）只存在于 blurb，不随主线下发——
+    // 排纲上下文必须带上它，缺失会被模型凭空另创
+    if !ctx.blurb.trim().is_empty() {
+        head.push_str(&format!("【简介（读者已见）】{}\n", ctx.blurb.trim()));
+    }
     if let Some(g) = &ctx.genre {
         head.push_str(&format!("【题材】{g}\n"));
     }
@@ -1128,19 +1159,23 @@ fn outline_prompt(ctx: &OutlineContext, count: u32) -> String {
     }
     let next_index = ctx.existing_chapters + 1;
     let characters = if ctx.characters.is_empty() {
-        "（尚未建角色）".to_string()
+        "（尚未建角色）\n".to_string()
     } else {
         ctx.characters
             .iter()
-            .map(|(name, occupation)| {
-                if occupation.is_empty() {
-                    name.clone()
+            .map(|(name, occupation, background)| {
+                let mut line = if occupation.is_empty() {
+                    format!("- {name}")
                 } else {
-                    format!("{name}（{occupation}）")
+                    format!("- {name}（{occupation}）")
+                };
+                if !background.is_empty() {
+                    line.push_str(&format!("｜背景：{background}"));
                 }
+                line.push('\n');
+                line
             })
-            .collect::<Vec<_>>()
-            .join("、")
+            .collect()
     };
     let threads = if ctx.threads.is_empty() {
         "（尚未建线索）".to_string()
@@ -1250,7 +1285,7 @@ fn org_kind_zh(kind: &str) -> &str {
 
 /// 已建档实体清单 + 一致性硬约束（尚无任何实体时输出空串，不占上下文）
 fn render_entity_lists(
-    characters: &[(String, String)],
+    characters: &[(String, String, String)],
     locations: &[(String, String, String)],
     organizations: &[(String, String)],
 ) -> String {
@@ -1687,6 +1722,7 @@ mod tests {
             idea: "守灯少年".into(),
             genre: Some("玄幻".into()),
             chapter_count: 3,
+            character_count: None,
             target_words: Some(1_000_000),
             chapter_words: Some(3000),
             audience: Some("男频".into()),
@@ -1718,6 +1754,30 @@ mod tests {
         o.idea = "   ".into();
         let err = ai_book_concepts(&o, scripted(vec![])).unwrap_err();
         assert!(err.to_string().contains("灵感"));
+    }
+
+    #[test]
+    fn character_count_option_clamped_and_applied() {
+        let mut o = options();
+        // 超界值回退默认（None → WORLD_CHARACTER_COUNT）
+        o.character_count = Some(99);
+        assert_eq!(o.normalized().character_count, None);
+        o.character_count = Some(0);
+        assert_eq!(o.normalized().character_count, None);
+        // 合法值透传，并填入设定提示词（主线人数承诺可被满足）
+        o.character_count = Some(9);
+        let n = o
+            .normalized()
+            .character_count
+            .unwrap_or(WORLD_CHARACTER_COUNT);
+        assert_eq!(n, 9);
+        let concept = BookConcept {
+            title: "拾灯录".into(),
+            premise: "主线".into(),
+            ..Default::default()
+        };
+        let wp = world_prompt(&concept, &o.normalized(), n);
+        assert!(wp.contains("恰好 9 个主要角色"));
     }
 
     #[test]
@@ -1838,11 +1898,11 @@ mod tests {
             .any(|s| s.contains("灯灭之夜")));
         assert!(ctx.recent_chapters.last().unwrap().0.contains("灯渣"));
         assert!(ctx.volumes[0].0.contains("灯下"));
-        // 角色带职业摘要——身份是大纲防张冠李戴的关键上下文
+        // 角色带职业与背景摘要——身份与既定时间线是防张冠李戴的关键上下文
         assert!(ctx
             .characters
             .iter()
-            .any(|(n, o)| n == "阿澈" && o.contains("守灯学徒")));
+            .any(|(n, o, b)| n == "阿澈" && o.contains("守灯学徒") && b.contains("孤儿入山门")));
         // 地点：名称/类型/上级（parent 由 StableId 换算回名称）
         assert!(ctx
             .locations
@@ -1973,6 +2033,7 @@ mod tests {
         // 锁定模板转写：占位符填充正确、关键结构完整
         let concept = BookConcept {
             title: "拾灯录".into(),
+            blurb: "灵灯将熄，少年守灯三年不改志。".into(),
             premise: "灵灯将熄".into(),
             theme: "执念".into(),
             setting: "云隐洲".into(),
@@ -1982,21 +2043,27 @@ mod tests {
         assert!(wp.contains("【书名】《拾灯录》"));
         assert!(wp.contains("【主线】灵灯将熄"));
         assert!(wp.contains("【故事舞台】云隐洲"));
+        // 简介作为读者已见的硬承诺进上下文
+        assert!(wp.contains("【简介（读者已见"));
+        assert!(wp.contains("守灯三年"));
         assert!(wp.contains("恰好 3 个主要角色"));
         assert!(wp.contains(
             "[{name, role, gender, occupation, personality, background, aliases:[别名]}]"
         ));
 
-        // 舞台为空时不出对应行
+        // 舞台 / 简介为空时不出对应行
         let bare = BookConcept {
             title: "拾灯录".into(),
             premise: "灵灯将熄".into(),
             ..Default::default()
         };
-        assert!(!world_prompt(&bare, &options(), 3).contains("【故事舞台】"));
+        let bare_wp = world_prompt(&bare, &options(), 3);
+        assert!(!bare_wp.contains("【故事舞台】"));
+        assert!(!bare_wp.contains("【简介（读者已见"));
 
         let ctx = OutlineContext {
             premise: "灵灯将熄".into(),
+            blurb: "灵灯将熄，少年守灯三年不改志。".into(),
             genre: Some("玄幻".into()),
             pov: None,
             style: None,
@@ -2007,7 +2074,11 @@ mod tests {
             chapter_words: Some(3000),
             worldview_concepts: vec![("灵灯".into(), "以灯载魂".into())],
             systems: vec![("守灯术".into(), "照夜→引星→续日".into(), "点灯折寿".into())],
-            characters: vec![("阿澈".into(), "守灯学徒".into())],
+            characters: vec![(
+                "阿澈".into(),
+                "守灯学徒".into(),
+                "守灯人最后传人，入门三年".into(),
+            )],
             locations: vec![
                 ("云隐洲".into(), "continent".into(), String::new()),
                 ("长明镇".into(), "city".into(), "云隐洲".into()),
@@ -2023,6 +2094,9 @@ mod tests {
         // 断言前归一化，跨模板换行的 contains 才不挑平台
         let op = outline_prompt(&ctx, 5).replace("\r\n", "\n");
         assert!(op.contains("第 4 章起，请排 5 章的脉络"));
+        // 简介承诺进 head（blurb 里的硬设定只存在于这里）
+        assert!(op.contains("【简介（读者已见"));
+        assert!(op.contains("守灯三年"));
         // head 补全：主题 / 舞台 / 体量（卷级节奏的基准）
         assert!(op.contains("【主题】传承"));
         assert!(op.contains("【故事舞台】云隐洲"));
@@ -2034,8 +2108,9 @@ mod tests {
         assert!(op.contains("- 灵灯：以灯载魂"));
         assert!(op.contains("【力量体系（等级与规则必须严格遵守）】"));
         assert!(op.contains("- 守灯术（照夜→引星→续日）：点灯折寿"));
-        // 角色带身份括注，防止大纲张冠李戴
-        assert!(op.contains("【主要角色（括注为身份，排大纲必须遵守）】阿澈（守灯学徒）"));
+        // 角色带身份括注与背景（背景承载既定时间线）
+        assert!(op.contains("【主要角色（括注为身份，排大纲必须遵守）】"));
+        assert!(op.contains("- 阿澈（守灯学徒）｜背景：守灯人最后传人，入门三年"));
         assert!(op.contains("已排 3 章"));
         // 已建档清单 + 一致性硬约束
         assert!(op.contains("【已建档的地点与势力】"));
@@ -2053,12 +2128,13 @@ mod tests {
         assert!(!cop.contains("【已建档的地点与势力】"));
         assert!(cop.contains("张冠李戴"));
 
-        // 尚无任何实体时不输出约束块（早期打开、未建设定的项目）
+        // 尚无任何实体时不输出实体约束块（早期打开、未建设定的项目；
+        // 模板自带的硬设定一致性铁律与实体块措辞相近，断言用实体块独有短语）
         let mut bare = ctx.clone();
         bare.characters = Vec::new();
         bare.locations = Vec::new();
         bare.organizations = Vec::new();
-        assert!(!outline_prompt(&bare, 5).contains("一致性（硬性要求）"));
+        assert!(!outline_prompt(&bare, 5).contains("严禁张冠李戴"));
     }
 
     #[test]

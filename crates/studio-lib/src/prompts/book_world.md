@@ -2,7 +2,7 @@
 
 【书名】《{{title}}》
 {{genre_line}}{{extras}}【主线】{{premise}}
-【主题】{{theme}}
+{{blurb_line}}【主题】{{theme}}
 {{setting_line}}
 
 只输出一个 JSON 对象（字符串内的引号用「」），字段：

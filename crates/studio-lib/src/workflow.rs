@@ -911,6 +911,64 @@ fn attribute_value_text(v: &story_ir::AttributeValue) -> String {
     }
 }
 
+/// 角色档案速查（职业/外貌/习惯/个性/背景，逐项截断；档案缺失返回空串）。
+/// 字段与截断口径对齐 tools/entities::appearance_habits_brief，另补职业与背景。
+fn character_profile_brief(paths: &ProjectPaths, cid: &str) -> String {
+    let entity = paths
+        .file_for_id(cid)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|c| story_project_format::EntityFile::from_toml_str(&c).ok());
+    let Some(profile) = entity.and_then(|e| e.profile) else {
+        return String::new();
+    };
+    let flat = |s: &str, max: usize| {
+        let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        truncate_chars(&collapsed, max)
+    };
+    let mut parts = Vec::new();
+    if let Some(v) = profile
+        .occupation
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        parts.push(format!("职业: {}", flat(v, 20)));
+    }
+    if let Some(v) = profile
+        .appearance
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        parts.push(format!("外貌: {}", flat(v, 40)));
+    }
+    if let Some(v) = profile.habits.as_deref().filter(|s| !s.trim().is_empty()) {
+        parts.push(format!("习惯: {}", flat(v, 40)));
+    }
+    if let Some(v) = profile
+        .personality
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        parts.push(format!("个性: {}", flat(v, 40)));
+    }
+    if let Some(v) = profile
+        .background
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        parts.push(format!("背景: {}", flat(v, 60)));
+    }
+    parts.join("｜")
+}
+
+/// 按字符数截断（中文友好），超出加省略号
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
+}
+
 fn build_materials(
     paths: &ProjectPaths,
     chapters: &ChaptersFile,
@@ -930,6 +988,13 @@ fn build_materials(
     if let Some(premise) = outline.story.premise.as_deref().map(str::trim) {
         if !premise.is_empty() {
             outline_brief.push_str(premise);
+        }
+    }
+    // 简介（blurb）只存在于 outline.toml，其中的硬事实（时间/数量/身份）
+    // 不随主线下发——不带进上下文就会被正文凭空另创
+    if let Some(blurb) = outline.story.blurb.as_deref().map(str::trim) {
+        if !blurb.is_empty() {
+            outline_brief.push_str(&format!("\n读者简介（已对读者公开）：{blurb}"));
         }
     }
     if let Some(theme) = outline.story.theme.as_deref().map(str::trim) {
@@ -977,7 +1042,9 @@ fn build_materials(
         chapter_card.push_str(&format!("章末钩子：{h}\n"));
     }
 
-    // 角色卡（≤8 个）
+    // 角色卡（≤8 个；档案速查与妙笔 prepare_writing 的速查行同源同字段，
+    // 两条写作路径的上下文口径保持一致——此前流水线只见自定义属性，
+    // 职业/个性/背景全丢，设定阶段写的档案对正文生成不生效）
     let mut character_cards = String::new();
     for cid in def.characters.iter().take(8) {
         if let Ok(id) = StableId::new(cid.clone()) {
@@ -996,6 +1063,10 @@ fn build_materials(
                 }
                 for (k, v) in c.attributes.custom.iter().take(4) {
                     line.push_str(&format!("，{k}: {}", attribute_value_text(v)));
+                }
+                let brief = character_profile_brief(paths, cid);
+                if !brief.is_empty() {
+                    line.push_str(&format!("\n  {brief}"));
                 }
                 character_cards.push_str(&line);
                 character_cards.push('\n');
@@ -1699,6 +1770,50 @@ mod tests {
             vec!["开场".to_string(), "冲突".to_string(), "收束".to_string()]
         );
         assert!(parse_beats("").is_empty());
+    }
+
+    #[test]
+    fn materials_carry_blurb_and_profile() {
+        let tmp = setup_project();
+        let dir = tmp.path();
+        let paths = ProjectPaths::new(dir);
+
+        // 简介 + 主线落盘 outline.toml
+        std::fs::write(
+            paths.outline_toml(),
+            "[story]\ntitle = \"测书\"\npremise = \"主线：灵灯将熄\"\nblurb = \"少年守灯三年，不改其志。\"\n",
+        )
+        .unwrap();
+        // 角色档案：profile 是此前流水线角色卡唯一看不见的部分
+        mutations::create_entity(&paths, mutations::EntityKind::Character, "苏白").unwrap();
+        std::fs::write(
+            paths.characters_dir().join("c_0001.toml"),
+            "id = \"c_0001\"\ndisplay_name = \"苏白\"\n\n[profile]\noccupation = \"守灯学徒\"\nbackground = \"入门三年，穿越当天掌门坐化\"\npersonality = \"执拗\"\nhabits = \"睡前擦灯\"\n",
+        )
+        .unwrap();
+        write_chapters(
+            &paths,
+            vec![ChapterOutlineDef {
+                title: "灯灭".into(),
+                summary: Some("梗概".into()),
+                characters: vec!["c_0001".into()],
+                ..ChapterOutlineDef::default()
+            }],
+        );
+
+        let chapters = mutations::load_chapters_file(&paths).unwrap();
+        let ir = compile_project(dir).unwrap().ir;
+        let materials =
+            build_materials(&paths, &chapters, 1, &ir, &small_config(), "", &None).unwrap();
+
+        // 简介承诺随主线下发（否则正文只知主线、不知「三年」这类硬数字）
+        assert!(materials.outline_brief.contains("灵灯将熄"));
+        assert!(materials.outline_brief.contains("守灯三年"));
+        // 角色卡带档案速查：职业/个性/习惯/背景（背景承载时间线硬设定）
+        assert!(materials.character_cards.contains("职业: 守灯学徒"));
+        assert!(materials.character_cards.contains("个性: 执拗"));
+        assert!(materials.character_cards.contains("习惯: 睡前擦灯"));
+        assert!(materials.character_cards.contains("入门三年"));
     }
 
     #[test]
