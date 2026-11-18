@@ -225,6 +225,7 @@ function pct(peek: ProjectPeekDto): number {
 
 .cc-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   flex-shrink: 0;
 }

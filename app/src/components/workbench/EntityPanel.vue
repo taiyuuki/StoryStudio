@@ -1051,6 +1051,7 @@ function label(r: string): string {
 
 .rel-create {
   display: flex;
+  align-items: center;
   gap: 6px;
   margin: 10px 0 6px;
 
@@ -1350,6 +1351,7 @@ function label(r: string): string {
 
 .d-actions {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   margin-top: 6px;
   padding-top: 12px;
@@ -1358,6 +1360,7 @@ function label(r: string): string {
 
 .merge-box {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-top: 10px;
   padding: 10px;

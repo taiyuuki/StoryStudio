@@ -54,7 +54,7 @@ impl Tool for AddAssertionTool {
                 (
                     "object",
                     "string",
-                    "断言值：alive 用 \"true\"/\"false\"；age 用数字（如 \"17\"）；\
+                    "断言值：alive 用 \"true\"/\"false\"；age 用数字；\
                     holds/located_at/member_of 用实体 ID；identity 及自定义谓词用文本。系统会按 predicate 自动转换类型。",
                     false,
                 ),

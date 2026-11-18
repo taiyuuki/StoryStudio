@@ -550,7 +550,7 @@ function goBack() {
                 </div>
               </div>
               <p class="ab-sec-hint">
-                设定阶段建几个主要角色（3-12）；灵感里写了人数（如「七位师姐」）就照实填
+                设定阶段建几个主要角色（3-12）；灵感里写了人数就照实填
               </p>
               <div class="wz-field">
                 <label>单章字数</label>
@@ -1177,6 +1177,7 @@ function goBack() {
 
 .ab-dir {
   display: flex;
+  align-items: center;
   gap: 8px;
 
   .ab-dir-input {
@@ -1284,6 +1285,7 @@ function goBack() {
 
 .step-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 0 2px;

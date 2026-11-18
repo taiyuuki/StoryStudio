@@ -202,12 +202,6 @@ async function create() {
 
       <div class="npd-foot">
         <button
-          class="ink-btn"
-          @click="emit('update:modelValue', false)"
-        >
-          取消
-        </button>
-        <button
           class="ink-btn ink-btn--primary ink-btn--lg create-btn"
           :disabled="creating"
           @click="create"
@@ -263,6 +257,7 @@ async function create() {
 
 .dir-row {
   display: flex;
+  align-items: center;
   gap: 8px;
 
   .ink-input {
@@ -291,6 +286,7 @@ async function create() {
 
 .npd-foot {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 10px;
 }

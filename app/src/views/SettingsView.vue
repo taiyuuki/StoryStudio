@@ -1739,6 +1739,7 @@ function goBack() {
 
 .sv-card-acts {
   display: inline-flex;
+  align-items: center;
   gap: 2px;
   opacity: 0;
   transition: opacity 0.18s;
@@ -2488,6 +2489,7 @@ function goBack() {
 
 .sv-about-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   margin-top: 4px;
 }

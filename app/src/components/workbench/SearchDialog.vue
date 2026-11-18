@@ -162,6 +162,7 @@ async function jumpTo(hit: SearchHitDto) {
 
 .sd-bar {
   display: flex;
+  align-items: center;
   gap: 8px;
 
   input {

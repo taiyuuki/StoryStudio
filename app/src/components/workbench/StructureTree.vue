@@ -439,6 +439,7 @@ function sceneTitle(s: SceneDto): string {
 
 .tree-head {
   display: flex;
+  align-items: center;
   gap: 8px;
   padding: 14px 14px 10px;
 

@@ -230,6 +230,7 @@ function cancelGenerating() {
   position: sticky;
   bottom: 0;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   padding-top: 10px;

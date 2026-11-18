@@ -856,7 +856,6 @@ fn try_parse_json(s: &str) -> Option<LlmReport> {
 ///
 /// LLM 常在 summary/explanation 里写 `来"升华"情绪` 这种嵌套引号，破坏 JSON。
 /// 宽松提取：扫描所有花括号匹配的 {...} 子串（含嵌套），逐个尝试解析为单个 item。
-/// 能救一个是一个，丢掉 summary 也无所谓。非 item 结构（如整个 report 对象）会自然解析失败被跳过。
 fn loose_extract_items(input: &str) -> Vec<AiCheckItem> {
     let chars: Vec<char> = input.chars().collect();
     // 收集所有 {..} 匹配区间（按 { 出现的位置栈式匹配）

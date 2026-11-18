@@ -350,6 +350,7 @@ async function openBookPanel(root: string) {
 
 .head-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   flex-shrink: 0;
   padding-bottom: 2px;
@@ -580,6 +581,7 @@ async function openBookPanel(root: string) {
 
 .welcome-actions {
   display: flex;
+  align-items: center;
   gap: 14px;
 }
 

@@ -422,6 +422,7 @@ const kindOptions: { value: EntityKind; label: string }[] = [
 // 批量操作独立一行：侧栏拖窄时整按钮换行兜底，按钮文字不折行
 .ap-bulk {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px;
 
@@ -529,6 +530,7 @@ const kindOptions: { value: EntityKind; label: string }[] = [
 
 .ap-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
   flex-wrap: wrap;
 }

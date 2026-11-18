@@ -181,6 +181,7 @@ function close() {
 
 .upd-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
 }
 </style>

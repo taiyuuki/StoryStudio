@@ -688,6 +688,7 @@ async function removeEvidence(a: AssertionDto, ev: EvidenceRefDto) {
 
 .tp-row {
   display: flex;
+  align-items: center;
   gap: 8px;
 
   select {

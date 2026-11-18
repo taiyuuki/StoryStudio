@@ -919,6 +919,7 @@ function moveChapter(gi: number, dir: -1 | 1) {
 
 .cp-edit-row {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
 }

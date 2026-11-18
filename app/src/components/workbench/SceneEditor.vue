@@ -376,6 +376,7 @@ async function saveSummary() {
 
 .tool-right {
   display: flex;
+  align-items: center;
   gap: 8px;
 }
 

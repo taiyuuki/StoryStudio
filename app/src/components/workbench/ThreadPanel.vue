@@ -775,6 +775,7 @@ textarea.ed-input {
 
 .tp-create-row {
   display: flex;
+  align-items: center;
   gap: 8px;
 
   select {

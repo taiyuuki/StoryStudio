@@ -562,6 +562,7 @@ const ISSUE_ICON: Record<string, string> = {
 
 .bk-paused-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }

@@ -786,6 +786,7 @@ function moveEra(i: number, dir: -1 | 1) {
 
 .wp-edit-row {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
 }
@@ -954,6 +955,7 @@ function moveEra(i: number, dir: -1 | 1) {
 
 .wp-era-add {
   display: flex;
+  align-items: center;
   gap: 8px;
 
   input {

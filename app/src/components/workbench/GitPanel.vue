@@ -354,6 +354,7 @@ onActivated(() => void refresh())
 // 存档输入
 .git-commit-row {
   display: flex;
+  align-items: center;
   gap: 8px;
 
   .git-msg-input {
@@ -443,6 +444,7 @@ onActivated(() => void refresh())
 
 .gi-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
   flex-shrink: 0;
 }

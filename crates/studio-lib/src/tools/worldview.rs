@@ -148,7 +148,7 @@ fn render_timeline(timeline: &TimelineFile, result: &mut String) {
         result.push_str("## 纪元历法\n");
         result.push_str(&format!("纪元（早→晚）：{}\n", timeline.eras.join(" → ")));
         result.push_str(
-            "场景 story_time 的历法标签（如 灵历3217年）按此纪元顺序比较；\n未收录的标签仅作展示、不参与时序比较。\n",
+            "场景 story_time 的历法标签按此纪元顺序比较；\n未收录的标签仅作展示、不参与时序比较。\n",
         );
     }
 }
@@ -643,12 +643,12 @@ impl Tool for SetTimelineErasTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "set_timeline_eras".into(),
-            description: "设置项目的纪元历法（worldview/timeline.toml 的 eras，早→晚有序数组，            整体替换）。历法标签锚（如「灵历3217年」）只有命中纪元名才可被时间线            倒流校验比较——奇幻/仙侠项目先建历法再填 story_time 标签。            用纯数字年锚的项目无需设置。"
+            description: "设置项目的纪元历法（worldview/timeline.toml 的 eras，早→晚有序数组，整体替换）。历法标签锚只有命中纪元名才可被时间线倒流校验比较——奇幻/仙侠项目先建历法再填 story_time 标签。            用纯数字年锚的项目无需设置。"
                 .into(),
             parameters: object_schema(vec![(
                 "eras",
                 "array",
-                "纪元名数组（早→晚），如 [\"创世\", \"灵历\", \"开元\"]；原生数组或逗号分隔字符串均可",
+                "纪元名数组（早→晚），原生数组或逗号分隔字符串均可",
                 true,
             )]),
         }

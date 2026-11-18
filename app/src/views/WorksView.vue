@@ -184,6 +184,7 @@ async function pickAndOpen() {
 
 .works-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
 }
 
@@ -238,6 +239,7 @@ async function pickAndOpen() {
 
 .we-actions {
   display: flex;
+  align-items: center;
   gap: 14px;
 }
 
