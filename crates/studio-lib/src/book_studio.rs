@@ -2144,7 +2144,7 @@ mod tests {
         assert!(op.contains("- 云隐洲（大陆）"));
         assert!(op.contains("- 长明镇（城市，属云隐洲）"));
         assert!(op.contains("- 守灯阁（门派）"));
-        assert!(op.contains("【一致性（硬性要求）】"));
+        assert!(op.contains("【一致性要求】"));
         assert!(op.contains("张冠李戴"));
 
         // 只有角色、无地点/势力：清单省略但身份约束仍在
